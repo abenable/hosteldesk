@@ -1,0 +1,16 @@
+[workspace]
+members = ["crates/app", "crates/core", "crates/db", "crates/license", "crates/pdf"]
+resolver = "2"
+
+[workspace.dependencies]
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+rust_decimal = "1.36"
+thiserror = "1"
+tracing = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = true
