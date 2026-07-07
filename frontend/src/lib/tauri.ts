@@ -164,3 +164,72 @@ export async function listHostels(): Promise<Hostel[]> {
     throw error;
   }
 }
+
+export type AddRoomInput = {
+  hostel_id: number;
+  room_number: string;
+  room_type: string;
+  capacity: number;
+  floor?: number | null;
+  rate_per_period: string;
+};
+
+export async function addRoom(input: AddRoomInput): Promise<number> {
+  try {
+    return await invoke<number>('add_room', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function bulkAddRooms(input: AddRoomInput[]): Promise<number[]> {
+  try {
+    return await invoke<number[]>('bulk_add_rooms', { requests: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export type PaymentInput = {
+  hostel_id: number;
+  allocation_id: number;
+  resident_id: number;
+  amount: string;
+  payment_method: string;
+  period_start?: string | null;
+  period_end?: string | null;
+  notes?: string | null;
+};
+
+export async function recordPaymentWithReceipt(
+  input: PaymentInput,
+): Promise<[number, string]> {
+  try {
+    return await invoke<[number, string]>('record_payment_and_generate_receipt', {
+      request: input,
+    });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export type ReceiptInput = {
+  hostel_name: string;
+  receipt_number: number;
+  resident_name: string;
+  amount: string;
+  date: string;
+  balance: string;
+};
+
+export async function generateAndOpenReceipt(input: ReceiptInput): Promise<string> {
+  try {
+    return await invoke<string>('generate_and_open_receipt', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}

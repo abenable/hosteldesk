@@ -1,58 +1,86 @@
 import { useState } from 'react';
-import { Sidebar } from './Sidebar.tsx';
+import * as Dialog from '@radix-ui/react-dialog';
+import { Sidebar, type View } from './Sidebar.tsx';
+import { Topbar } from './Topbar.tsx';
+import { Button } from './ui/Button.tsx';
+import { CheckInForm } from './CheckInForm.tsx';
+import { Modal } from './ui/Modal.tsx';
 
-export type View = 'dashboard' | 'rooms' | 'residents' | 'settings';
+const TITLES: Record<View, string> = {
+  dashboard: 'Dashboard',
+  rooms: 'Rooms',
+  residents: 'Residents',
+  invoices: 'Invoices',
+  settings: 'Settings',
+};
 
 export function Layout({
   active,
   onSelect,
+  hostelName,
+  userName,
   children,
 }: {
   active: View;
   onSelect: (view: View) => void;
+  hostelName?: string;
+  userName?: string;
   children: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [checkInOpen, setCheckInOpen] = useState(false);
+
+  const handleSelect = (view: View) => {
+    onSelect(view);
+    setDrawerOpen(false);
+  };
 
   return (
     <div className="flex min-h-screen bg-canvas text-ink">
-      {/* Desktop sidebar */}
-      <aside className="hidden w-60 shrink-0 flex-col border-r border-hairline bg-canvas md:flex">
+      <aside className="hidden w-64 shrink-0 flex-col border-r border-hairline bg-canvas md:flex">
         <Sidebar active={active} onSelect={onSelect} />
       </aside>
 
-      {/* Mobile header */}
-      <div className="fixed left-0 right-0 top-0 z-20 flex items-center justify-between border-b border-hairline bg-canvas px-4 py-3 md:hidden">
-        <span className="text-title-md text-primary">HostelDesk</span>
-        <button
-          type="button"
-          onClick={() => setOpen((s) => !s)}
-          className="rounded-sm border border-hairline px-3 py-1.5 text-button-sm text-ink"
-          aria-label="Toggle menu"
-          aria-expanded={open}
-        >
-          Menu
-        </button>
+      <Dialog.Root open={drawerOpen} onOpenChange={setDrawerOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 z-40 bg-scrim/40 backdrop-blur-sm" />
+          <Dialog.Content className="fixed left-0 top-0 z-50 h-full w-72 bg-canvas p-2 shadow-card focus:outline-none">
+            <Dialog.Close
+              className="absolute right-3 top-3 rounded-full p-1 text-muted hover:bg-surface-soft hover:text-ink"
+              aria-label="Close menu"
+            />
+            <Sidebar active={active} onSelect={handleSelect} />
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <Topbar
+          title={TITLES[active]}
+          hostelName={hostelName}
+          userName={userName}
+          onMenu={() => setDrawerOpen(true)}
+          onCheckIn={active === 'dashboard' ? undefined : () => setCheckInOpen(true)}
+          onSelectView={onSelect}
+        />
+        <main className="flex-1 overflow-auto px-4 py-6 md:px-8">
+          <div className="mx-auto max-w-6xl">{children}</div>
+        </main>
       </div>
 
-      {open && (
-        <div className="fixed left-0 right-0 top-12 z-20 border-b border-hairline bg-canvas md:hidden">
-          <Sidebar
-            active={active}
-            onSelect={(view) => {
-              onSelect(view);
-              setOpen(false);
-            }}
-          />
+      <Modal
+        open={checkInOpen}
+        onOpenChange={setCheckInOpen}
+        title="Check in resident"
+        description="Assign a vacant room to a new resident."
+      >
+        <CheckInForm onSuccess={() => setCheckInOpen(false)} />
+        <div className="flex justify-end">
+          <Button variant="tertiary" onClick={() => setCheckInOpen(false)}>
+            Close
+          </Button>
         </div>
-      )}
-
-      <main className="flex-1 overflow-auto px-4 pb-8 pt-16 md:pt-8">
-        <div className="mx-auto max-w-6xl">
-          <h1 className="mb-6 text-display-lg capitalize">{active}</h1>
-          {children}
-        </div>
-      </main>
+      </Modal>
     </div>
   );
 }

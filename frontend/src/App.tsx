@@ -1,19 +1,22 @@
 import { useEffect, useState } from 'react';
-import { Layout, type View } from './components/Layout.tsx';
+import { Layout } from './components/Layout.tsx';
+import type { View } from './components/Sidebar.tsx';
 import { LockScreen } from './components/LockScreen.tsx';
 import { ToastContainer } from './components/ToastContainer.tsx';
 import { Dashboard } from './views/Dashboard.tsx';
 import { Residents } from './views/Residents.tsx';
 import { Rooms } from './views/Rooms.tsx';
+import { Invoices } from './views/Invoices.tsx';
 import { Settings } from './views/Settings.tsx';
 import { Onboarding } from './views/Onboarding.tsx';
 import { getLicenseStatus, type LicensePayload } from './lib/tauri.ts';
-import { isOnboardingComplete } from './lib/onboarding.ts';
+import { isOnboardingComplete, getHostelProfile } from './lib/onboarding.ts';
 
 const views: Record<View, React.ComponentType> = {
   dashboard: Dashboard,
   rooms: Rooms,
   residents: Residents,
+  invoices: Invoices,
   settings: Settings,
 };
 
@@ -82,11 +85,22 @@ export default function App() {
   }
 
   const ViewComponent = views[view];
+  const hostel = getHostelProfile();
+  const userName = 'A'; // ponytail: real session user pending login wiring
 
   return (
     <>
-      <Layout active={view} onSelect={setView}>
-        <ViewComponent />
+      <Layout
+        active={view}
+        onSelect={setView}
+        hostelName={hostel?.name}
+        userName={userName}
+      >
+        {view === 'residents' ? (
+          <Residents onNavigate={setView} />
+        ) : (
+          <ViewComponent />
+        )}
       </Layout>
       <ToastContainer />
     </>
