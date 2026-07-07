@@ -44,7 +44,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: ./crates/app
-          configPath: ./crates/app/tauri.conf.json
           args: ${{ matrix.args }}
           tagName: release-${{ github.run_number }}
           releaseName: Release ${{ github.run_number }}
