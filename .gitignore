@@ -24,5 +24,8 @@ Thumbs.db
 .claude/
 .opencode/
 
+# Design specs and planning docs
+specs/
+
 # Archives
 *.zip
