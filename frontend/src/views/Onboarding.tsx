@@ -5,7 +5,14 @@ import { Select } from '../components/ui/Select.tsx';
 import { Card } from '../components/ui/Card.tsx';
 import { Stepper } from '../components/ui/Stepper.tsx';
 import { addToast } from '../lib/toasts.ts';
-import { createStaffUser, createHostel, listHostels } from '../lib/tauri.ts';
+import logo from '../assets/logo.png';
+import {
+  createStaffUser,
+  createHostel,
+  listHostels,
+  activateLicense,
+  generateTrialLicense,
+} from '../lib/tauri.ts';
 import {
   saveHostelProfile,
   saveAdminAccount,
@@ -25,8 +32,7 @@ const ROLES: { value: StaffRole; label: string }[] = [
   { value: 'manager', label: 'Manager' },
 ];
 
-const LOCAL_BANNER =
-  'Saved locally — full persistence arrives with the next backend release.';
+type LicenseChoice = 'trial' | 'key';
 
 async function ensureHostel(profile: HostelProfile): Promise<number> {
   const existing = await listHostels();
@@ -40,6 +46,36 @@ async function ensureHostel(profile: HostelProfile): Promise<number> {
 }
 
 export function Onboarding() {
+  const [phase, setPhase] = useState<'welcome' | 'wizard'>('welcome');
+  if (phase === 'welcome') {
+    return <Welcome onStart={() => setPhase('wizard')} />;
+  }
+  return <Wizard />;
+}
+
+function Welcome({ onStart }: { onStart: () => void }) {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center bg-canvas px-4 py-16 text-center">
+      <div className="mx-auto max-w-md">
+        <img
+          src={logo}
+          alt="HostelDesk"
+          className="mx-auto mb-6 h-28 w-28 rounded-lg"
+        />
+        <h1 className="text-display-xl text-ink">Welcome to HostelDesk</h1>
+        <p className="mt-3 text-body-md text-muted">
+          Check residents in, track rooms, record payments, and generate
+          receipts — all in a few quick steps. Let's set up your hostel.
+        </p>
+        <div className="mt-8 flex justify-center">
+          <Button onClick={onStart}>Get started</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Wizard() {
   const [step, setStep] = useState(1);
 
   // Step 1
@@ -57,6 +93,11 @@ export function Onboarding() {
   const [adminRole, setAdminRole] = useState<StaffRole>('admin');
   const [creating, setCreating] = useState(false);
 
+  // Step 3 — license
+  const [licenseChoice, setLicenseChoice] = useState<LicenseChoice>('trial');
+  const [licenseKey, setLicenseKey] = useState('');
+  const [finishing, setFinishing] = useState(false);
+
   const profileValid = profile.name.trim().length > 0;
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail.trim());
   const adminValid =
@@ -71,9 +112,7 @@ export function Onboarding() {
         addToast('Hostel name is required.', 'error');
         return;
       }
-      // ponytail: local-only until create_hostel/add_room commands land
       saveHostelProfile(profile);
-      addToast(LOCAL_BANNER, 'success');
       setStep(2);
       return;
     }
@@ -82,9 +121,7 @@ export function Onboarding() {
       return;
     }
     if (step === 3) {
-      // ponytail: local-only until create_hostel/add_room commands land
-      completeOnboarding();
-      addToast('Onboarding complete. Welcome to HostelDesk.', 'success');
+      void handleFinish();
     }
   }
 
@@ -125,9 +162,32 @@ export function Onboarding() {
     }
   }
 
+  async function handleFinish() {
+    setFinishing(true);
+    try {
+      if (licenseChoice === 'key') {
+        if (!licenseKey.trim()) {
+          addToast('Paste your license key to continue.', 'error');
+          setFinishing(false);
+          return;
+        }
+        await activateLicense(licenseKey.trim());
+      } else {
+        const trial = await generateTrialLicense();
+        await activateLicense(trial);
+      }
+      completeOnboarding();
+      addToast('Onboarding complete. Welcome to HostelDesk.', 'success');
+    } catch {
+      // toast already surfaced by the tauri wrapper
+    } finally {
+      setFinishing(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-canvas px-4 py-16">
-      <div className="mx-auto max-w-md text-center">
+      <div className="mx-auto max-w-xl text-center">
         <header className="mb-8">
           <h1 className="text-display-lg text-ink">Set up your hostel</h1>
           <p className="mt-1 text-body-sm text-muted">
@@ -146,27 +206,21 @@ export function Onboarding() {
               <Input
                 label="Hostel name"
                 value={profile.name}
-                onChange={(e) =>
-                  setProfile({ ...profile, name: e.target.value })
-                }
+                onChange={(e) => setProfile({ ...profile, name: e.target.value })}
                 placeholder="Sunrise Backpackers"
                 required
               />
               <Input
                 label="Address"
                 value={profile.address}
-                onChange={(e) =>
-                  setProfile({ ...profile, address: e.target.value })
-                }
+                onChange={(e) => setProfile({ ...profile, address: e.target.value })}
                 placeholder="123 Kampala Road"
               />
               <Input
                 label="Phone"
                 type="tel"
                 value={profile.phone}
-                onChange={(e) =>
-                  setProfile({ ...profile, phone: e.target.value })
-                }
+                onChange={(e) => setProfile({ ...profile, phone: e.target.value })}
                 placeholder="+256 700 000 000"
               />
             </div>
@@ -214,9 +268,7 @@ export function Onboarding() {
                 label="Role"
                 value={adminRole}
                 capitalize
-                onChange={(e) =>
-                  setAdminRole(e.target.value as StaffRole)
-                }
+                onChange={(e) => setAdminRole(e.target.value as StaffRole)}
               >
                 {ROLES.map((r) => (
                   <option key={r.value} value={r.value}>
@@ -228,7 +280,7 @@ export function Onboarding() {
           )}
 
           {step === 3 && (
-            <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-5">
               <h2 className="text-display-sm text-center text-ink">Review & finish</h2>
               <dl className="flex flex-col gap-3 text-body-md">
                 <div>
@@ -244,14 +296,45 @@ export function Onboarding() {
                   <dd className="text-ink">{adminEmail || '—'}</dd>
                 </div>
                 <div>
-                  <dt className="text-caption text-muted">Phone</dt>
-                  <dd className="text-ink">{adminPhone || '—'}</dd>
-                </div>
-                <div>
                   <dt className="text-caption text-muted">Role</dt>
                   <dd className="text-ink capitalize">{adminRole}</dd>
                 </div>
               </dl>
+
+              <div className="border-t border-hairline pt-5">
+                <h3 className="text-title-sm text-ink">License</h3>
+                <p className="mt-1 text-caption-sm text-muted">
+                  Start a 30-day free trial, or enter a license key if you have one.
+                </p>
+                <div className="mt-3 inline-flex rounded-full bg-surface-soft p-1">
+                  {([
+                    { id: 'trial', label: 'Free trial' },
+                    { id: 'key', label: 'I have a key' },
+                  ] as const).map((o) => (
+                    <button
+                      key={o.id}
+                      type="button"
+                      onClick={() => setLicenseChoice(o.id)}
+                      className={`rounded-full px-4 py-1.5 text-button-sm transition-colors ${
+                        licenseChoice === o.id
+                          ? 'bg-canvas text-ink shadow-card'
+                          : 'text-muted hover:text-ink'
+                      }`}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+                {licenseChoice === 'key' && (
+                  <Input
+                    className="mt-3"
+                    label="License key"
+                    value={licenseKey}
+                    onChange={(e) => setLicenseKey(e.target.value)}
+                    placeholder="Paste your license key"
+                  />
+                )}
+              </div>
             </div>
           )}
 
@@ -261,7 +344,7 @@ export function Onboarding() {
             }`}
           >
             {step > 1 && (
-              <Button variant="tertiary" onClick={back}>
+              <Button variant="tertiary" onClick={back} disabled={creating || finishing}>
                 Back
               </Button>
             )}
@@ -270,11 +353,12 @@ export function Onboarding() {
               disabled={
                 (step === 1 && !profileValid) ||
                 (step === 2 && (!adminValid || creating)) ||
-                creating
+                creating ||
+                finishing
               }
             >
-              {creating
-                ? 'Creating…'
+              {creating || finishing
+                ? 'Working…'
                 : step === 3
                   ? 'Finish'
                   : step === 2
