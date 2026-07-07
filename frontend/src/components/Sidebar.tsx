@@ -1,3 +1,4 @@
+import logo from '../assets/logo.png';
 import {
   DashboardIcon,
   RoomsIcon,
@@ -25,7 +26,10 @@ export function Sidebar({
 }) {
   return (
     <nav className="flex flex-col gap-1 px-3 py-6">
-      <div className="px-3 pb-6 text-display-sm text-primary">HostelDesk</div>
+      <div className="flex items-center gap-3 px-3 pb-6">
+        <img src={logo} alt="HostelDesk" className="h-8 w-8 rounded-md" />
+        <span className="text-display-sm text-primary">HostelDesk</span>
+      </div>
       {items.map((item) => {
         const selected = item.id === active;
         const Icon = item.icon;

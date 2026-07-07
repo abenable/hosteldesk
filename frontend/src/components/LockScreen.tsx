@@ -4,6 +4,7 @@ import {
   generateTrialLicense,
   type LicensePayload,
 } from '../lib/tauri.ts';
+import logo from '../assets/logo.png';
 import { Button } from './ui/Button.tsx';
 import { Textarea } from './ui/Textarea.tsx';
 
@@ -49,6 +50,11 @@ export function LockScreen({ onActivated }: Props) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-canvas p-4">
       <div className="w-full max-w-md rounded-md bg-canvas p-8 shadow-card">
+        <img
+          src={logo}
+          alt="HostelDesk"
+          className="mx-auto mb-4 h-24 w-24 rounded-lg"
+        />
         <h1 className="mb-2 text-center text-display-md text-ink">
           Activate HostelDesk
         </h1>
