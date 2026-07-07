@@ -5,7 +5,7 @@
   "identifier": "com.hosteldesk.hosteldesk",
   "build": {
     "beforeBuildCommand": "",
-    "beforeDevCommand": "cd frontend && npm run dev",
+    "beforeDevCommand": "sh -c 'cd \"$(git rev-parse --show-toplevel)/frontend\" && npm run dev'",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../../frontend/dist"
   },
