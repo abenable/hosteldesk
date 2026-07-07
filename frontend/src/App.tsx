@@ -66,19 +66,21 @@ export default function App() {
     );
   }
 
-  if (!license) {
+  if (!onboardingDone) {
     return (
       <>
-        <LockScreen onActivated={setLicense} />
+        <Onboarding />
         <ToastContainer />
       </>
     );
   }
 
-  if (!onboardingDone) {
+  // ponytail: onboarding activates the license on the review step; this
+  // fallback only shows if onboarding is done but the license later went missing.
+  if (!license) {
     return (
       <>
-        <Onboarding />
+        <LockScreen onActivated={setLicense} />
         <ToastContainer />
       </>
     );

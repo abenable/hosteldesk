@@ -29,6 +29,7 @@ export function Layout({
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [checkInOpen, setCheckInOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
 
   const handleSelect = (view: View) => {
     onSelect(view);
@@ -36,9 +37,18 @@ export function Layout({
   };
 
   return (
-    <div className="flex min-h-screen bg-canvas text-ink">
-      <aside className="hidden w-64 shrink-0 flex-col border-r border-hairline bg-canvas md:flex">
-        <Sidebar active={active} onSelect={onSelect} />
+    <div className="flex h-screen overflow-hidden bg-canvas text-ink">
+      <aside
+        className={`hidden min-h-0 shrink-0 flex-col overflow-y-auto border-r border-hairline bg-canvas transition-[width] duration-200 md:flex ${
+          collapsed ? 'w-20' : 'w-64'
+        }`}
+      >
+        <Sidebar
+          active={active}
+          onSelect={onSelect}
+          collapsed={collapsed}
+          onToggleCollapse={() => setCollapsed((c) => !c)}
+        />
       </aside>
 
       <Dialog.Root open={drawerOpen} onOpenChange={setDrawerOpen}>
@@ -54,7 +64,7 @@ export function Layout({
         </Dialog.Portal>
       </Dialog.Root>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 min-h-0 flex-1 flex-col">
         <Topbar
           title={TITLES[active]}
           hostelName={hostelName}
@@ -63,7 +73,7 @@ export function Layout({
           onCheckIn={active === 'dashboard' ? undefined : () => setCheckInOpen(true)}
           onSelectView={onSelect}
         />
-        <main className="flex-1 overflow-auto px-4 py-6 md:px-8">
+        <main className="min-h-0 flex-1 overflow-auto px-4 py-6 md:px-8">
           <div className="mx-auto max-w-6xl">{children}</div>
         </main>
       </div>

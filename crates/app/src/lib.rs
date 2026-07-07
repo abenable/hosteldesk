@@ -58,6 +58,18 @@ pub fn run() {
             let license_state = load_license_state(app.handle())?;
             app.manage(license_state);
 
+            // Set the window/taskbar icon at runtime (Tauri v2 has no window
+            // config field for this; the embedded default is generic).
+            if let Some(window) = app.get_webview_window("main") {
+                let icon = tauri::image::Image::from_bytes(include_bytes!(
+                    "../icons/icon.png"
+                ))
+                .map_err(|e| format!("invalid icon: {e}"))?;
+                window
+                    .set_icon(icon)
+                    .map_err(|e| format!("could not set window icon: {e}"))?;
+            }
+
             Ok(())
         })
         .invoke_handler(generate_handler![

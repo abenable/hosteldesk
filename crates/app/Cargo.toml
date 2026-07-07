@@ -12,7 +12,7 @@ open = "5"
 pdf = { path = "../pdf" }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["image-png"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
