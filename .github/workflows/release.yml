@@ -2,8 +2,8 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
 
 jobs:
   release:
@@ -46,8 +46,8 @@ jobs:
           projectPath: ./crates/app
           configPath: ./crates/app/tauri.conf.json
           args: ${{ matrix.args }}
-          tagName: ${{ github.ref_name }}
-          releaseName: ${{ github.ref_name }}
-          releaseBody: 'See the assets below to download this release.'
+          tagName: release-${{ github.run_number }}
+          releaseName: Release ${{ github.run_number }}
+          releaseBody: 'Automated release for merge to main.'
           releaseDraft: true
           prerelease: false
