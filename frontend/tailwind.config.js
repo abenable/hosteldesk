@@ -23,6 +23,17 @@ export default {
         'error-text': '#c13515',
         'legal-link': '#428bff',
         scrim: '#000000',
+        sidebar: {
+          DEFAULT: '#ffffff',
+          foreground: '#222222',
+          accent: '#f7f7f7',
+          'accent-foreground': '#222222',
+          border: '#dddddd',
+          ring: '#222222',
+          primary: '#ff385c',
+          'primary-foreground': '#ffffff',
+        },
+        'muted-bg': '#f7f7f7',
       },
       fontFamily: {
         sans: [

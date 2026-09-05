@@ -72,21 +72,18 @@ export const CloseIcon = (p: IconProps) => (
   </svg>
 );
 
+
+
+
 export const ChevronDownIcon = (p: IconProps) => (
   <svg {...base(p)}>
     <path d="m6 9 6 6 6-6" />
   </svg>
 );
 
-export const ChevronLeftIcon = (p: IconProps) => (
+export const CheckIcon = (p: IconProps) => (
   <svg {...base(p)}>
-    <path d="m15 18-6-6 6-6" />
-  </svg>
-);
-
-export const ChevronRightIcon = (p: IconProps) => (
-  <svg {...base(p)}>
-    <path d="m9 18 6-6-6-6" />
+    <path d="M20 6 9 17l-5-5" />
   </svg>
 );
 
@@ -97,9 +94,24 @@ export const SearchIcon = (p: IconProps) => (
   </svg>
 );
 
+export const UserCircleIcon = (p: IconProps) => (
+  <svg {...base(p)}>
+    <circle cx="12" cy="12" r="10" />
+    <path d="M12 7a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" />
+    <path d="M5.5 19a7.5 7.5 0 0 1 13 0" />
+  </svg>
+);
+
+export const DotsVerticalIcon = (p: IconProps) => (
+  <svg {...base(p)}>
+    <path d="M12 3h.01M12 12h.01M12 21h.01" />
+  </svg>
+);
+
 export const LogoutIcon = (p: IconProps) => (
   <svg {...base(p)}>
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
     <path d="m16 17 5-5-5-5M21 12H9" />
   </svg>
 );
+
