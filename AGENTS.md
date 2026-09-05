@@ -58,3 +58,13 @@ Before completing any task, review the code against these security and quality p
 - **SQL injection prevention** — use `sqlx` query macros (`query!` / `query_as!`) with bound parameters. Never interpolate user input into SQL strings.
 - **Error handling** — use `Result<T, E>` and propagate errors explicitly. Avoid panics in normal control flow.
 - **No `.unwrap()` in production code** — use `?`, `.context(...)`, `unwrap_or`, `unwrap_or_else`, or explicit `match` instead. `.unwrap()` / `.expect()` are acceptable only in tests.
+
+## 8. Migrations
+
+Migrations live in `crates/db/migrations/` and are applied by `sqlx::migrate!`.
+
+- Migrations are **append-only** once shipped or applied to any teammate's or user's database. Never edit a migration file that has ever run against a real DB; fix forward with a new timestamped file.
+- A broken development DB can be recovered by deleting `<app-data-dir>/hosteldesk.db*` (including `-wal` and `-shm` files) and relaunching the app.
+- Table-rewrite migrations must use explicit column lists: `INSERT INTO new (a, b) SELECT a, b FROM old`. Never use `SELECT *`, because column-order drift silently corrupts data.
+- A migration that drops indexes must re-create the equivalent indexes at the end of the same file.
+- Use `-- no-transaction` only for migrations that toggle `PRAGMA foreign_keys`; everything else runs inside sqlx's default transaction.

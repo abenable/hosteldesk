@@ -1,20 +1,30 @@
 -- no-transaction
 --
--- Enforce valid decimal strings on monetary columns and positive integer receipt
--- numbers. Tables are re-created because SQLite cannot add CHECK constraints to
--- existing columns with ALTER TABLE. Foreign keys are disabled for the rewrite
--- so that tables can be recreated in place without cascading reference updates.
+-- Initial Hostel Desk schema.
+--
+-- This is a squash of the pre-1.0 migration chain into one clean baseline.
+-- The previous chain is safe to replace because no production/installed
+-- databases exist in the wild.
+--
+-- All core tables carry a hostel_id to make future multi-property support a
+-- non-breaking migration instead of a painful retrofit.
+--
+-- Monetary columns are stored as TEXT decimal strings and validated with GLOB
+-- constraints. Never use REAL/floating-point for money.
 
-PRAGMA foreign_keys = OFF;
+PRAGMA foreign_keys = ON;
 
--- Rename the existing tables so we can recreate them with the same names.
-ALTER TABLE rooms RENAME TO old_rooms;
-ALTER TABLE allocations RENAME TO old_allocations;
-ALTER TABLE payments RENAME TO old_payments;
-ALTER TABLE receipts RENAME TO old_receipts;
-ALTER TABLE expenses RENAME TO old_expenses;
+CREATE TABLE IF NOT EXISTS hostels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    address TEXT,
+    phone TEXT,
+    currency TEXT NOT NULL DEFAULT 'UGX',
+    branding_logo_path TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
-CREATE TABLE rooms (
+CREATE TABLE IF NOT EXISTS rooms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hostel_id INTEGER NOT NULL,
     room_number TEXT NOT NULL,
@@ -22,6 +32,8 @@ CREATE TABLE rooms (
     capacity INTEGER NOT NULL DEFAULT 1,
     floor INTEGER,
     rate_per_period TEXT NOT NULL,
+    billing_period TEXT NOT NULL DEFAULT 'semester'
+        CHECK (billing_period IN ('night', 'week', 'month', 'semester')),
     status TEXT NOT NULL DEFAULT 'vacant',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (hostel_id) REFERENCES hostels(id) ON DELETE CASCADE,
@@ -30,20 +42,28 @@ CREATE TABLE rooms (
     CHECK (capacity > 0),
     CHECK (
         rate_per_period GLOB '*[0-9]*'
-        AND rate_per_period NOT GLOB '*[!0-9.+-]*'
+        AND rate_per_period NOT GLOB '*[^0-9.+-]*'
         AND length(rate_per_period) - length(replace(rate_per_period, '.', '')) <= 1
         AND substr(rate_per_period, 1, 1) GLOB '[0-9.+-]'
     )
 );
 
-INSERT INTO rooms SELECT * FROM old_rooms;
+CREATE TABLE IF NOT EXISTS residents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    full_name TEXT NOT NULL,
+    phone TEXT,
+    email TEXT,
+    id_number TEXT,
+    next_of_kin TEXT,
+    photo_path TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
-CREATE TABLE allocations (
+CREATE TABLE IF NOT EXISTS allocations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hostel_id INTEGER NOT NULL,
     resident_id INTEGER NOT NULL,
     room_id INTEGER NOT NULL,
-    bed_id INTEGER,
     check_in_date DATE NOT NULL,
     check_out_date DATE,
     expected_checkout DATE NOT NULL,
@@ -53,19 +73,16 @@ CREATE TABLE allocations (
     FOREIGN KEY (hostel_id) REFERENCES hostels(id) ON DELETE CASCADE,
     FOREIGN KEY (resident_id) REFERENCES residents(id) ON DELETE RESTRICT,
     FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE RESTRICT,
-    FOREIGN KEY (bed_id) REFERENCES beds(id) ON DELETE SET NULL,
     CHECK (status IN ('active', 'checked_out')),
     CHECK (
         rate_agreed GLOB '*[0-9]*'
-        AND rate_agreed NOT GLOB '*[!0-9.+-]*'
+        AND rate_agreed NOT GLOB '*[^0-9.+-]*'
         AND length(rate_agreed) - length(replace(rate_agreed, '.', '')) <= 1
         AND substr(rate_agreed, 1, 1) GLOB '[0-9.+-]'
     )
 );
 
-INSERT INTO allocations SELECT * FROM old_allocations;
-
-CREATE TABLE payments (
+CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hostel_id INTEGER NOT NULL,
     allocation_id INTEGER NOT NULL,
@@ -83,15 +100,13 @@ CREATE TABLE payments (
     CHECK (payment_method IN ('cash', 'mobile_money', 'bank_transfer', 'card')),
     CHECK (
         amount GLOB '*[0-9]*'
-        AND amount NOT GLOB '*[!0-9.+-]*'
+        AND amount NOT GLOB '*[^0-9.+-]*'
         AND length(amount) - length(replace(amount, '.', '')) <= 1
         AND substr(amount, 1, 1) GLOB '[0-9.+-]'
     )
 );
 
-INSERT INTO payments SELECT * FROM old_payments;
-
-CREATE TABLE receipts (
+CREATE TABLE IF NOT EXISTS receipts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hostel_id INTEGER NOT NULL,
     payment_id INTEGER NOT NULL,
@@ -109,9 +124,7 @@ CREATE TABLE receipts (
     )
 );
 
-INSERT INTO receipts SELECT * FROM old_receipts;
-
-CREATE TABLE expenses (
+CREATE TABLE IF NOT EXISTS expenses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hostel_id INTEGER NOT NULL,
     category TEXT NOT NULL,
@@ -122,19 +135,46 @@ CREATE TABLE expenses (
     FOREIGN KEY (hostel_id) REFERENCES hostels(id) ON DELETE CASCADE,
     CHECK (
         amount GLOB '*[0-9]*'
-        AND amount NOT GLOB '*[!0-9.+-]*'
+        AND amount NOT GLOB '*[^0-9.+-]*'
         AND length(amount) - length(replace(amount, '.', '')) <= 1
         AND substr(amount, 1, 1) GLOB '[0-9.+-]'
     )
 );
 
-INSERT INTO expenses SELECT * FROM old_expenses;
+CREATE TABLE IF NOT EXISTS staff_users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    hostel_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    username TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'manager',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (hostel_id) REFERENCES hostels(id) ON DELETE CASCADE,
+    UNIQUE (hostel_id, username),
+    CHECK (role IN ('admin', 'manager'))
+);
 
--- Drop the old tables after their replacements are populated.
-DROP TABLE old_rooms;
-DROP TABLE old_allocations;
-DROP TABLE old_payments;
-DROP TABLE old_receipts;
-DROP TABLE old_expenses;
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    action TEXT NOT NULL,
+    table_affected TEXT,
+    record_id TEXT,
+    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES staff_users(id) ON DELETE SET NULL
+);
 
-PRAGMA foreign_keys = ON;
+CREATE INDEX IF NOT EXISTS idx_allocations_hostel_status
+    ON allocations(hostel_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_allocations_resident
+    ON allocations(resident_id);
+
+CREATE INDEX IF NOT EXISTS idx_payments_hostel_date
+    ON payments(hostel_id, payment_date);
+
+CREATE INDEX IF NOT EXISTS idx_payments_allocation
+    ON payments(allocation_id);
+
+CREATE INDEX IF NOT EXISTS idx_receipts_payment
+    ON receipts(payment_id);
