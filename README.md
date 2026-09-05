@@ -2,6 +2,18 @@
 
 A local-first desktop application for hostel managers. Built with a Rust (Tauri v2) backend and a React + TypeScript + Tailwind frontend.
 
+## Install (Windows)
+
+Three options, all built automatically on each `v*` release:
+
+1. **Setup installer (.exe)** — download `HostelDesk_<version>_x64-setup.exe` from [Releases](https://github.com/abenable/hosteldesk/releases) and run it. Per-user install, no admin required.
+2. **MSI package (.msi)** — download `HostelDesk_<version>_x64_en-US.msi` for machine-wide installs or IT deployment (`msiexec /i HostelDesk_<version>_x64_en-US.msi /qn` for silent).
+3. **PowerShell one-liner** — resolves and installs the latest release automatically:
+
+   ```powershell
+   powershell -c "irm https://raw.githubusercontent.com/abenable/hosteldesk/main/scripts/install.ps1|iex"
+   ```
+
 ## Quick start
 
 ```sh
