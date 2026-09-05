@@ -20,9 +20,19 @@ pub struct ReceiptPayload {
     pub date: NaiveDate,
     /// Outstanding balance after the payment.
     pub balance: Decimal,
+    /// ISO currency code (e.g. "USD") used to prefix monetary amounts.
+    pub currency_code: String,
+    /// Optional footer text rendered at the bottom of the receipt.
+    pub footer_text: Option<String>,
+    /// Optional path to a logo image to render at the top of the receipt.
+    pub logo_path: Option<String>,
 }
 
 impl ReceiptPayload {
+    fn format_amount(&self, amount: Decimal) -> String {
+        format!("{} {}", self.currency_code, amount)
+    }
+
     /// Format the receipt as plain text for rendering or testing.
     pub fn format_text(&self) -> String {
         format!(
@@ -30,9 +40,9 @@ impl ReceiptPayload {
             hostel = self.hostel_name,
             receipt_no = self.receipt_number,
             resident = self.resident_name,
-            amount = self.amount,
+            amount = self.format_amount(self.amount),
             date = self.date.format("%Y-%m-%d"),
-            balance = self.balance,
+            balance = self.format_amount(self.balance),
         )
     }
 }
@@ -58,9 +68,31 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
     let line_height: f32 = 7.0;
     let x: f32 = 20.0;
 
-    for (index, line) in text.lines().enumerate() {
-        let y = start_y - (index as f32 * line_height);
+    // Leave room at the top when a logo is configured.
+    let logo_offset: f32 = if payload.logo_path.is_some() {
+        30.0
+    } else {
+        0.0
+    };
+    let mut y = start_y - logo_offset;
+
+    for line in text.lines() {
         current_layer.use_text(line, 12.0, Mm(x), Mm(y), &font);
+        y -= line_height;
+    }
+
+    if let Some(footer) = &payload.footer_text {
+        current_layer.use_text(footer.as_str(), 10.0, Mm(x), Mm(20.0), &font);
+    }
+
+    // ponytail: embedding a logo needs printpdf's `image` feature. Enabling it
+    // pulls in image v0.24.* plus decoder crates that are not currently in
+    // Cargo.lock, so an existing logo path is ignored rather than blocking
+    // receipt generation.
+    if let Some(logo_path) = &payload.logo_path {
+        if Path::new(logo_path).is_file() {
+            eprintln!("pdf: ignoring logo at {logo_path:?}; image feature not enabled");
+        }
     }
 
     doc.save(&mut writer)?;
@@ -81,6 +113,9 @@ mod tests {
             amount: Decimal::from_str("150.50").unwrap(),
             date: NaiveDate::from_ymd_opt(2024, 3, 15).unwrap(),
             balance: Decimal::from_str("49.50").unwrap(),
+            currency_code: "USD".to_string(),
+            footer_text: None,
+            logo_path: None,
         };
 
         let formatted = payload.format_text();
@@ -98,16 +133,16 @@ mod tests {
             "missing resident name: {formatted}"
         );
         assert!(
-            formatted.contains("Amount Paid: 150.50"),
-            "missing amount: {formatted}"
+            formatted.contains("Amount Paid: USD 150.50"),
+            "missing or malformed amount: {formatted}"
         );
         assert!(
             formatted.contains("Date: 2024-03-15"),
             "missing date: {formatted}"
         );
         assert!(
-            formatted.contains("Balance: 49.50"),
-            "missing balance: {formatted}"
+            formatted.contains("Balance: USD 49.50"),
+            "missing or malformed balance: {formatted}"
         );
     }
 
@@ -120,6 +155,9 @@ mod tests {
             amount: Decimal::from_str("200.00").unwrap(),
             date: NaiveDate::from_ymd_opt(2024, 6, 1).unwrap(),
             balance: Decimal::from_str("0.00").unwrap(),
+            currency_code: "USD".to_string(),
+            footer_text: Some("Thank you for your stay!".to_string()),
+            logo_path: Some("/nonexistent/logo.png".to_string()),
         };
         let path = std::env::temp_dir().join(format!(
             "hosteldesk_receipt_test_{}.pdf",
