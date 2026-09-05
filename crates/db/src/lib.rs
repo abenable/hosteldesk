@@ -9,18 +9,18 @@ use std::str::FromStr;
 use std::time::Duration;
 use tracing::{debug, error, info, instrument};
 
-/// Fixed Argon2 hash used to equalize login timing when a username does not exist.
+/// Fixed Argon2 hash used to equalize login timing when an email does not exist.
 ///
 /// The hash has no corresponding password and is never used for authentication.
-/// Verifying against it ensures an unknown username still performs one Argon2
+/// Verifying against it ensures an unknown email still performs one Argon2
 /// verification, matching the work done for a wrong password against a real
-/// username.
+/// email.
 const DUMMY_PASSWORD_HASH: &str =
     "$argon2id$v=19$m=19456,t=2,p=1$dUTZ/yeSMQlV7a3m/Fl6dg$c3e1mge9bB8E/jomvoijodaCH200x8hfZ8jY+iKIBUM";
 
 /// Hash a plain-text password using Argon2id.
 ///
-/// Returns a PHC-encoded string suitable for storage in `staff_users.password_hash`.
+/// Returns a PHC-encoded string suitable for storage in `users.password_hash`.
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
@@ -257,15 +257,15 @@ impl DbPool {
     pub async fn complete_onboarding(
         &self,
         input: CompleteOnboarding,
-    ) -> anyhow::Result<StaffUser> {
+    ) -> anyhow::Result<User> {
         if input.hostel.name.trim().is_empty() {
             anyhow::bail!("hostel name is required");
         }
         if input.admin_name.trim().is_empty() {
             anyhow::bail!("admin name is required");
         }
-        if input.username.trim().is_empty() {
-            anyhow::bail!("username is required");
+        if input.email.trim().is_empty() {
+            anyhow::bail!("email is required");
         }
 
         let mut tx = self.inner.begin_with("BEGIN IMMEDIATE").await.inspect_err(
@@ -298,21 +298,21 @@ impl DbPool {
 
         let user_id = sqlx::query(
             r#"
-            INSERT INTO staff_users (hostel_id, name, username, password_hash, role)
+            INSERT INTO users (hostel_id, full_name, email, password_hash, role)
             VALUES (?1, ?2, ?3, ?4, 'admin')
             "#,
         )
         .bind(hostel_id)
         .bind(input.admin_name.trim())
-        .bind(input.username.trim())
+        .bind(input.email.trim())
         .bind(input.password_hash)
         .execute(&mut *tx)
         .await
         .inspect_err(|e| error!(error = %e, "database error inserting onboarding admin"))?
         .last_insert_rowid();
 
-        let user = sqlx::query_as::<_, StaffUser>(
-            "SELECT id, hostel_id, name, username, role, created_at FROM staff_users WHERE id = ?1",
+        let user = sqlx::query_as::<_, User>(
+            "SELECT id, hostel_id, full_name, email, role, created_at FROM users WHERE id = ?1",
         )
         .bind(user_id)
         .fetch_one(&mut *tx)
@@ -329,29 +329,29 @@ impl DbPool {
 
     /// Insert a new staff user after validating the role.
     #[instrument(skip(self, user))]
-    pub async fn create_staff_user(&self, user: NewStaffUser) -> anyhow::Result<i64> {
+    pub async fn create_user(&self, user: NewUser) -> anyhow::Result<i64> {
         if !matches!(user.role.as_str(), "admin" | "manager") {
             anyhow::bail!("role must be 'admin' or 'manager'");
         }
 
-        debug!(hostel_id = user.hostel_id, username = %user.username, "inserting staff user");
+        debug!(hostel_id = user.hostel_id, email = %user.email, "inserting user");
         let id = sqlx::query(
             r#"
-            INSERT INTO staff_users (hostel_id, name, username, password_hash, role)
+            INSERT INTO users (hostel_id, full_name, email, password_hash, role)
             VALUES (?1, ?2, ?3, ?4, ?5)
             "#,
         )
         .bind(user.hostel_id)
-        .bind(user.name)
-        .bind(user.username)
+        .bind(user.full_name)
+        .bind(user.email)
         .bind(user.password_hash)
         .bind(user.role)
         .execute(&self.inner)
         .await
-        .inspect_err(|e| error!(error = %e, "database error inserting staff user"))?
+        .inspect_err(|e| error!(error = %e, "database error inserting user"))?
         .last_insert_rowid();
 
-        info!(staff_user_id = id, "staff user inserted");
+        info!(user_id = id, "user inserted");
         Ok(id)
     }
 
@@ -359,124 +359,124 @@ impl DbPool {
     ///
     /// Returns `None` when the id does not exist.
     #[instrument(skip(self))]
-    pub async fn get_staff_user_by_id(&self, user_id: i64) -> anyhow::Result<Option<StaffUser>> {
-        debug!(user_id, "fetching staff user by id");
-        let user = sqlx::query_as::<_, StaffUser>(
-            "SELECT id, hostel_id, name, username, role, created_at FROM staff_users WHERE id = ?1",
+    pub async fn get_user_by_id(&self, user_id: i64) -> anyhow::Result<Option<User>> {
+        debug!(user_id, "fetching user by id");
+        let user = sqlx::query_as::<_, User>(
+            "SELECT id, hostel_id, full_name, email, role, created_at FROM users WHERE id = ?1",
         )
         .bind(user_id)
         .fetch_optional(&self.inner)
         .await
-        .inspect_err(|e| error!(error = %e, user_id, "database error fetching staff user"))?;
+        .inspect_err(|e| error!(error = %e, user_id, "database error fetching user"))?;
         Ok(user)
     }
 
-    /// Authenticate a staff user by username and password.
+    /// Authenticate a staff user by email and password.
     ///
     /// Returns the matching user (without their password hash) when credentials are valid.
     /// A single query fetches every candidate row so the number of database
-    /// round-trips stays constant regardless of how many hostels share a username.
+    /// round-trips stays constant regardless of how many hostels share an email.
     #[instrument(skip(self, password))]
-    pub async fn authenticate_staff_user(
+    pub async fn authenticate_user(
         &self,
-        username: &str,
+        email: &str,
         password: &str,
-    ) -> anyhow::Result<Option<StaffUser>> {
-        debug!(%username, "authenticating staff user");
+    ) -> anyhow::Result<Option<User>> {
+        debug!(%email, "authenticating user");
 
         let rows = sqlx::query(
             r#"
-            SELECT id, hostel_id, name, username, role, created_at, password_hash
-            FROM staff_users
-            WHERE username = ?1
+            SELECT id, hostel_id, full_name, email, role, created_at, password_hash
+            FROM users
+            WHERE email = ?1
             "#,
         )
-        .bind(username)
+        .bind(email)
         .fetch_all(&self.inner)
         .await
-        .inspect_err(|e| error!(error = %e, %username, "database error fetching staff user"))?;
+        .inspect_err(|e| error!(error = %e, %email, "database error fetching user"))?;
 
         if rows.is_empty() {
             let _ = verify_password(password, DUMMY_PASSWORD_HASH)?;
-            debug!(%username, "authentication failed");
+            debug!(%email, "authentication failed");
             return Ok(None);
         }
 
         for row in rows {
-            let user = StaffUser {
+            let user = User {
                 id: row.try_get("id")?,
                 hostel_id: row.try_get("hostel_id")?,
-                name: row.try_get("name")?,
-                username: row.try_get("username")?,
+                full_name: row.try_get("full_name")?,
+                email: row.try_get("email")?,
                 role: row.try_get("role")?,
                 created_at: row.try_get("created_at")?,
             };
             let hash: String = row.try_get("password_hash")?;
 
             if verify_password(password, &hash)? {
-                info!(user_id = user.id, "staff user authenticated");
+                info!(user_id = user.id, "user authenticated");
                 return Ok(Some(user));
             }
         }
 
-        debug!(%username, "authentication failed");
+        debug!(%email, "authentication failed");
         Ok(None)
     }
 
-    /// Update a staff user's name, username, role and optionally their password.
+    /// Update a staff user's full name, email, role and optionally their password.
     ///
     /// Returns the updated user row. The caller is responsible for hashing any
     /// supplied password before passing it in.
     #[instrument(skip(self, password_hash))]
-    pub async fn update_staff_user(
+    pub async fn update_user(
         &self,
         user_id: i64,
-        name: String,
-        username: String,
+        full_name: String,
+        email: String,
         role: String,
         password_hash: Option<String>,
-    ) -> anyhow::Result<StaffUser> {
+    ) -> anyhow::Result<User> {
         if !matches!(role.as_str(), "admin" | "manager") {
             anyhow::bail!("role must be 'admin' or 'manager'");
         }
 
-        debug!(user_id, %username, "updating staff user");
+        debug!(user_id, %email, "updating user");
 
         let row = if let Some(hash) = password_hash {
-            sqlx::query_as::<_, StaffUser>(
+            sqlx::query_as::<_, User>(
                 r#"
-                UPDATE staff_users
-                SET name = ?1, username = ?2, role = ?3, password_hash = ?4
+                UPDATE users
+                SET full_name = ?1, email = ?2, role = ?3, password_hash = ?4
                 WHERE id = ?5
-                RETURNING id, hostel_id, name, username, role, created_at
+                RETURNING id, hostel_id, full_name, email, role, created_at
                 "#,
             )
-            .bind(&name)
-            .bind(&username)
+            .bind(&full_name)
+            .bind(&email)
             .bind(&role)
             .bind(&hash)
             .bind(user_id)
             .fetch_one(&self.inner)
             .await
         } else {
-            sqlx::query_as::<_, StaffUser>(
+            sqlx::query_as::<_, User>(
                 r#"
-                UPDATE staff_users
-                SET name = ?1, username = ?2, role = ?3
+                UPDATE users
+                SET full_name = ?1, email = ?2, role = ?3
                 WHERE id = ?4
-                RETURNING id, hostel_id, name, username, role, created_at
+                RETURNING id, hostel_id, full_name, email, role, created_at
                 "#,
             )
-            .bind(&name)
-            .bind(&username)
+            .bind(&full_name)
+            .bind(&email)
             .bind(&role)
             .bind(user_id)
             .fetch_one(&self.inner)
             .await
         }
-        .inspect_err(|e| error!(error = %e, user_id, "database error updating staff user"))?;
+        .inspect_err(|e| error!(error = %e, user_id, "database error updating user"))?;
 
-        info!(user_id = row.id, "staff user updated");
+        info!(user_id = row.id, "user updated");
         Ok(row)
     }
 
@@ -484,15 +484,15 @@ impl DbPool {
     ///
     /// Returns `None` when no user with the supplied id exists.
     #[instrument(skip(self))]
-    pub async fn get_staff_user_role(&self, user_id: i64) -> anyhow::Result<Option<String>> {
-        debug!(user_id, "fetching staff user role");
+    pub async fn get_user_role(&self, user_id: i64) -> anyhow::Result<Option<String>> {
+        debug!(user_id, "fetching user role");
 
-        let role: Option<String> = sqlx::query_scalar("SELECT role FROM staff_users WHERE id = ?1")
+        let role: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = ?1")
             .bind(user_id)
             .fetch_optional(&self.inner)
             .await
             .inspect_err(
-                |e| error!(error = %e, user_id, "database error fetching staff user role"),
+                |e| error!(error = %e, user_id, "database error fetching user role"),
             )?;
 
         Ok(role)
@@ -503,17 +503,17 @@ impl DbPool {
     /// Returns `Ok(())` if the user existed and was deleted, or an error if the
     /// user was the only admin remaining.
     #[instrument(skip(self))]
-    pub async fn delete_staff_user(&self, user_id: i64) -> anyhow::Result<()> {
-        debug!(user_id, "deleting staff user");
+    pub async fn delete_user(&self, user_id: i64) -> anyhow::Result<()> {
+        debug!(user_id, "deleting user");
 
-        let user: Option<StaffUser> = sqlx::query_as::<_, StaffUser>(
-            "SELECT id, hostel_id, name, username, role, created_at FROM staff_users WHERE id = ?1",
+        let user: Option<User> = sqlx::query_as::<_, User>(
+            "SELECT id, hostel_id, full_name, email, role, created_at FROM users WHERE id = ?1",
         )
         .bind(user_id)
         .fetch_optional(&self.inner)
         .await
         .inspect_err(
-            |e| error!(error = %e, user_id, "database error fetching staff user for delete"),
+            |e| error!(error = %e, user_id, "database error fetching user for delete"),
         )?;
 
         let user = match user {
@@ -523,7 +523,7 @@ impl DbPool {
 
         if user.role == "admin" {
             let admin_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM staff_users WHERE hostel_id = ?1 AND role = 'admin'",
+                "SELECT COUNT(*) FROM users WHERE hostel_id = ?1 AND role = 'admin'",
             )
             .bind(user.hostel_id)
             .fetch_one(&self.inner)
@@ -535,13 +535,13 @@ impl DbPool {
             }
         }
 
-        sqlx::query("DELETE FROM staff_users WHERE id = ?1")
+        sqlx::query("DELETE FROM users WHERE id = ?1")
             .bind(user_id)
             .execute(&self.inner)
             .await
-            .inspect_err(|e| error!(error = %e, user_id, "database error deleting staff user"))?;
+            .inspect_err(|e| error!(error = %e, user_id, "database error deleting user"))?;
 
-        info!(user_id, "staff user deleted");
+        info!(user_id, "user deleted");
         Ok(())
     }
 
@@ -714,7 +714,7 @@ impl DbPool {
               h.id AS id, h.name AS name, h.address AS address, h.phone AS phone,
               h.currency AS currency, h.branding_logo_path AS branding_logo_path,
               (SELECT COUNT(*) FROM rooms r WHERE r.hostel_id = h.id) AS room_count,
-              (SELECT COUNT(*) FROM staff_users s WHERE s.hostel_id = h.id AND s.role = 'admin') AS admin_count,
+              (SELECT COUNT(*) FROM users s WHERE s.hostel_id = h.id AND s.role = 'admin') AS admin_count,
               0 AS onboarding_complete
             FROM hostels h
             WHERE h.id = ?1
@@ -760,7 +760,7 @@ impl DbPool {
             r#"
             SELECT
               (SELECT COUNT(*) FROM hostels) AS hostel_count,
-              (SELECT COUNT(*) FROM staff_users) AS staff_count
+              (SELECT COUNT(*) FROM users) AS staff_count
             "#,
         )
         .fetch_one(&self.inner)
@@ -1389,10 +1389,10 @@ impl DbPool {
 
     /// List staff users for a hostel, excluding password hashes.
     #[instrument(skip(self))]
-    pub async fn list_staff_users(&self, hostel_id: i64) -> anyhow::Result<Vec<StaffUser>> {
-        debug!(hostel_id, "listing staff users");
-        let rows = sqlx::query_as::<_, StaffUser>(
-            "SELECT id, hostel_id, name, username, role, created_at FROM staff_users WHERE hostel_id = ?1 ORDER BY id",
+    pub async fn list_users(&self, hostel_id: i64) -> anyhow::Result<Vec<User>> {
+        debug!(hostel_id, "listing users");
+        let rows = sqlx::query_as::<_, User>(
+            "SELECT id, hostel_id, full_name, email, role, created_at FROM users WHERE hostel_id = ?1 ORDER BY id",
         )
         .bind(hostel_id)
         .fetch_all(&self.inner)
@@ -1823,10 +1823,10 @@ mod tests {
         })
         .await
         .expect("add room");
-        pool.create_staff_user(NewStaffUser {
+        pool.create_user(NewUser {
             hostel_id: hostel.id,
-            name: "Admin".to_string(),
-            username: "admin".to_string(),
+            full_name: "Admin".to_string(),
+            email: "admin@example.com".to_string(),
             password_hash: hash_password("pw").expect("hash"),
             role: "admin".to_string(),
         })
@@ -2127,10 +2127,10 @@ mod tests {
             .await
             .expect("create hostel");
 
-        pool.create_staff_user(NewStaffUser {
+        pool.create_user(NewUser {
             hostel_id: hostel.id,
-            name: "Admin".to_string(),
-            username: "admin".to_string(),
+            full_name: "Admin".to_string(),
+            email: "admin@example.com".to_string(),
             password_hash: hash_password("correct-horse-battery-staple").expect("hash"),
             role: "admin".to_string(),
         })
@@ -2138,7 +2138,7 @@ mod tests {
         .expect("add admin");
 
         let user = pool
-            .authenticate_staff_user("admin", "wrong_password")
+            .authenticate_user("admin", "wrong_password")
             .await
             .expect("authenticate should not fail");
         assert!(user.is_none(), "wrong password should not authenticate");
@@ -2192,27 +2192,27 @@ mod tests {
         );
     }
 
-    /// A username can exist once per hostel. The single-query authenticator
+    /// An email can exist once per hostel. The single-query authenticator
     /// must still return the user matching the correct password and hostel.
     #[tokio::test]
-    async fn authenticate_unknown_username_still_performs_argon2_work() {
+    async fn authenticate_unknown_email_still_performs_argon2_work() {
         let pool = test_pool().await;
         let started = std::time::Instant::now();
 
         let user = pool
-            .authenticate_staff_user("definitely-not-a-real-username", "wrong_password")
+            .authenticate_user("definitely-not-a-real-email@example.com", "wrong_password")
             .await
-            .expect("authenticate unknown username");
+            .expect("authenticate unknown email");
 
-        assert!(user.is_none(), "unknown username must not authenticate");
+        assert!(user.is_none(), "unknown email must not authenticate");
         assert!(
             started.elapsed() >= std::time::Duration::from_millis(1),
-            "unknown username must perform Argon2 verification work"
+            "unknown email must perform Argon2 verification work"
         );
     }
 
     #[tokio::test]
-    async fn authenticate_returns_correct_user_when_username_spans_hostels() {
+    async fn authenticate_returns_correct_user_when_email_spans_hostels() {
         let pool = test_pool().await;
         let hostel_a = pool
             .create_hostel(NewHostel {
@@ -2235,19 +2235,19 @@ mod tests {
             .await
             .expect("create hostel b");
 
-        pool.create_staff_user(NewStaffUser {
+        pool.create_user(NewUser {
             hostel_id: hostel_a.id,
-            name: "A Manager".to_string(),
-            username: "manager".to_string(),
+            full_name: "A Manager".to_string(),
+            email: "manager@example.com".to_string(),
             password_hash: hash_password("password-a").expect("hash a"),
             role: "manager".to_string(),
         })
         .await
         .expect("create user a");
-        pool.create_staff_user(NewStaffUser {
+        pool.create_user(NewUser {
             hostel_id: hostel_b.id,
-            name: "B Manager".to_string(),
-            username: "manager".to_string(),
+            full_name: "B Manager".to_string(),
+            email: "manager@example.com".to_string(),
             password_hash: hash_password("password-b").expect("hash b"),
             role: "manager".to_string(),
         })
@@ -2255,7 +2255,7 @@ mod tests {
         .expect("create user b");
 
         let user_b = pool
-            .authenticate_staff_user("manager", "password-b")
+            .authenticate_user("manager", "password-b")
             .await
             .expect("authenticate should not fail")
             .expect("should find user b");
@@ -2264,7 +2264,7 @@ mod tests {
         assert_eq!(user_b.role, "manager");
 
         assert!(
-            pool.authenticate_staff_user("manager", "wrong-password")
+            pool.authenticate_user("manager", "wrong-password")
                 .await
                 .expect("authenticate should not fail")
                 .is_none(),
@@ -2496,7 +2496,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_resident_and_list_staff_users_round_trip() {
+    async fn update_resident_and_list_users_round_trip() {
         let pool = test_pool().await;
         let hostel = seed_hostel(&pool).await;
         let resident_id = seed_resident(&pool, "Mia").await;
@@ -2519,30 +2519,30 @@ mod tests {
         assert_eq!(detail.resident.full_name, "Mia Updated");
         assert_eq!(detail.resident.phone.as_deref(), Some("+256"));
 
-        pool.create_staff_user(NewStaffUser {
+        pool.create_user(NewUser {
             hostel_id: hostel.id,
-            name: "Admin".to_string(),
-            username: "admin".to_string(),
+            full_name: "Admin".to_string(),
+            email: "admin@example.com".to_string(),
             password_hash: hash_password("pw").expect("hash"),
             role: "admin".to_string(),
         })
         .await
         .expect("create staff");
 
-        let users = pool.list_staff_users(hostel.id).await.expect("list staff");
+        let users = pool.list_users(hostel.id).await.expect("list staff");
         assert_eq!(users.len(), 1);
         assert_eq!(users[0].name, "Admin");
     }
 
     #[tokio::test]
-    async fn update_staff_user_round_trip() {
+    async fn update_user_round_trip() {
         let pool = test_pool().await;
         let hostel = seed_hostel(&pool).await;
         let user_id = pool
-            .create_staff_user(NewStaffUser {
+            .create_user(NewUser {
                 hostel_id: hostel.id,
-                name: "Admin".to_string(),
-                username: "admin".to_string(),
+                full_name: "Admin".to_string(),
+                email: "admin@example.com".to_string(),
                 password_hash: hash_password("oldpw").expect("hash"),
                 role: "admin".to_string(),
             })
@@ -2550,7 +2550,7 @@ mod tests {
             .expect("create staff");
 
         let updated = pool
-            .update_staff_user(
+            .update_user(
                 user_id,
                 "Admin Updated".to_string(),
                 "admin2".to_string(),
@@ -2559,12 +2559,12 @@ mod tests {
             )
             .await
             .expect("update staff");
-        assert_eq!(updated.name, "Admin Updated");
-        assert_eq!(updated.username, "admin2");
+        assert_eq!(updated.full_name, "Admin Updated");
+        assert_eq!(updated.email, "admin2");
         assert_eq!(updated.role, "manager");
 
         let auth = pool
-            .authenticate_staff_user("admin2", "newpw")
+            .authenticate_user("admin2", "newpw")
             .await
             .expect("authenticate")
             .expect("user exists");
@@ -2976,7 +2976,7 @@ mod tests {
                 branding_logo_path: None,
             },
             admin_name: "First Admin".to_string(),
-            username: "first.admin".to_string(),
+            email: "first.admin@example.com".to_string(),
             password_hash: hash_password("password123").expect("hash"),
         };
 
@@ -2992,7 +2992,7 @@ mod tests {
             "onboarding must create exactly one hostel"
         );
         assert_eq!(
-            pool.list_staff_users(user.hostel_id)
+            pool.list_users(user.hostel_id)
                 .await
                 .expect("list staff")
                 .len(),
@@ -3114,57 +3114,57 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_staff_user_removes_user_and_protects_last_admin() {
+    async fn delete_user_removes_user_and_protects_last_admin() {
         let pool = test_pool().await;
         let hostel = seed_hostel(&pool).await;
 
         let admin_id = pool
-            .create_staff_user(NewStaffUser {
+            .create_user(NewUser {
                 hostel_id: hostel.id,
-                name: "Admin One".to_string(),
-                username: "admin1".to_string(),
+                full_name: "Admin One".to_string(),
+                email: "admin1@example.com".to_string(),
                 password_hash: hash_password("password123").expect("hash"),
                 role: "admin".to_string(),
             })
             .await
             .expect("create admin");
 
-        pool.delete_staff_user(admin_id)
+        pool.delete_user(admin_id)
             .await
             .expect_err("deleting the only admin should fail");
 
         let manager_id = pool
-            .create_staff_user(NewStaffUser {
+            .create_user(NewUser {
                 hostel_id: hostel.id,
-                name: "Manager One".to_string(),
-                username: "manager1".to_string(),
+                full_name: "Manager One".to_string(),
+                email: "manager1@example.com".to_string(),
                 password_hash: hash_password("password123").expect("hash"),
                 role: "manager".to_string(),
             })
             .await
             .expect("create manager");
 
-        pool.delete_staff_user(manager_id)
+        pool.delete_user(manager_id)
             .await
             .expect("deleting a manager should succeed");
-        let staff = pool.list_staff_users(hostel.id).await.expect("list staff");
+        let staff = pool.list_users(hostel.id).await.expect("list staff");
         assert_eq!(staff.len(), 1);
 
         let admin_two_id = pool
-            .create_staff_user(NewStaffUser {
+            .create_user(NewUser {
                 hostel_id: hostel.id,
-                name: "Admin Two".to_string(),
-                username: "admin2".to_string(),
+                full_name: "Admin Two".to_string(),
+                email: "admin2@example.com".to_string(),
                 password_hash: hash_password("password123").expect("hash"),
                 role: "admin".to_string(),
             })
             .await
             .expect("create second admin");
 
-        pool.delete_staff_user(admin_id)
+        pool.delete_user(admin_id)
             .await
             .expect("deleting admin when another exists should succeed");
-        let staff = pool.list_staff_users(hostel.id).await.expect("list staff");
+        let staff = pool.list_users(hostel.id).await.expect("list staff");
         assert_eq!(staff.len(), 1);
         assert_eq!(staff[0].id, admin_two_id);
     }

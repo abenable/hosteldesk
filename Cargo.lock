@@ -71,6 +71,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "db",
+ "glib",
  "hosteldesk-core",
  "license",
  "open",

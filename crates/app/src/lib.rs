@@ -95,6 +95,12 @@ pub(crate) fn license_path(app: &AppHandle) -> Result<std::path::PathBuf, String
 pub fn run() {
     tracing_subscriber::fmt::init();
 
+    // Match the app-id tauri-bundler already uses for packaged Linux builds
+    // (deb/AppImage), so a matching .desktop file's icon is picked up by the
+    // taskbar/dock under both X11 (WM_CLASS) and Wayland (app_id).
+    #[cfg(target_os = "linux")]
+    glib::set_prgname(Some("com.hosteldesk.app"));
+
     let result = tauri::Builder::default()
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
@@ -132,7 +138,7 @@ pub fn run() {
             commands::generate_and_open_receipt,
             commands::get_license_status,
             commands::activate_license,
-            commands::create_staff_user,
+            commands::create_user,
             commands::login,
             commands::complete_onboarding,
             commands::get_onboarding_status,
@@ -150,9 +156,9 @@ pub fn run() {
             commands::list_recent_activity,
             commands::update_hostel,
             commands::update_resident,
-            commands::list_staff_users,
-            commands::update_staff_user,
-            commands::delete_staff_user,
+            commands::list_users,
+            commands::update_user,
+            commands::delete_user,
             commands::backup_database,
             commands::list_backups,
             commands::restore_backup,
@@ -233,7 +239,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_and_login_staff_user_round_trip() {
+    async fn create_and_login_user_round_trip() {
         let url = temp_db_url();
         let pool = DbPool::open(&url).await.expect("open database");
 
@@ -252,10 +258,10 @@ mod tests {
 
         let password = "frontdesk_2024";
         let id = pool
-            .create_staff_user(db::NewStaffUser {
+            .create_user(db::NewUser {
                 hostel_id,
-                name: "Test User".to_string(),
-                username: "testuser".to_string(),
+                full_name: "Test User".to_string(),
+                email: "testuser@example.com".to_string(),
                 password_hash: db::hash_password(password).expect("hash"),
                 role: "manager".to_string(),
             })
@@ -264,15 +270,15 @@ mod tests {
         assert!(id > 0);
 
         let user = pool
-            .authenticate_staff_user("testuser", password)
+            .authenticate_user("testuser@example.com", password)
             .await
             .expect("authenticate")
             .expect("user should exist");
-        assert_eq!(user.username, "testuser");
+        assert_eq!(user.email, "testuser@example.com");
         assert_eq!(user.role, "manager");
 
         let none = pool
-            .authenticate_staff_user("testuser", "wrong_password")
+            .authenticate_user("testuser@example.com", "wrong_password")
             .await
             .expect("authenticate");
         assert!(none.is_none());
@@ -724,16 +730,16 @@ mod tests {
 
     async fn setup_staff_user(
         pool: &DbPool,
-        name: &str,
-        username: &str,
+        full_name: &str,
+        email: &str,
         role: &str,
     ) -> (i64, String) {
-        let password = format!("password_{username}");
+        let password = format!("password_{email}");
         let id = pool
-            .create_staff_user(db::NewStaffUser {
+            .create_user(db::NewUser {
                 hostel_id: 1,
-                name: name.to_string(),
-                username: username.to_string(),
+                full_name: full_name.to_string(),
+                email: email.to_string(),
                 password_hash: db::hash_password(&password).expect("hash"),
                 role: role.to_string(),
             })
@@ -743,7 +749,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manager_session_cannot_delete_staff_user() {
+    async fn manager_session_cannot_delete_user() {
         let url = temp_db_url();
         let pool = DbPool::open(&url).await.expect("open database");
 
@@ -768,8 +774,8 @@ mod tests {
         app.manage(AuthState::new());
         app.manage(auth_state);
 
-        let result = commands::delete_staff_user(
-            commands::DeleteStaffUserRequest { user_id: admin_id },
+        let result = commands::delete_user(
+            commands::DeleteUserRequest { user_id: admin_id },
             app.state::<DbPool>(),
             app.state::<LicenseState>(),
             app.state::<AuthState>(),
@@ -782,7 +788,7 @@ mod tests {
             "expected authorization error, got: {err}"
         );
 
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM staff_users WHERE id = ?1")
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = ?1")
             .bind(admin_id)
             .fetch_one(&app.state::<DbPool>().inner)
             .await
@@ -816,11 +822,11 @@ mod tests {
         app.manage(AuthState::new());
         app.manage(auth_state);
 
-        let result = commands::update_staff_user(
-            commands::UpdateStaffUserRequest {
+        let result = commands::update_user(
+            commands::UpdateUserRequest {
                 user_id: manager_id,
-                name: "Manager".to_string(),
-                username: "manager".to_string(),
+                full_name: "Manager".to_string(),
+                email: "manager".to_string(),
                 role: "admin".to_string(),
                 password: None,
             },
@@ -836,7 +842,7 @@ mod tests {
             "expected authorization error, got: {err}"
         );
 
-        let role: String = sqlx::query_scalar("SELECT role FROM staff_users WHERE id = ?1")
+        let role: String = sqlx::query_scalar("SELECT role FROM users WHERE id = ?1")
             .bind(manager_id)
             .fetch_one(&app.state::<DbPool>().inner)
             .await
@@ -844,7 +850,7 @@ mod tests {
         assert_eq!(role, "manager", "manager role should remain unchanged");
 
         // Ensure the change did not inadvertently land on the admin.
-        let admin_role: String = sqlx::query_scalar("SELECT role FROM staff_users WHERE id = ?1")
+        let admin_role: String = sqlx::query_scalar("SELECT role FROM users WHERE id = ?1")
             .bind(admin_id)
             .fetch_one(&app.state::<DbPool>().inner)
             .await

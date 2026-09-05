@@ -168,8 +168,8 @@ pub struct CompleteOnboarding {
     pub hostel: NewHostel,
     /// Display name for the first administrator.
     pub admin_name: String,
-    /// Login username for the first administrator.
-    pub username: String,
+    /// Login email for the first administrator.
+    pub email: String,
     /// PHC password hash for the first administrator.
     pub password_hash: String,
 }
@@ -210,21 +210,21 @@ pub struct HostelProfile {
 ///
 /// The `password_hash` is deliberately omitted; it should never leave the DB layer.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct StaffUser {
+pub struct User {
     pub id: i64,
     pub hostel_id: i64,
-    pub name: String,
-    pub username: String,
+    pub full_name: String,
+    pub email: String,
     pub role: String,
     pub created_at: DateTime<Utc>,
 }
 
 /// Data required to create a new staff user record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NewStaffUser {
+pub struct NewUser {
     pub hostel_id: i64,
-    pub name: String,
-    pub username: String,
+    pub full_name: String,
+    pub email: String,
     /// PHC-formatted password hash produced by [`hash_password`](crate::hash_password).
     pub password_hash: String,
     pub role: String,

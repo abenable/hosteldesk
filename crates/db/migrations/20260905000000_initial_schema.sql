@@ -10,7 +10,8 @@
 -- non-breaking migration instead of a painful retrofit.
 --
 -- Monetary columns are stored as TEXT decimal strings and validated with GLOB
--- constraints. Never use REAL/floating-point for money.
+-- constraints (unsigned, at most one '.', not all-zero). Never use
+-- REAL/floating-point for money.
 
 PRAGMA foreign_keys = ON;
 
@@ -28,7 +29,8 @@ CREATE TABLE IF NOT EXISTS rooms (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hostel_id INTEGER NOT NULL,
     room_number TEXT NOT NULL,
-    room_type TEXT NOT NULL DEFAULT 'single',
+    room_type TEXT NOT NULL DEFAULT 'single'
+        CHECK (room_type IN ('single', 'double', 'dorm')),
     capacity INTEGER NOT NULL DEFAULT 1,
     floor INTEGER,
     rate_per_period TEXT NOT NULL,
@@ -42,9 +44,12 @@ CREATE TABLE IF NOT EXISTS rooms (
     CHECK (capacity > 0),
     CHECK (
         rate_per_period GLOB '*[0-9]*'
-        AND rate_per_period NOT GLOB '*[^0-9.+-]*'
+        AND rate_per_period NOT GLOB '*[^0-9.]*'
         AND length(rate_per_period) - length(replace(rate_per_period, '.', '')) <= 1
-        AND substr(rate_per_period, 1, 1) GLOB '[0-9.+-]'
+        AND substr(rate_per_period, 1, 1) GLOB '[0-9.]'
+        AND rate_per_period NOT GLOB '*-*'
+        AND rate_per_period NOT GLOB '*+*'
+        AND replace(replace(rate_per_period, '.', ''), '0', '') <> ''
     )
 );
 
@@ -74,11 +79,16 @@ CREATE TABLE IF NOT EXISTS allocations (
     FOREIGN KEY (resident_id) REFERENCES residents(id) ON DELETE RESTRICT,
     FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE RESTRICT,
     CHECK (status IN ('active', 'checked_out')),
+    CHECK (expected_checkout >= check_in_date),
+    CHECK (check_out_date IS NULL OR check_out_date >= check_in_date),
     CHECK (
         rate_agreed GLOB '*[0-9]*'
-        AND rate_agreed NOT GLOB '*[^0-9.+-]*'
+        AND rate_agreed NOT GLOB '*[^0-9.]*'
         AND length(rate_agreed) - length(replace(rate_agreed, '.', '')) <= 1
-        AND substr(rate_agreed, 1, 1) GLOB '[0-9.+-]'
+        AND substr(rate_agreed, 1, 1) GLOB '[0-9.]'
+        AND rate_agreed NOT GLOB '*-*'
+        AND rate_agreed NOT GLOB '*+*'
+        AND replace(replace(rate_agreed, '.', ''), '0', '') <> ''
     )
 );
 
@@ -100,9 +110,12 @@ CREATE TABLE IF NOT EXISTS payments (
     CHECK (payment_method IN ('cash', 'mobile_money', 'bank_transfer', 'card')),
     CHECK (
         amount GLOB '*[0-9]*'
-        AND amount NOT GLOB '*[^0-9.+-]*'
+        AND amount NOT GLOB '*[^0-9.]*'
         AND length(amount) - length(replace(amount, '.', '')) <= 1
-        AND substr(amount, 1, 1) GLOB '[0-9.+-]'
+        AND substr(amount, 1, 1) GLOB '[0-9.]'
+        AND amount NOT GLOB '*-*'
+        AND amount NOT GLOB '*+*'
+        AND replace(replace(amount, '.', ''), '0', '') <> ''
     )
 );
 
@@ -135,22 +148,25 @@ CREATE TABLE IF NOT EXISTS expenses (
     FOREIGN KEY (hostel_id) REFERENCES hostels(id) ON DELETE CASCADE,
     CHECK (
         amount GLOB '*[0-9]*'
-        AND amount NOT GLOB '*[^0-9.+-]*'
+        AND amount NOT GLOB '*[^0-9.]*'
         AND length(amount) - length(replace(amount, '.', '')) <= 1
-        AND substr(amount, 1, 1) GLOB '[0-9.+-]'
+        AND substr(amount, 1, 1) GLOB '[0-9.]'
+        AND amount NOT GLOB '*-*'
+        AND amount NOT GLOB '*+*'
+        AND replace(replace(amount, '.', ''), '0', '') <> ''
     )
 );
 
-CREATE TABLE IF NOT EXISTS staff_users (
+CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hostel_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    username TEXT NOT NULL,
+    full_name TEXT NOT NULL,
+    email TEXT NOT NULL,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'manager',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (hostel_id) REFERENCES hostels(id) ON DELETE CASCADE,
-    UNIQUE (hostel_id, username),
+    UNIQUE (hostel_id, email),
     CHECK (role IN ('admin', 'manager'))
 );
 
@@ -161,7 +177,18 @@ CREATE TABLE IF NOT EXISTS audit_log (
     table_affected TEXT,
     record_id TEXT,
     timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES staff_users(id) ON DELETE SET NULL
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS app_preferences (
+    hostel_id INTEGER PRIMARY KEY,
+    date_format TEXT NOT NULL DEFAULT 'dd/MM/yyyy',
+    language TEXT NOT NULL DEFAULT 'en',
+    receipt_footer TEXT,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (hostel_id) REFERENCES hostels(id) ON DELETE CASCADE,
+    CHECK (date_format IN ('dd/MM/yyyy', 'MM/dd/yyyy', 'yyyy-MM-dd')),
+    CHECK (language IN ('en'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_allocations_hostel_status
@@ -169,6 +196,9 @@ CREATE INDEX IF NOT EXISTS idx_allocations_hostel_status
 
 CREATE INDEX IF NOT EXISTS idx_allocations_resident
     ON allocations(resident_id);
+
+CREATE INDEX IF NOT EXISTS idx_allocations_room_active
+    ON allocations(room_id, hostel_id, status);
 
 CREATE INDEX IF NOT EXISTS idx_payments_hostel_date
     ON payments(hostel_id, payment_date);

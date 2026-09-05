@@ -1,8 +1,8 @@
 use chrono::NaiveDate;
 use db::{
     ActiveAllocation, ActivityItem, AppPreferences, DashboardStats, DbPool, Hostel, HostelProfile,
-    ListPaymentsFilter, NewCheckIn, NewHostel, NewPayment, NewRoom, NewStaffUser, PaymentRow,
-    ResidentDetail, ResidentSummary, Room, StaffUser, UpsertAppPreferences,
+    ListPaymentsFilter, NewCheckIn, NewHostel, NewPayment, NewRoom, NewUser, PaymentRow,
+    ResidentDetail, ResidentSummary, Room, User, UpsertAppPreferences,
 };
 use hosteldesk_core::currency::{parse_money, parse_positive_money};
 use license::LicensePayload;
@@ -78,10 +78,10 @@ pub struct GenerateReceiptRequest {
 
 /// Payload for creating a staff login account.
 #[derive(Debug, Deserialize)]
-pub struct CreateStaffUserRequest {
+pub struct CreateUserRequest {
     pub hostel_id: i64,
-    pub name: String,
-    pub username: String,
+    pub full_name: String,
+    pub email: String,
     pub password: String,
     pub role: String,
 }
@@ -89,7 +89,7 @@ pub struct CreateStaffUserRequest {
 /// Payload for staff login.
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
-    pub username: String,
+    pub email: String,
     pub password: String,
 }
 
@@ -309,7 +309,7 @@ pub struct CompleteOnboardingRequest {
     pub currency: Option<String>,
     pub branding_logo_path: Option<String>,
     pub admin_name: String,
-    pub username: String,
+    pub email: String,
     pub password: String,
 }
 
@@ -339,7 +339,7 @@ pub async fn complete_onboarding(
     state: State<'_, DbPool>,
     license_state: State<'_, crate::LicenseState>,
     auth_state: State<'_, crate::AuthState>,
-) -> Result<StaffUser, String> {
+) -> Result<User, String> {
     info!(hostel_name = %request.hostel_name, "complete_onboarding invoked");
     require_license(&license_state)?;
 
@@ -349,8 +349,8 @@ pub async fn complete_onboarding(
     if request.admin_name.trim().is_empty() {
         return Err("admin name is required".to_string());
     }
-    if request.username.trim().is_empty() {
-        return Err("username is required".to_string());
+    if request.email.trim().is_empty() {
+        return Err("email is required".to_string());
     }
     if request.password.len() < 8 {
         return Err("password must be at least 8 characters".to_string());
@@ -368,7 +368,7 @@ pub async fn complete_onboarding(
                 branding_logo_path: request.branding_logo_path,
             },
             admin_name: request.admin_name,
-            username: request.username,
+            email: request.email,
             password_hash,
         })
         .await
@@ -384,14 +384,14 @@ pub async fn complete_onboarding(
 pub async fn get_session(
     state: State<'_, DbPool>,
     auth_state: State<'_, crate::AuthState>,
-) -> Result<Option<StaffUser>, String> {
+) -> Result<Option<User>, String> {
     info!("get_session invoked");
     let Some(session) = auth_state.current_session() else {
         return Ok(None);
     };
 
     let user = state
-        .get_staff_user_by_id(session.user_id)
+        .get_user_by_id(session.user_id)
         .await
         .map_err(|e| map_db_error("get_session", e))?;
     if user.is_none() {
@@ -412,36 +412,36 @@ pub fn logout(auth_state: State<'_, crate::AuthState>) {
 #[tauri::command]
 #[instrument(
     skip(state, request, license_state, auth_state),
-    fields(command = "create_staff_user")
+    fields(command = "create_user")
 )]
-pub async fn create_staff_user(
-    request: CreateStaffUserRequest,
+pub async fn create_user(
+    request: CreateUserRequest,
     state: State<'_, DbPool>,
     license_state: State<'_, crate::LicenseState>,
     auth_state: State<'_, crate::AuthState>,
 ) -> Result<i64, String> {
-    info!(hostel_id = request.hostel_id, username = %request.username, "create_staff_user invoked");
+    info!(hostel_id = request.hostel_id, email = %request.email, "create_user invoked");
     require_license(&license_state)?;
     require_admin(&auth_state, request.hostel_id)?;
 
     let password_hash = db::hash_password(&request.password)
         .map_err(|e| format!("Could not hash password: {e}"))?;
 
-    let user = NewStaffUser {
+    let user = NewUser {
         hostel_id: request.hostel_id,
-        name: request.name,
-        username: request.username,
+        full_name: request.full_name,
+        email: request.email,
         password_hash,
         role: request.role,
     };
 
     state
-        .create_staff_user(user)
+        .create_user(user)
         .await
-        .map_err(|e| map_db_error("create_staff_user", e))
+        .map_err(|e| map_db_error("create_user", e))
 }
 
-/// Authenticate a staff user by username and password.
+/// Authenticate a staff user by email and password.
 ///
 /// On success, mints the authoritative in-memory session and returns the user
 /// record for display. The returned role is never used for authorization.
@@ -452,15 +452,15 @@ pub async fn login(
     state: State<'_, DbPool>,
     license_state: State<'_, crate::LicenseState>,
     auth_state: State<'_, crate::AuthState>,
-) -> Result<StaffUser, String> {
-    info!(username = %request.username, "login invoked");
+) -> Result<User, String> {
+    info!(email = %request.email, "login invoked");
     require_license(&license_state)?;
 
     let user = state
-        .authenticate_staff_user(&request.username, &request.password)
+        .authenticate_user(&request.email, &request.password)
         .await
         .map_err(|e| map_db_error("login", e))?
-        .ok_or_else(|| "Invalid username or password".to_string())?;
+        .ok_or_else(|| "Invalid email or password".to_string())?;
 
     auth_state.set_current_session(user.id, user.hostel_id, user.role.clone());
     Ok(user)
@@ -937,42 +937,42 @@ pub async fn update_resident(
         .map_err(|e| map_db_error("update_resident", e))
 }
 
-/// Request payload for [`delete_staff_user`].
+/// Request payload for [`delete_user`].
 #[derive(Debug, Deserialize)]
-pub struct DeleteStaffUserRequest {
+pub struct DeleteUserRequest {
     pub user_id: i64,
 }
 
-/// Request payload for [`list_staff_users`].
+/// Request payload for [`list_users`].
 #[derive(Debug, Deserialize)]
-pub struct ListStaffUsersRequest {
+pub struct ListUsersRequest {
     pub hostel_id: i64,
 }
 
 /// List staff users for a hostel.
 #[tauri::command]
-#[instrument(skip(state, license_state), fields(command = "list_staff_users"))]
-pub async fn list_staff_users(
-    request: ListStaffUsersRequest,
+#[instrument(skip(state, license_state), fields(command = "list_users"))]
+pub async fn list_users(
+    request: ListUsersRequest,
     state: State<'_, DbPool>,
     license_state: State<'_, crate::LicenseState>,
     auth_state: State<'_, crate::AuthState>,
-) -> Result<Vec<StaffUser>, String> {
-    info!(hostel_id = request.hostel_id, "list_staff_users invoked");
+) -> Result<Vec<User>, String> {
+    info!(hostel_id = request.hostel_id, "list_users invoked");
     require_license(&license_state)?;
     require_session(&auth_state, request.hostel_id)?;
     state
-        .list_staff_users(request.hostel_id)
+        .list_users(request.hostel_id)
         .await
-        .map_err(|e| map_db_error("list_staff_users", e))
+        .map_err(|e| map_db_error("list_users", e))
 }
 
-/// Request payload for [`update_staff_user`].
+/// Request payload for [`update_user`].
 #[derive(Debug, Deserialize)]
-pub struct UpdateStaffUserRequest {
+pub struct UpdateUserRequest {
     pub user_id: i64,
-    pub name: String,
-    pub username: String,
+    pub full_name: String,
+    pub email: String,
     pub role: String,
     pub password: Option<String>,
 }
@@ -981,21 +981,21 @@ pub struct UpdateStaffUserRequest {
 #[tauri::command]
 #[instrument(
     skip(state, request, license_state, auth_state),
-    fields(command = "update_staff_user")
+    fields(command = "update_user")
 )]
-pub async fn update_staff_user(
-    request: UpdateStaffUserRequest,
+pub async fn update_user(
+    request: UpdateUserRequest,
     state: State<'_, DbPool>,
     license_state: State<'_, crate::LicenseState>,
     auth_state: State<'_, crate::AuthState>,
-) -> Result<StaffUser, String> {
-    info!(user_id = request.user_id, "update_staff_user invoked");
+) -> Result<User, String> {
+    info!(user_id = request.user_id, "update_user invoked");
     require_license(&license_state)?;
     let target = state
-        .get_staff_user_by_id(request.user_id)
+        .get_user_by_id(request.user_id)
         .await
-        .map_err(|e| map_db_error("update_staff_user", e))?
-        .ok_or_else(|| "staff user not found".to_string())?;
+        .map_err(|e| map_db_error("update_user", e))?
+        .ok_or_else(|| "user not found".to_string())?;
     let session = require_admin(&auth_state, target.hostel_id)?;
     let role_changed = target.role != request.role;
     if request.user_id == session.user_id || role_changed {
@@ -1012,41 +1012,41 @@ pub async fn update_staff_user(
     };
 
     state
-        .update_staff_user(
+        .update_user(
             request.user_id,
-            request.name,
-            request.username,
+            request.full_name,
+            request.email,
             request.role,
             password_hash,
         )
         .await
-        .map_err(|e| map_db_error("update_staff_user", e))
+        .map_err(|e| map_db_error("update_user", e))
 }
 
 /// Delete a staff user, refusing to remove the last admin of a hostel.
 #[tauri::command]
 #[instrument(
     skip(state, request, license_state, auth_state),
-    fields(command = "delete_staff_user")
+    fields(command = "delete_user")
 )]
-pub async fn delete_staff_user(
-    request: DeleteStaffUserRequest,
+pub async fn delete_user(
+    request: DeleteUserRequest,
     state: State<'_, DbPool>,
     license_state: State<'_, crate::LicenseState>,
     auth_state: State<'_, crate::AuthState>,
 ) -> Result<(), String> {
-    info!(user_id = request.user_id, "delete_staff_user invoked");
+    info!(user_id = request.user_id, "delete_user invoked");
     require_license(&license_state)?;
     let target = state
-        .get_staff_user_by_id(request.user_id)
+        .get_user_by_id(request.user_id)
         .await
-        .map_err(|e| map_db_error("delete_staff_user", e))?
-        .ok_or_else(|| "staff user not found".to_string())?;
+        .map_err(|e| map_db_error("delete_user", e))?
+        .ok_or_else(|| "user not found".to_string())?;
     require_admin(&auth_state, target.hostel_id)?;
     state
-        .delete_staff_user(request.user_id)
+        .delete_user(request.user_id)
         .await
-        .map_err(|e| map_db_error("delete_staff_user", e))
+        .map_err(|e| map_db_error("delete_user", e))
 }
 
 /// Back up the live database into a timestamped file under `Documents/HostelDesk/backups/`.
@@ -1324,7 +1324,7 @@ fn validate_logo_filename(filename: &str) -> Result<String, String> {
 /// Upload a hostel logo image and persist it under the app data directory.
 ///
 /// The file is saved to `<app-data>/hostels/<hostel_id>/logo.<ext>`. Only PNG,
-/// JPG/JPEG and WebP files up to 2 MB are accepted.
+/// JPG/JPEG and WebP files up to 10 MB are accepted.
 #[tauri::command]
 #[instrument(
     skip(app, request, license_state, auth_state),
@@ -1340,9 +1340,9 @@ pub async fn upload_hostel_logo(
     require_license(&license_state)?;
     require_admin(&auth_state, request.hostel_id)?;
 
-    const MAX_BYTES: usize = 2 * 1024 * 1024;
+    const MAX_BYTES: usize = 10 * 1024 * 1024;
     if request.data.len() > MAX_BYTES {
-        return Err("logo must be smaller than 2 MB".to_string());
+        return Err("logo must be smaller than 10 MB".to_string());
     }
 
     let ext = validate_logo_filename(&request.filename)?;
