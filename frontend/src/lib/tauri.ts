@@ -1,6 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import { addToast } from './toasts.ts';
 
+// Invoke convention: top-level argument keys are snake_case. Commands that take
+// bare parameters are annotated with rename_all = "snake_case" on the Rust
+// side; commands that take a single `request` struct pass it as `{ request }`.
+
 export type LicensePayload = {
   hostel_name: string;
   expiry_date: string;
@@ -15,28 +19,9 @@ export type Room = {
   capacity: number;
   floor: number | null;
   rate_per_period: string;
+  billing_period: string;
   status: 'vacant' | 'occupied' | 'maintenance' | string;
   created_at: string;
-};
-
-export type ResidentInput = {
-  full_name: string;
-  phone?: string;
-  email?: string;
-  id_number?: string;
-  next_of_kin?: string;
-  photo_path?: string;
-};
-
-export type AllocationInput = {
-  hostel_id: number;
-  resident_id: number;
-  room_id: number;
-  bed_id?: number | null;
-  check_in_date: string;
-  check_out_date?: string | null;
-  expected_checkout: string;
-  rate_agreed: string;
 };
 
 export type StaffUserInput = {
@@ -65,6 +50,18 @@ export type Hostel = {
   created_at: string;
 };
 
+export type HostelProfile = {
+  id: number;
+  name: string;
+  address?: string;
+  phone?: string;
+  currency: string;
+  branding_logo_path?: string;
+  room_count: number;
+  admin_count: number;
+  onboarding_complete: boolean;
+};
+
 export type StaffUser = {
   id: number;
   hostel_id: number;
@@ -72,6 +69,14 @@ export type StaffUser = {
   username: string;
   role: string;
   created_at: string;
+};
+
+export type UpdateStaffUserInput = {
+  user_id: number;
+  name: string;
+  username: string;
+  role: string;
+  password?: string;
 };
 
 export type LoginInput = {
@@ -88,7 +93,7 @@ function reportError(error: unknown) {
   addToast(toMessage(error), 'error');
 }
 
-export async function getRooms(hostelId = 1): Promise<Room[]> {
+export async function getRooms(hostelId: number): Promise<Room[]> {
   try {
     return await invoke<Room[]>('get_rooms', { hostel_id: hostelId });
   } catch (error) {
@@ -97,18 +102,36 @@ export async function getRooms(hostelId = 1): Promise<Room[]> {
   }
 }
 
-export async function addResident(input: ResidentInput): Promise<number> {
-  try {
-    return await invoke<number>('add_resident', { request: input });
-  } catch (error) {
-    reportError(error);
-    throw error;
-  }
-}
+export type CheckInInput = {
+  hostel_id: number;
+  room_id: number;
+  resident_id?: number | null;
+  full_name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  id_number?: string | null;
+  next_of_kin?: string | null;
+  photo_path?: string | null;
+  check_in_date: string;
+  check_out_date?: string | null;
+  expected_checkout: string;
+  rate_agreed: string;
+};
 
-export async function createAllocation(input: AllocationInput): Promise<number> {
+export type CompleteOnboardingInput = {
+  hostel_name: string;
+  address?: string | null;
+  phone?: string | null;
+  currency?: string | null;
+  branding_logo_path?: string | null;
+  admin_name: string;
+  username: string;
+  password: string;
+};
+
+export async function checkIn(input: CheckInInput): Promise<number> {
   try {
-    return await invoke<number>('create_allocation', { request: input });
+    return await invoke<number>('check_in', { request: input });
   } catch (error) {
     reportError(error);
     throw error;
@@ -121,10 +144,6 @@ export async function getLicenseStatus(): Promise<LicensePayload | null> {
 
 export async function activateLicense(license: string): Promise<LicensePayload> {
   return invoke<LicensePayload>('activate_license', { license });
-}
-
-export async function generateTrialLicense(): Promise<string> {
-  return invoke<string>('generate_trial_license', { hostel_name: 'Trial Hostel' });
 }
 
 export async function createStaffUser(input: StaffUserInput): Promise<number> {
@@ -145,11 +164,38 @@ export async function login(input: LoginInput): Promise<StaffUser> {
   }
 }
 
-export async function createHostel(input: HostelInput): Promise<Hostel> {
+export async function getOnboardingStatus(): Promise<boolean> {
   try {
-    return await invoke<Hostel>('create_hostel', {
-      request: { ...input, currency: input.currency ?? 'UGX' },
-    });
+    return await invoke<boolean>('get_onboarding_status');
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function completeOnboarding(
+  input: CompleteOnboardingInput,
+): Promise<StaffUser> {
+  try {
+    return await invoke<StaffUser>('complete_onboarding', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function getSession(): Promise<StaffUser | null> {
+  try {
+    return await invoke<StaffUser | null>('get_session');
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function logout(): Promise<void> {
+  try {
+    await invoke<void>('logout');
   } catch (error) {
     reportError(error);
     throw error;
@@ -165,6 +211,17 @@ export async function listHostels(): Promise<Hostel[]> {
   }
 }
 
+export async function getHostelProfile(hostelId: number): Promise<HostelProfile | null> {
+  try {
+    return await invoke<HostelProfile | null>('get_hostel_profile', {
+      hostel_id: hostelId,
+    });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
 export type AddRoomInput = {
   hostel_id: number;
   room_number: string;
@@ -172,20 +229,12 @@ export type AddRoomInput = {
   capacity: number;
   floor?: number | null;
   rate_per_period: string;
+  billing_period?: string | null;
 };
 
 export async function addRoom(input: AddRoomInput): Promise<number> {
   try {
     return await invoke<number>('add_room', { request: input });
-  } catch (error) {
-    reportError(error);
-    throw error;
-  }
-}
-
-export async function bulkAddRooms(input: AddRoomInput[]): Promise<number[]> {
-  try {
-    return await invoke<number[]>('bulk_add_rooms', { requests: input });
   } catch (error) {
     reportError(error);
     throw error;
@@ -217,17 +266,356 @@ export async function recordPaymentWithReceipt(
 }
 
 export type ReceiptInput = {
+  hostel_id: number;
   hostel_name: string;
   receipt_number: number;
   resident_name: string;
   amount: string;
   date: string;
   balance: string;
+  currency_code: string;
+  footer_text?: string | null;
+  logo_path?: string | null;
 };
 
 export async function generateAndOpenReceipt(input: ReceiptInput): Promise<string> {
   try {
     return await invoke<string>('generate_and_open_receipt', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export type Resident = {
+  id: number;
+  full_name: string;
+  phone?: string;
+  email?: string;
+  id_number?: string;
+  next_of_kin?: string;
+  photo_path?: string;
+  created_at: string;
+};
+
+export type Payment = {
+  id: number;
+  hostel_id: number;
+  allocation_id: number;
+  resident_id: number;
+  amount: string;
+  payment_date: string;
+  payment_method: string;
+  period_start?: string | null;
+  period_end?: string | null;
+  notes?: string;
+  created_at: string;
+};
+
+export type ResidentSummary = {
+  id: number;
+  full_name: string;
+  phone?: string;
+  email?: string;
+  allocation_id?: number;
+  room_number?: string;
+  check_in_date?: string;
+  expected_checkout?: string;
+  status: 'active' | 'checked_out' | 'never_allocated' | string;
+  balance: string;
+};
+
+export type AllocationWithRoom = {
+  id: number;
+  hostel_id: number;
+  resident_id: number;
+  room_id: number;
+  check_in_date: string;
+  check_out_date?: string | null;
+  expected_checkout: string;
+  status: string;
+  rate_agreed: string;
+  created_at: string;
+  room_number: string;
+  billing_period: string;
+};
+
+export type ResidentDetail = {
+  resident: Resident;
+  allocations: AllocationWithRoom[];
+  payments: Payment[];
+  balance: string;
+};
+
+export type PaymentRow = {
+  id: number;
+  resident_id: number;
+  resident_name: string;
+  allocation_id: number;
+  room_number: string;
+  amount: string;
+  payment_method: string;
+  payment_date: string;
+  receipt_number?: string;
+  notes?: string;
+};
+
+export type ListPaymentsFilter = {
+  hostel_id: number;
+  from?: string | null;
+  to?: string | null;
+  resident_id?: number;
+  method?: string;
+};
+
+export type ActiveAllocation = {
+  allocation_id: number;
+  resident_id: number;
+  resident_name: string;
+  room_number: string;
+  rate_agreed: string;
+  check_in_date: string;
+  expected_checkout: string;
+  total_paid: string;
+  balance: string;
+};
+
+export type DashboardStats = {
+  total_rooms: number;
+  occupied: number;
+  vacant: number;
+  maintenance: number;
+  check_ins_today: number;
+  departures_today: number;
+  overdue_stays: number;
+  revenue_today: string;
+  revenue_month: string;
+  outstanding_total: string;
+};
+
+export type ActivityItem = {
+  kind: 'check_in' | 'check_out' | 'payment' | string;
+  at: string;
+  resident_name: string;
+  room_number: string;
+  amount?: string;
+};
+
+export type UpdateHostelInput = {
+  hostel_id: number;
+  name: string;
+  address?: string;
+  phone?: string;
+  currency: string;
+  branding_logo_path?: string;
+};
+
+export type UploadHostelLogoInput = {
+  hostel_id: number;
+  data: number[];
+  filename: string;
+};
+
+export type AppPreferences = {
+  hostel_id: number;
+  date_format: string;
+  language: string;
+  receipt_footer?: string;
+  updated_at: string;
+};
+
+export type UpsertAppPreferencesInput = {
+  hostel_id: number;
+  date_format: string;
+  language: string;
+  receipt_footer?: string | null;
+};
+
+export type RestoreBackupInput = {
+  backup_path: string;
+};
+
+export type UpdateResidentInput = {
+  hostel_id: number;
+  resident_id: number;
+  full_name: string;
+  phone?: string;
+  email?: string;
+  id_number?: string;
+  next_of_kin?: string;
+};
+
+export async function listResidents(input: { hostel_id: number }): Promise<ResidentSummary[]> {
+  try {
+    return await invoke<ResidentSummary[]>('list_residents', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function getResidentDetail(input: {
+  hostel_id: number;
+  resident_id: number;
+}): Promise<ResidentDetail> {
+  try {
+    return await invoke<ResidentDetail>('get_resident_detail', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function checkOut(input: {
+  hostel_id: number;
+  allocation_id: number;
+  check_out_date: string;
+}): Promise<void> {
+  try {
+    return await invoke<void>('check_out', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function listPayments(input: ListPaymentsFilter): Promise<PaymentRow[]> {
+  try {
+    return await invoke<PaymentRow[]>('list_payments', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function listActiveAllocations(input: {
+  hostel_id: number;
+}): Promise<ActiveAllocation[]> {
+  try {
+    return await invoke<ActiveAllocation[]>('list_active_allocations', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function getDashboardStats(input: {
+  hostel_id: number;
+  today: string;
+}): Promise<DashboardStats> {
+  try {
+    return await invoke<DashboardStats>('get_dashboard_stats', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function listRecentActivity(input: {
+  hostel_id: number;
+  limit: number;
+}): Promise<ActivityItem[]> {
+  try {
+    return await invoke<ActivityItem[]>('list_recent_activity', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function updateHostel(input: UpdateHostelInput): Promise<Hostel> {
+  try {
+    return await invoke<Hostel>('update_hostel', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function updateResident(input: UpdateResidentInput): Promise<void> {
+  try {
+    return await invoke<void>('update_resident', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function listStaffUsers(input: { hostel_id: number }): Promise<StaffUser[]> {
+  try {
+    return await invoke<StaffUser[]>('list_staff_users', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function updateStaffUser(input: UpdateStaffUserInput): Promise<StaffUser> {
+  try {
+    return await invoke<StaffUser>('update_staff_user', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function backupDatabase(): Promise<string> {
+  try {
+    return await invoke<string>('backup_database');
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function deleteStaffUser(input: { user_id: number }): Promise<void> {
+  try {
+    return await invoke<void>('delete_staff_user', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function uploadHostelLogo(input: UploadHostelLogoInput): Promise<string> {
+  try {
+    return await invoke<string>('upload_hostel_logo', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function listBackups(): Promise<string[]> {
+  try {
+    return await invoke<string[]>('list_backups');
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function restoreBackup(input: RestoreBackupInput): Promise<void> {
+  try {
+    return await invoke<void>('restore_backup', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function getAppPreferences(input: { hostel_id: number }): Promise<AppPreferences> {
+  try {
+    return await invoke<AppPreferences>('get_app_preferences', { request: input });
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
+export async function updateAppPreferences(input: UpsertAppPreferencesInput): Promise<AppPreferences> {
+  try {
+    return await invoke<AppPreferences>('update_app_preferences', { request: input });
   } catch (error) {
     reportError(error);
     throw error;
