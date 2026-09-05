@@ -1,7 +1,6 @@
 import logo from '@/assets/logo.png'
 import { cn } from '@/lib/utils'
 import { NavMain } from '@/components/nav-main'
-import { NavSecondary } from '@/components/nav-secondary'
 import { NavUser } from '@/components/nav-user'
 import {
   Sidebar,
@@ -53,7 +52,6 @@ export function AppSidebar({
       </SidebarHeader>
       <SidebarContent>
         <NavMain active={active} onSelect={onSelect} />
-        <NavSecondary active={active} onSelect={onSelect} className="mt-auto" />
       </SidebarContent>
       <SidebarFooter>
         <NavUser

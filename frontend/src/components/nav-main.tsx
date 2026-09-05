@@ -37,7 +37,8 @@ export function NavMain({
           <SidebarMenuButton
             isActive={active === item.id}
             onClick={() => onSelect(item.id)}
-            className={state === 'collapsed' ? 'justify-center px-0' : undefined}
+            size="lg"
+            className={state === 'collapsed' ? 'justify-center px-0' : 'px-3'}
           >
             <item.icon className="size-5" />
             {state === 'expanded' && <span>{item.label}</span>}

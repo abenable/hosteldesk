@@ -7,7 +7,7 @@ import { SidebarContext, useSidebar } from '@/hooks/use-sidebar'
 
 const SIDEBAR_WIDTH = '16rem'
 const SIDEBAR_WIDTH_MOBILE = '18rem'
-const SIDEBAR_WIDTH_ICON = '3rem'
+const SIDEBAR_WIDTH_ICON = '4rem'
 const HEADER_HEIGHT = '3.5rem'
 
 export function SidebarProvider({
@@ -163,10 +163,11 @@ export function SidebarMenuButton({
   return (
     <Comp
       className={cn(
-        'flex w-full items-center gap-2 overflow-hidden rounded-md px-2 font-medium text-sidebar-foreground outline-none transition-colors',
+        'flex w-full items-center gap-2 overflow-hidden rounded-full px-2 font-medium text-sidebar-foreground outline-none transition-colors duration-200 ease-out',
         sidebarMenuButtonVariants[variant],
         sidebarMenuButtonSizes[size],
-        isActive && 'bg-sidebar-accent text-sidebar-accent-foreground font-semibold',
+        isActive &&
+          'bg-primary/10 text-primary font-semibold hover:bg-primary/10 hover:text-primary',
         'disabled:pointer-events-none disabled:opacity-50',
         className
       )}

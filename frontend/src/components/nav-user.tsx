@@ -41,7 +41,7 @@ export function NavUser({
             <SidebarMenuButton
               size="lg"
               className={cn(
-                'data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground',
+                'bg-hairline data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground',
                 collapsed && 'justify-center px-0'
               )}
             >
@@ -54,7 +54,7 @@ export function NavUser({
                   <span className="truncate text-xs text-muted">{email}</span>
                 </div>
               )}
-              {!collapsed && <DotsVerticalIcon className="ml-auto size-4" />}
+              {!collapsed && <DotsVerticalIcon className="ml-auto size-4" strokeWidth={3} />}
             </SidebarMenuButton>
           }
         >
