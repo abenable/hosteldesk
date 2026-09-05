@@ -2,8 +2,9 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
 
 jobs:
   release:
@@ -34,13 +35,8 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install frontend dependencies
-        working-directory: ./frontend
-        run: npm ci
-
-      - name: Build frontend
-        working-directory: ./frontend
-        run: npm run build
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Install Linux system dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -53,6 +49,14 @@ jobs:
             librsvg2-dev \
             patchelf
 
+      - name: Install frontend dependencies
+        working-directory: ./frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: ./frontend
+        run: npm run build
+
       - name: Build and release
         uses: tauri-apps/tauri-action@v0
         env:
@@ -60,8 +64,8 @@ jobs:
         with:
           projectPath: ./crates/app
           args: ${{ matrix.args }}
-          tagName: release-${{ github.run_number }}
-          releaseName: Release ${{ github.run_number }}
-          releaseBody: 'Automated release for merge to main.'
-          releaseDraft: true
+          tagName: ${{ github.ref_name }}
+          releaseName: 'HostelDesk ${{ github.ref_name }}'
+          releaseBody: 'Installers for HostelDesk. Download the bundle for your platform.'
+          releaseDraft: false
           prerelease: false
