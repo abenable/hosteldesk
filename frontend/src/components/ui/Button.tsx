@@ -14,16 +14,16 @@ const base =
 
 const variants: Record<Variant, string> = {
   primary:
-    'bg-primary text-on-primary rounded-full h-12 px-6 text-button-md active:bg-primary-active disabled:bg-primary-disabled',
+    'bg-primary text-on-primary rounded-full h-9 px-4 text-button-sm active:bg-primary-active disabled:bg-primary-disabled',
   secondary:
-    'bg-canvas text-ink rounded-full h-12 px-6 text-button-md border border-ink',
-  tertiary: 'bg-transparent text-ink text-button-md underline-offset-4 hover:underline',
-  pill: 'bg-primary text-on-primary rounded-full px-5 py-2.5 text-button-sm active:bg-primary-active disabled:bg-primary-disabled',
+    'bg-canvas text-ink rounded-full h-9 px-4 text-button-sm border border-ink',
+  tertiary: 'bg-transparent text-ink text-button-sm underline-offset-4 hover:underline',
+  pill: 'bg-primary text-on-primary rounded-full h-9 px-4 text-button-sm active:bg-primary-active disabled:bg-primary-disabled',
 };
 
 const sizes: Record<Size, string> = {
   md: '',
-  sm: 'h-10 px-4 text-button-sm',
+  sm: 'h-8 px-3 text-button-sm',
 };
 
 export function Button({

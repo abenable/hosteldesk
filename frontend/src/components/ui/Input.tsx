@@ -24,9 +24,9 @@ export function Input({ label, error, hint, id, className = '', type, ...rest }:
         <input
           id={inputId}
           type={effectiveType}
-          className={`h-14 w-full rounded-full border bg-canvas px-5 text-body-md text-ink placeholder:text-muted-soft focus:border-ink focus:outline-none ${
+          className={`h-9 w-full rounded-full border bg-canvas px-4 text-body-sm text-ink placeholder:text-muted-soft focus:border-ink focus:outline-none ${
             error ? 'border-error-text' : 'border-hairline'
-          } focus:border-2 ${isPassword ? 'pr-12' : ''} ${className}`}
+          } focus:border-2 ${isPassword ? 'pr-10' : ''} ${className}`}
           aria-invalid={error ? true : undefined}
           aria-describedby={error ? `${inputId}-error` : undefined}
           {...rest}

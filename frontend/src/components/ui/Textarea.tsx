@@ -16,7 +16,7 @@ export function Textarea({ label, error, id, className = '', ...rest }: Props) {
       )}
       <textarea
         id={textareaId}
-        className={`w-full rounded-full border bg-canvas px-4 py-3 text-body-md text-ink placeholder:text-muted-soft focus:border-ink focus:outline-none ${
+        className={`w-full rounded-lg border bg-canvas px-4 py-2 text-body-sm text-ink placeholder:text-muted-soft focus:border-ink focus:outline-none ${
           error ? 'border-error-text' : 'border-hairline'
         } focus:border-2 ${className}`}
         aria-invalid={error ? true : undefined}

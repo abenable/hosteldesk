@@ -10,10 +10,6 @@ export function floorLetter(index: number): string {
 }
 
 /** Letter → 0-based floor index (A → 0). Defaults to 0. */
-export function floorIndex(letter: string): number {
-  const i = LETTERS.indexOf(letter.toUpperCase());
-  return i < 0 ? 0 : i;
-}
 
 /** Floor letter + 1-based ordinal → room number, e.g. ("A", 1) → "A01". */
 export function formatRoomNumber(letter: string, n: number): string {

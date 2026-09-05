@@ -22,7 +22,7 @@ export function Tabs({ tabs, value, onValueChange, className = '' }: Props) {
           <TabsPrimitive.Trigger
             key={t.value}
             value={t.value}
-            className="rounded-full px-4 py-1.5 text-button-sm text-muted transition-colors data-[state=active]:bg-canvas data-[state=active]:text-ink data-[state=active]:shadow-card focus:outline-none"
+            className="rounded-full px-4 py-1.5 text-button-sm text-muted transition-[background-color,box-shadow,color] duration-200 ease-out data-[state=active]:bg-canvas data-[state=active]:text-ink data-[state=active]:shadow-card focus:outline-none"
           >
             {t.label}
           </TabsPrimitive.Trigger>
