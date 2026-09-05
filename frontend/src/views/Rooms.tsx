@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Button } from '../components/ui/Button.tsx';
+import { StatCard } from '../components/ui/StatCard.tsx';
 import { Tabs } from '../components/ui/Tabs.tsx';
 import { Modal } from '../components/ui/Modal.tsx';
 import { RoomStatusBoard } from '../components/RoomStatusBoard.tsx';
@@ -37,8 +38,19 @@ export function Rooms() {
     { value: 'maintenance', label: 'Maintenance', content: null },
   ];
 
+  const vacant = rooms.filter((r) => r.status === 'vacant').length;
+  const occupied = rooms.filter((r) => r.status === 'occupied').length;
+  const maintenance = rooms.filter((r) => r.status === 'maintenance').length;
+
   return (
     <div className="flex flex-col gap-6">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="Total rooms" value={rooms.length} />
+        <StatCard label="Vacant" value={vacant} />
+        <StatCard label="Occupied" value={occupied} />
+        <StatCard label="Maintenance" value={maintenance} />
+      </div>
+
       <div className="flex items-center justify-between gap-4">
         <Tabs
           tabs={tabs}

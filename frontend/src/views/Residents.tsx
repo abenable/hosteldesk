@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Card } from '../components/ui/Card.tsx';
+import { StatCard } from '../components/ui/StatCard.tsx';
 import { Button } from '../components/ui/Button.tsx';
 import { Badge } from '../components/ui/Badge.tsx';
 import { Tabs } from '../components/ui/Tabs.tsx';
@@ -109,6 +110,12 @@ export function Residents({ onNavigate }: Props) {
     { value: 'all', label: 'All', content: null },
   ];
 
+  const current = residents.filter((r) => r.status === 'active').length;
+  const past = residents.filter((r) => r.status === 'checked_out').length;
+  const overdue = residents.filter(
+    (r) => r.status === 'active' && r.expected_checkout && r.expected_checkout < today,
+  ).length;
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
@@ -119,8 +126,15 @@ export function Residents({ onNavigate }: Props) {
           </p>
         </div>
         <Button onClick={() => setCheckInOpen(true)}>
-          Check in
+          New Resident
         </Button>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="Total residents" value={residents.length} />
+        <StatCard label="Current" value={current} />
+        <StatCard label="Past" value={past} />
+        <StatCard label="Overdue" value={overdue} error={overdue > 0} />
       </div>
 
       <div className="grid grid-cols-[1fr_20rem_1fr] items-center gap-4">
@@ -148,7 +162,7 @@ export function Residents({ onNavigate }: Props) {
         <EmptyState
           title="No resident records yet"
           description="Check in your first resident to get started."
-          action={<Button onClick={() => setCheckInOpen(true)}>Check in</Button>}
+          action={<Button onClick={() => setCheckInOpen(true)}>New Resident</Button>}
         />
       ) : filtered.length === 0 ? (
         <Card shadow className="p-5 text-center">

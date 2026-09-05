@@ -28,7 +28,7 @@ export function SiteHeader({
 
       {showCheckIn && (
         <Button variant="pill" size="sm" onClick={onCheckIn} className="hidden sm:inline-flex">
-          Check in
+          New Resident
         </Button>
       )}
     </header>

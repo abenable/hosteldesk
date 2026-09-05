@@ -151,7 +151,7 @@ function AppShell({
       userEmail={currentUser.username}
       onSignOut={onSignOut}
     >
-      {view === 'dashboard' && <Dashboard onNavigate={onSelect} />}
+      {view === 'dashboard' && <Dashboard />}
       {view === 'residents' && <Residents onNavigate={onSelect} />}
       {view === 'rooms' && <Rooms />}
       {view === 'invoices' && <Invoices onNavigate={onSelect} />}

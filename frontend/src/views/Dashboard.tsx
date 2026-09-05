@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { Card } from '../components/ui/Card.tsx';
 import { Button } from '../components/ui/Button.tsx';
 import { Badge } from '../components/ui/Badge.tsx';
+import { StatCard } from '../components/ui/StatCard.tsx';
 import { Modal } from '../components/ui/Modal.tsx';
 import { Table, Td, Tr } from '../components/ui/Table.tsx';
 import { CheckInForm } from '../components/CheckInForm.tsx';
@@ -17,9 +18,6 @@ import {
   type ActivityItem,
   type ActiveAllocation,
 } from '../lib/tauri.ts';
-import type { View } from '../components/types';
-
-type Props = { onNavigate: (v: View) => void };
 
 function greeting(): string {
   const h = new Date().getHours();
@@ -39,7 +37,7 @@ function timeAgo(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
-export function Dashboard({ onNavigate }: Props) {
+export function Dashboard() {
   const { hostel, hostelId, currency } = useHostel();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [activity, setActivity] = useState<ActivityItem[]>([]);
@@ -93,28 +91,26 @@ export function Dashboard({ onNavigate }: Props) {
           </p>
         </div>
         <Button onClick={() => setCheckInOpen(true)}>
-          Check in
+          New Resident
         </Button>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <SectionCard
+        <StatCard
           label="Occupancy"
           value={loading ? '—' : `${pct}%`}
           hint={stats ? `${stats.occupied} of ${stats.total_rooms} rooms` : undefined}
-          trend={stats ? `${stats.check_ins_today} arrivals today` : undefined}
         />
-        <SectionCard
+        <StatCard
           label="Available"
           value={loading ? '—' : (stats?.vacant ?? 0)}
           hint="Vacant and ready"
         />
-        <SectionCard
-          label="Revenue Today"
-          value={loading ? '—' : `${currency} ${formatDecimal(stats?.revenue_today ?? '0')}`}
-          hint={stats ? `${currency} ${formatDecimal(stats.revenue_month)} this month` : undefined}
+        <StatCard
+          label="This month"
+          value={loading ? '—' : `${currency} ${formatDecimal(stats?.revenue_month ?? '0')}`}
         />
-        <SectionCard
+        <StatCard
           label="Outstanding"
           value={loading ? '—' : `${currency} ${formatDecimal(outstanding)}`}
           hint={owed ? 'Collect payments' : 'All paid up'}
@@ -196,26 +192,6 @@ export function Dashboard({ onNavigate }: Props) {
         </Card>
       </div>
 
-      <Card shadow className="p-5">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-6">
-            {[
-              { label: 'Vacant', value: stats?.vacant ?? 0, dot: 'bg-surface-strong' },
-              { label: 'Occupied', value: stats?.occupied ?? 0, dot: 'bg-ink' },
-              { label: 'Maintenance', value: stats?.maintenance ?? 0, dot: 'bg-primary' },
-            ].map((s) => (
-              <span key={s.label} className="flex items-center gap-2 text-caption text-muted">
-                <span className={`h-2.5 w-2.5 rounded-full ${s.dot}`} />
-                {s.label} {s.value}
-              </span>
-            ))}
-          </div>
-          <Button variant="tertiary" size="sm" onClick={() => onNavigate('rooms')}>
-            View rooms →
-          </Button>
-        </div>
-      </Card>
-
       <Modal
         open={checkInOpen}
         onOpenChange={setCheckInOpen}
@@ -239,32 +215,5 @@ export function Dashboard({ onNavigate }: Props) {
         />
       )}
     </div>
-  );
-}
-
-function SectionCard({
-  label,
-  value,
-  hint,
-  trend,
-  error,
-}: {
-  label: string;
-  value: React.ReactNode;
-  hint?: string;
-  trend?: string;
-  error?: boolean;
-}) {
-  return (
-    <Card shadow className="p-5">
-      <div className="flex items-center justify-between">
-        <p className="text-caption text-muted">{label}</p>
-        {trend && (
-          <Badge className="bg-surface-soft text-muted">{trend}</Badge>
-        )}
-      </div>
-      <p className={`mt-2 text-display-md ${error ? 'text-error-text' : 'text-ink'}`}>{value}</p>
-      {hint && <p className="mt-1 text-caption-sm text-muted">{hint}</p>}
-    </Card>
   );
 }
