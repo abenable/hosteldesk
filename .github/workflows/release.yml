@@ -17,7 +17,7 @@ jobs:
           - platform: ubuntu-22.04
             args: '--bundles deb'
           - platform: windows-latest
-            args: '--bundles nsis'
+            args: '--bundles nsis msi'
 
     runs-on: ${{ matrix.platform }}
 
@@ -69,3 +69,18 @@ jobs:
           releaseBody: 'Installers for HostelDesk. Download the bundle for your platform.'
           releaseDraft: false
           prerelease: false
+
+  winget:
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    env:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
+      - name: Publish release to winget
+        if: env.WINGET_TOKEN != ''
+        uses: vedantmgoyal9/winget-releaser@main
+        with:
+          identifier: abenable.HostelDesk
+          max-versions-to-keep: 5
+          token: ${{ secrets.WINGET_TOKEN }}
