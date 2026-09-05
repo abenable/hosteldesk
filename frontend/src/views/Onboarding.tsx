@@ -115,7 +115,7 @@ function Wizard() {
         currency: null,
         branding_logo_path: null,
         admin_name: adminName.trim(),
-        username: adminEmail.trim(),
+        email: adminEmail.trim(),
         password: adminPassword,
       });
       setCurrentUser(user);

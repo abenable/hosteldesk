@@ -1,4 +1,4 @@
-import type { StaffUser } from './tauri.ts';
+import type { User } from './tauri.ts';
 
 const KEY = 'hosteldesk.current_user';
 
@@ -8,10 +8,10 @@ const KEY = 'hosteldesk.current_user';
  * This value is not authoritative for access control. All authorization
  * decisions are enforced by the backend session state.
  */
-export function getCurrentUser(): StaffUser | null {
+export function getCurrentUser(): User | null {
   try {
     const raw = localStorage.getItem(KEY);
-    return raw ? (JSON.parse(raw) as StaffUser) : null;
+    return raw ? (JSON.parse(raw) as User) : null;
   } catch {
     return null;
   }
@@ -23,7 +23,7 @@ export function getCurrentUser(): StaffUser | null {
  * This is a display-only copy. Mutating commands are gated server-side by
  * the in-memory session created at login.
  */
-export function setCurrentUser(user: StaffUser | null) {
+export function setCurrentUser(user: User | null) {
   if (!user) {
     localStorage.removeItem(KEY);
   } else {

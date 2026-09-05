@@ -16,7 +16,7 @@ import {
   getSession,
   logout,
   type LicensePayload,
-  type StaffUser,
+  type User,
 } from './lib/tauri.ts';
 import { setCurrentUser } from './lib/current-user.ts';
 import { HostelProvider } from './lib/hostel-context.tsx';
@@ -25,7 +25,7 @@ export default function App() {
   const [view, setView] = useState<View>('dashboard');
   const [license, setLicense] = useState<LicensePayload | null>(null);
   const [onboardingComplete, setOnboardingComplete] = useState(false);
-  const [currentUser, setCurrentUserState] = useState<StaffUser | null>(null);
+  const [currentUser, setCurrentUserState] = useState<User | null>(null);
   const [checking, setChecking] = useState(true);
   const [licenseError, setLicenseError] = useState<string | null>(null);
 
@@ -55,7 +55,7 @@ export default function App() {
 
   useEffect(() => {
     const onComplete = (event: Event) => {
-      const user = (event as CustomEvent<StaffUser | undefined>).detail;
+      const user = (event as CustomEvent<User | undefined>).detail;
       setOnboardingComplete(true);
       if (user) setCurrentUserState(user);
     };
@@ -139,7 +139,7 @@ function AppShell({
 }: {
   view: View;
   onSelect: (view: View) => void;
-  currentUser: StaffUser;
+  currentUser: User;
   onSignOut: () => Promise<void>;
 }) {
 
@@ -147,8 +147,8 @@ function AppShell({
     <Layout
       active={view}
       onSelect={onSelect}
-      userName={currentUser.name || currentUser.username}
-      userEmail={currentUser.username}
+      userName={currentUser.full_name || currentUser.email}
+      userEmail={currentUser.email}
       onSignOut={onSignOut}
     >
       {view === 'dashboard' && <Dashboard />}

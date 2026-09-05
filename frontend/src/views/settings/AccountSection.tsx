@@ -3,14 +3,17 @@ import { Card } from '../../components/ui/Card.tsx';
 import { Button } from '../../components/ui/Button.tsx';
 import { Input } from '../../components/ui/Input.tsx';
 import { Badge } from '../../components/ui/Badge.tsx';
+import { Modal } from '../../components/ui/Modal.tsx';
+import { BillingSection } from './BillingSection.tsx';
 import { addToast } from '../../lib/toasts.ts';
-import { login, updateStaffUser, type StaffUser } from '../../lib/tauri.ts';
+import { login, updateUser, type User } from '../../lib/tauri.ts';
 
 type Props = {
-  user: StaffUser;
+  user: User;
 };
 
 export function AccountSection({ user }: Props) {
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -26,11 +29,11 @@ export function AccountSection({ user }: Props) {
     if (!valid) return;
     setBusy(true);
     try {
-      await login({ username: user.username, password: currentPassword });
-      await updateStaffUser({
+      await login({ email: user.email, password: currentPassword });
+      await updateUser({
         user_id: user.id,
-        name: user.name,
-        username: user.username,
+        full_name: user.full_name,
+        email: user.email,
         role: user.role,
         password: newPassword,
       });
@@ -38,6 +41,7 @@ export function AccountSection({ user }: Props) {
       setCurrentPassword('');
       setNewPassword('');
       setConfirm('');
+      setPasswordOpen(false);
     } catch {
       // login or update error surfaced as toast
     } finally {
@@ -52,11 +56,11 @@ export function AccountSection({ user }: Props) {
         <dl className="mt-4 flex flex-col gap-3 text-body-md">
           <div>
             <dt className="text-caption text-muted">Name</dt>
-            <dd className="text-ink">{user.name}</dd>
+            <dd className="text-ink">{user.full_name}</dd>
           </div>
           <div>
             <dt className="text-caption text-muted">Email</dt>
-            <dd className="text-ink">{user.username}</dd>
+            <dd className="text-ink">{user.email}</dd>
           </div>
           <div>
             <dt className="text-caption text-muted">Role</dt>
@@ -67,12 +71,27 @@ export function AccountSection({ user }: Props) {
         </dl>
       </Card>
 
-      <Card shadow className="p-6">
-        <h2 className="text-title-md text-ink">Change password</h2>
-        <p className="mt-1 text-body-sm text-muted">
-          Enter your current password, then choose a new one.
-        </p>
-        <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-4">
+      <Card shadow className="flex items-center justify-between p-6">
+        <div>
+          <h2 className="text-title-md text-ink">Change password</h2>
+          <p className="mt-1 text-body-sm text-muted">
+            Update the password used to sign in.
+          </p>
+        </div>
+        <Button variant="tertiary" onClick={() => setPasswordOpen(true)}>
+          Change password
+        </Button>
+      </Card>
+
+      {user.role === 'admin' && <BillingSection />}
+
+      <Modal
+        open={passwordOpen}
+        onOpenChange={setPasswordOpen}
+        title="Change password"
+        description="Enter your current password, then choose a new one."
+      >
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <Input
             label="Current password"
             type="password"
@@ -109,7 +128,7 @@ export function AccountSection({ user }: Props) {
             </Button>
           </div>
         </form>
-      </Card>
+      </Modal>
     </div>
   );
 }

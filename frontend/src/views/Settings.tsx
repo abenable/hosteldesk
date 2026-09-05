@@ -3,18 +3,16 @@ import { useHostel } from '../hooks/use-hostel.ts';
 import { getCurrentUser } from '../lib/current-user.ts';
 import { BusinessSection } from './settings/BusinessSection.tsx';
 import { TeamSection } from './settings/TeamSection.tsx';
-import { BillingSection } from './settings/BillingSection.tsx';
 import { DataSecuritySection } from './settings/DataSecuritySection.tsx';
 import { PreferencesSection } from './settings/PreferencesSection.tsx';
 import { AccountSection } from './settings/AccountSection.tsx';
 
 const SECTIONS = [
-  { id: 'business', label: 'Business' },
+  { id: 'account', label: 'Account' },
+  { id: 'business', label: 'Hostel' },
   { id: 'team', label: 'Team' },
-  { id: 'billing', label: 'Billing & License' },
   { id: 'data', label: 'Data & Security' },
   { id: 'preferences', label: 'Preferences' },
-  { id: 'account', label: 'Account' },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]['id'];
@@ -34,9 +32,9 @@ export function Settings() {
           <button
             key={s.id}
             onClick={() => setSection(s.id)}
-            className={`whitespace-nowrap rounded-sm px-3 py-2 text-left text-body-sm transition-colors ${
+            className={`whitespace-nowrap rounded-full px-4 py-2.5 text-left text-body-md transition-colors duration-200 ease-out ${
               section === s.id
-                ? 'bg-surface-soft font-medium text-ink'
+                ? 'bg-primary/10 font-semibold text-primary'
                 : 'text-muted hover:text-ink'
             }`}
           >
@@ -45,12 +43,11 @@ export function Settings() {
         ))}
       </nav>
 
-      <div className="min-w-0 flex-1">
+      <div className="mx-auto min-w-0 w-full max-w-3xl flex-1">
         {section === 'business' && (
           <BusinessSection hostelId={hostelId} onSaved={refreshHostel} />
         )}
         {section === 'team' && <TeamSection hostelId={hostelId} />}
-        {section === 'billing' && <BillingSection />}
         {section === 'data' && <DataSecuritySection />}
         {section === 'preferences' && (
           <PreferencesSection hostelId={hostelId} />

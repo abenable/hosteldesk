@@ -3,7 +3,6 @@ import { Card } from '../../components/ui/Card.tsx';
 import { Button } from '../../components/ui/Button.tsx';
 import { Modal } from '../../components/ui/Modal.tsx';
 import { addToast } from '../../lib/toasts.ts';
-import { resetOnboarding } from '../../lib/onboarding.ts';
 import {
   backupDatabase,
   listBackups,
@@ -15,7 +14,6 @@ export function DataSecuritySection() {
   const [backups, setBackups] = useState<string[]>([]);
   const [loadingBackups, setLoadingBackups] = useState(true);
   const [selectedBackup, setSelectedBackup] = useState<string | null>(null);
-  const [confirmReset, setConfirmReset] = useState(false);
 
   useEffect(() => {
     loadBackups();
@@ -54,13 +52,6 @@ export function DataSecuritySection() {
     }
   }
 
-  function handleReset() {
-    setConfirmReset(false);
-    resetOnboarding();
-    addToast('Onboarding reset. Reloading…', 'success');
-    window.location.reload();
-  }
-
   return (
     <div className="flex flex-col gap-6">
       <Card shadow className="p-6">
@@ -69,7 +60,7 @@ export function DataSecuritySection() {
           Create a copy of your database in Documents/HostelDesk/backups/.
         </p>
         <div className="mt-4">
-          <Button variant="secondary" size="sm" onClick={handleBackup} disabled={backing}>
+          <Button size="sm" onClick={handleBackup} disabled={backing}>
             {backing ? 'Backing up…' : 'Back up now'}
           </Button>
         </div>
@@ -113,18 +104,6 @@ export function DataSecuritySection() {
         )}
       </Card>
 
-      <Card shadow className="p-6">
-        <h2 className="text-title-md text-ink">Danger zone</h2>
-        <p className="mt-1 text-body-sm text-muted">
-          Restart the initial setup wizard. This does not delete your hostel data — it only re-runs the wizard.
-        </p>
-        <div className="mt-4">
-          <Button variant="secondary" size="sm" onClick={() => setConfirmReset(true)}>
-            Restart onboarding
-          </Button>
-        </div>
-      </Card>
-
       <Modal
         open={!!selectedBackup}
         onOpenChange={() => setSelectedBackup(null)}
@@ -133,31 +112,12 @@ export function DataSecuritySection() {
           selectedBackup?.split(/[/\\]/).pop() ?? ''
         }. This cannot be undone.`}
       >
-        <div className="flex justify-end gap-3">
-          <Button variant="tertiary" onClick={() => setSelectedBackup(null)}>
-            Cancel
-          </Button>
+        <div className="flex justify-end">
           <Button
             variant="secondary"
             onClick={() => selectedBackup && handleRestore(selectedBackup)}
           >
             Restore & restart
-          </Button>
-        </div>
-      </Modal>
-
-      <Modal
-        open={confirmReset}
-        onOpenChange={setConfirmReset}
-        title="Restart onboarding?"
-        description="This will reload the app and show the setup wizard again."
-      >
-        <div className="flex justify-end gap-3">
-          <Button variant="tertiary" onClick={() => setConfirmReset(false)}>
-            Cancel
-          </Button>
-          <Button variant="secondary" onClick={handleReset}>
-            Restart
           </Button>
         </div>
       </Modal>

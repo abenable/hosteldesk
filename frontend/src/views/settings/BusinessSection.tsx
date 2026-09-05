@@ -3,7 +3,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { Card } from '../../components/ui/Card.tsx';
 import { Button } from '../../components/ui/Button.tsx';
 import { Input } from '../../components/ui/Input.tsx';
-import { Select } from '../../components/ui/Select.tsx';
+import { RoomsIcon } from '../../components/ui/icons.tsx';
 import { addToast } from '../../lib/toasts.ts';
 import {
   getHostelProfile,
@@ -12,7 +12,7 @@ import {
   type HostelProfile,
 } from '../../lib/tauri.ts';
 
-const CURRENCIES = ['UGX', 'KES', 'TZS', 'RWF', 'USD'];
+const CURRENCY = 'UGX';
 
 type Props = {
   hostelId: number;
@@ -25,7 +25,6 @@ export function BusinessSection({ hostelId, onSaved }: Props) {
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
-  const [currency, setCurrency] = useState('UGX');
   const [logoPath, setLogoPath] = useState<string | undefined>();
   const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -42,7 +41,6 @@ export function BusinessSection({ hostelId, onSaved }: Props) {
         setName(p.name);
         setAddress(p.address ?? '');
         setPhone(p.phone ?? '');
-        setCurrency(p.currency);
         setLogoPath(p.branding_logo_path);
       })
       .catch(() => {})
@@ -57,8 +55,7 @@ export function BusinessSection({ hostelId, onSaved }: Props) {
   const dirty = profile && (
     name !== profile.name ||
     address !== (profile.address ?? '') ||
-    phone !== (profile.phone ?? '') ||
-    currency !== profile.currency
+    phone !== (profile.phone ?? '')
   );
 
   async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
@@ -80,7 +77,7 @@ export function BusinessSection({ hostelId, onSaved }: Props) {
         name: name.trim(),
         address: address.trim() || undefined,
         phone: phone.trim() || undefined,
-        currency,
+        currency: CURRENCY,
         branding_logo_path: path,
       });
       addToast('Logo uploaded.', 'success');
@@ -105,7 +102,7 @@ export function BusinessSection({ hostelId, onSaved }: Props) {
         name: name.trim(),
         address: address.trim() || undefined,
         phone: phone.trim() || undefined,
-        currency,
+        currency: CURRENCY,
         branding_logo_path: logoPath,
       });
       addToast('Hostel profile updated.', 'success');
@@ -131,22 +128,20 @@ export function BusinessSection({ hostelId, onSaved }: Props) {
 
   return (
     <Card shadow className="p-6">
-      <h2 className="text-title-md text-ink">Hostel profile</h2>
-      <p className="mt-1 text-body-sm text-muted">Edit your hostel details and branding.</p>
+      <h2 className="text-center text-title-md text-ink">Hostel profile</h2>
+      <p className="mt-1 text-center text-body-sm text-muted">Edit your hostel details and branding.</p>
 
-      <div className="mt-5 flex items-center gap-5">
-        <div className="flex h-24 w-24 items-center justify-center rounded-md border border-hairline bg-surface-soft">
+      <div className="mt-5 flex flex-col items-center gap-3">
+        <div className="relative flex h-40 w-40 flex-col items-center justify-end gap-2 overflow-hidden rounded-md border border-hairline bg-surface-soft p-3">
           {logoPath ? (
             <img
               src={convertFileSrc(logoPath)}
               alt="Hostel logo"
-              className="h-full w-full rounded-md object-contain"
+              className="absolute inset-0 h-full w-full object-contain"
             />
           ) : (
-            <span className="text-caption text-muted">No logo</span>
+            <RoomsIcon width={56} height={56} className="absolute top-6 text-muted-soft" />
           )}
-        </div>
-        <div>
           <input
             ref={fileInputRef}
             type="file"
@@ -154,16 +149,18 @@ export function BusinessSection({ hostelId, onSaved }: Props) {
             className="hidden"
             onChange={handleFileSelect}
           />
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-          >
-            {uploading ? 'Uploading…' : 'Upload logo'}
-          </Button>
-          <p className="mt-1 text-caption-sm text-muted">PNG, JPG or WebP, max 2 MB.</p>
+          <div className={logoPath ? 'relative z-10 flex flex-col items-center gap-1 rounded-md bg-canvas/90 px-2 py-1.5 backdrop-blur-sm' : 'flex flex-col items-center gap-1'}>
+            <Button
+              type="button"
+              size="sm"
+              className="!h-7"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={uploading}
+            >
+              {uploading ? 'Uploading…' : logoPath ? 'Change logo' : 'Upload logo'}
+            </Button>
+            <p className="text-center text-caption-sm text-muted">PNG, JPG or WebP, max 10 MB.</p>
+          </div>
         </div>
       </div>
 
@@ -171,11 +168,6 @@ export function BusinessSection({ hostelId, onSaved }: Props) {
         <Input label="Hostel name" value={name} onChange={(e) => setName(e.target.value)} required />
         <Input label="Address" value={address} onChange={(e) => setAddress(e.target.value)} />
         <Input label="Phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} />
-        <Select label="Currency" value={currency} onChange={(e) => setCurrency(e.target.value)}>
-          {CURRENCIES.map((c) => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </Select>
         <div className="flex justify-end">
           <Button type="submit" disabled={busy || !dirty || !name.trim()}>
             {busy ? 'Saving…' : 'Save changes'}

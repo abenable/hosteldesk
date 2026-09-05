@@ -1,4 +1,4 @@
-import type { StaffUser } from './tauri.ts';
+import type { User } from './tauri.ts';
 
 const KEY = 'hosteldesk.onboarding';
 
@@ -23,15 +23,10 @@ export function isOnboardingComplete(): boolean {
   return read().complete === true;
 }
 
-export function completeOnboarding(user?: StaffUser) {
+export function completeOnboarding(user?: User) {
   const state = read();
   write({ ...state, complete: true });
   window.dispatchEvent(
     new CustomEvent('hosteldesk:onboarding-complete', { detail: user }),
   );
-}
-
-export function resetOnboarding() {
-  write({ complete: false });
-  window.dispatchEvent(new Event('hosteldesk:onboarding-reset'));
 }

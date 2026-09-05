@@ -112,10 +112,7 @@ export function BillingSection() {
             onChange={(e) => setKey(e.target.value)}
             rows={4}
           />
-          <div className="flex justify-end gap-3">
-            <Button variant="tertiary" onClick={() => setEnterOpen(false)} disabled={busy}>
-              Cancel
-            </Button>
+          <div className="flex justify-end">
             <Button type="submit" disabled={busy || !key.trim()}>
               Activate
             </Button>

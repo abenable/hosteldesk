@@ -24,10 +24,10 @@ export type Room = {
   created_at: string;
 };
 
-export type StaffUserInput = {
+export type UserInput = {
   hostel_id: number;
-  name: string;
-  username: string;
+  full_name: string;
+  email: string;
   password: string;
   role: string;
 };
@@ -62,25 +62,25 @@ export type HostelProfile = {
   onboarding_complete: boolean;
 };
 
-export type StaffUser = {
+export type User = {
   id: number;
   hostel_id: number;
-  name: string;
-  username: string;
+  full_name: string;
+  email: string;
   role: string;
   created_at: string;
 };
 
-export type UpdateStaffUserInput = {
+export type UpdateUserInput = {
   user_id: number;
-  name: string;
-  username: string;
+  full_name: string;
+  email: string;
   role: string;
   password?: string;
 };
 
 export type LoginInput = {
-  username: string;
+  email: string;
   password: string;
 };
 
@@ -125,7 +125,7 @@ export type CompleteOnboardingInput = {
   currency?: string | null;
   branding_logo_path?: string | null;
   admin_name: string;
-  username: string;
+  email: string;
   password: string;
 };
 
@@ -146,18 +146,18 @@ export async function activateLicense(license: string): Promise<LicensePayload> 
   return invoke<LicensePayload>('activate_license', { license });
 }
 
-export async function createStaffUser(input: StaffUserInput): Promise<number> {
+export async function createUser(input: UserInput): Promise<number> {
   try {
-    return await invoke<number>('create_staff_user', { request: input });
+    return await invoke<number>('create_user', { request: input });
   } catch (error) {
     reportError(error);
     throw error;
   }
 }
 
-export async function login(input: LoginInput): Promise<StaffUser> {
+export async function login(input: LoginInput): Promise<User> {
   try {
-    return await invoke<StaffUser>('login', { request: input });
+    return await invoke<User>('login', { request: input });
   } catch (error) {
     reportError(error);
     throw error;
@@ -175,18 +175,18 @@ export async function getOnboardingStatus(): Promise<boolean> {
 
 export async function completeOnboarding(
   input: CompleteOnboardingInput,
-): Promise<StaffUser> {
+): Promise<User> {
   try {
-    return await invoke<StaffUser>('complete_onboarding', { request: input });
+    return await invoke<User>('complete_onboarding', { request: input });
   } catch (error) {
     reportError(error);
     throw error;
   }
 }
 
-export async function getSession(): Promise<StaffUser | null> {
+export async function getSession(): Promise<User | null> {
   try {
-    return await invoke<StaffUser | null>('get_session');
+    return await invoke<User | null>('get_session');
   } catch (error) {
     reportError(error);
     throw error;
@@ -541,18 +541,18 @@ export async function updateResident(input: UpdateResidentInput): Promise<void> 
   }
 }
 
-export async function listStaffUsers(input: { hostel_id: number }): Promise<StaffUser[]> {
+export async function listUsers(input: { hostel_id: number }): Promise<User[]> {
   try {
-    return await invoke<StaffUser[]>('list_staff_users', { request: input });
+    return await invoke<User[]>('list_users', { request: input });
   } catch (error) {
     reportError(error);
     throw error;
   }
 }
 
-export async function updateStaffUser(input: UpdateStaffUserInput): Promise<StaffUser> {
+export async function updateUser(input: UpdateUserInput): Promise<User> {
   try {
-    return await invoke<StaffUser>('update_staff_user', { request: input });
+    return await invoke<User>('update_user', { request: input });
   } catch (error) {
     reportError(error);
     throw error;
@@ -568,9 +568,9 @@ export async function backupDatabase(): Promise<string> {
   }
 }
 
-export async function deleteStaffUser(input: { user_id: number }): Promise<void> {
+export async function deleteUser(input: { user_id: number }): Promise<void> {
   try {
-    return await invoke<void>('delete_staff_user', { request: input });
+    return await invoke<void>('delete_user', { request: input });
   } catch (error) {
     reportError(error);
     throw error;

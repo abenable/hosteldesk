@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { login, type StaffUser } from '../lib/tauri.ts';
+import { login, type User } from '../lib/tauri.ts';
 import { setCurrentUser } from '../lib/current-user.ts';
 import { Button } from './ui/Button.tsx';
 import { Card } from './ui/Card.tsx';
@@ -7,11 +7,11 @@ import { Input } from './ui/Input.tsx';
 import logo from '../assets/logo.png';
 
 type Props = {
-  onSignedIn: (user: StaffUser) => void;
+  onSignedIn: (user: User) => void;
 };
 
 export function SignIn({ onSignedIn }: Props) {
-  const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -19,7 +19,7 @@ export function SignIn({ onSignedIn }: Props) {
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     setError(null);
-    if (!username.trim() || !password) {
+    if (!email.trim() || !password) {
       setError('Enter your email and password.');
       return;
     }
@@ -27,7 +27,7 @@ export function SignIn({ onSignedIn }: Props) {
     setBusy(true);
     try {
       const user = await login({
-        username: username.trim(),
+        email: email.trim(),
         password,
       });
       setCurrentUser(user);
@@ -55,11 +55,11 @@ export function SignIn({ onSignedIn }: Props) {
         <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-4 text-left">
           <Input
             label="Email"
-            name="username"
+            name="email"
             type="email"
-            autoComplete="username"
-            value={username}
-            onChange={(event) => setUsername(event.target.value)}
+            autoComplete="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
             error={error ?? undefined}
           />
           <Input
