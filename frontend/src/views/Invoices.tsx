@@ -38,9 +38,7 @@ type TabValue = 'ledger' | 'outstanding';
 const METHODS = [
   { value: '', label: 'All methods' },
   { value: 'cash', label: 'Cash' },
-  { value: 'mobile_money', label: 'Mobile money' },
   { value: 'bank_transfer', label: 'Bank transfer' },
-  { value: 'card', label: 'Card' },
 ];
 
 function monthLabel(d: Date): string {
@@ -492,9 +490,7 @@ function RecordPaymentModal({
 
           <Select label="Method" value={method} capitalize onChange={(e) => setMethod(e.target.value)}>
             <option value="cash">Cash</option>
-            <option value="mobile_money">Mobile money</option>
             <option value="bank_transfer">Bank transfer</option>
-            <option value="card">Card</option>
           </Select>
 
           <Textarea label="Notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
