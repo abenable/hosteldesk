@@ -3,6 +3,9 @@ import { Card } from '../../components/ui/Card.tsx';
 import { Button } from '../../components/ui/Button.tsx';
 import { Select } from '../../components/ui/Select.tsx';
 import { Textarea } from '../../components/ui/Textarea.tsx';
+import { Modal } from '../../components/ui/Modal.tsx';
+import { ReceiptPreview } from '../../components/ReceiptPreview.tsx';
+import { useHostel } from '../../hooks/use-hostel.ts';
 import { addToast } from '../../lib/toasts.ts';
 import {
   getAppPreferences,
@@ -23,12 +26,14 @@ type Props = {
 };
 
 export function PreferencesSection({ hostelId }: Props) {
+  const { hostel } = useHostel();
   const [prefs, setPrefs] = useState<AppPreferences | null>(null);
   const [loading, setLoading] = useState(true);
   const [dateFormat, setDateFormat] = useState(DATE_FORMATS[0].value);
   const [language, setLanguage] = useState(LANGUAGES[0].value);
   const [receiptFooter, setReceiptFooter] = useState('');
   const [busy, setBusy] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   useEffect(() => {
     if (!hostelId) return;
@@ -124,12 +129,31 @@ export function PreferencesSection({ hostelId }: Props) {
           placeholder="Thank you for staying with us!"
         />
 
-        <div className="flex justify-end">
+        <div className="flex items-center justify-between gap-3">
+          <Button type="button" variant="secondary" size="sm" onClick={() => setPreviewOpen(true)}>
+            Preview receipt
+          </Button>
           <Button type="submit" disabled={busy || !dirty}>
             {busy ? 'Saving…' : 'Save preferences'}
           </Button>
         </div>
       </form>
+
+      <Modal
+        open={previewOpen}
+        onOpenChange={setPreviewOpen}
+        title="Receipt preview"
+        description="A sample receipt using your current branding and footer text."
+        size="lg"
+      >
+        <ReceiptPreview
+          hostelName={hostel?.name || 'HostelDesk'}
+          hostelAddress={hostel?.address}
+          hostelPhone={hostel?.phone}
+          logoPath={hostel?.branding_logo_path}
+          footerText={receiptFooter}
+        />
+      </Modal>
     </Card>
   );
 }

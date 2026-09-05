@@ -323,6 +323,8 @@ export function Invoices({ onNavigate: _onNavigate }: Props) {
         onOpenChange={setRecordOpen}
         hostelId={hostelId}
         hostelName={hostel?.name || 'HostelDesk'}
+        hostelAddress={hostel?.address || null}
+        hostelPhone={hostel?.phone || null}
         logoPath={hostel?.branding_logo_path || null}
         receiptFooter={preferences?.receipt_footer || null}
         currency={currency}
@@ -341,11 +343,16 @@ export function Invoices({ onNavigate: _onNavigate }: Props) {
       await generateAndOpenReceipt({
         hostel_id: hostelId,
         hostel_name: hostel?.name || 'HostelDesk',
+        hostel_address: hostel?.address || null,
+        hostel_phone: hostel?.phone || null,
         receipt_number: Number(p.receipt_number ?? 0),
         resident_name: p.resident_name,
+        room_number: p.room_number,
         amount: p.amount,
         date: p.payment_date.slice(0, 10),
         balance: detail.balance,
+        payment_method: p.payment_method,
+        notes: p.notes || null,
         currency_code: currency,
         footer_text: preferences?.receipt_footer || null,
         logo_path: hostel?.branding_logo_path || null,
@@ -361,6 +368,8 @@ function RecordPaymentModal({
   onOpenChange,
   hostelId,
   hostelName,
+  hostelAddress,
+  hostelPhone,
   logoPath,
   receiptFooter,
   currency,
@@ -371,6 +380,8 @@ function RecordPaymentModal({
   onOpenChange: (o: boolean) => void;
   hostelId: number;
   hostelName: string;
+  hostelAddress: string | null;
+  hostelPhone: string | null;
   logoPath: string | null;
   receiptFooter: string | null;
   currency: string;
@@ -412,14 +423,19 @@ function RecordPaymentModal({
         await generateAndOpenReceipt({
           hostel_id: hostelId,
           hostel_name: hostelName,
+          hostel_address: hostelAddress,
+          hostel_phone: hostelPhone,
           receipt_number: Number(receiptNumber),
           resident_name: selected.resident_name,
+          room_number: selected.room_number,
           amount: amount.trim(),
           date: new Date().toLocaleDateString('en-CA'),
           balance: (() => {
             const remaining = subtractDecimalStrings(selected.balance, amount.trim());
             return remaining.startsWith('-') ? '0' : remaining;
           })(),
+          payment_method: method,
+          notes: notes.trim() || null,
           currency_code: currency,
           footer_text: receiptFooter,
           logo_path: logoPath,
