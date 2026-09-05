@@ -7,18 +7,20 @@ edition = "2021"
 anyhow = { workspace = true }
 chrono = { workspace = true }
 db = { path = "../db" }
-license = { path = "../license", features = ["generator"] }
+hosteldesk-core = { path = "../core" }
+license = { path = "../license" }
 open = "5"
 pdf = { path = "../pdf" }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
-tauri = { version = "2", features = ["image-png"] }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+tauri = { version = "2", features = ["image-png", "test"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
-
-[dev-dependencies]
-sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
