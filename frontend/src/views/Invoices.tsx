@@ -495,8 +495,7 @@ function RecordPaymentModal({
 
           <Textarea label="Notes (optional)" value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} />
 
-          <div className="flex justify-end gap-3">
-            <Button variant="tertiary" onClick={() => onOpenChange(false)} disabled={busy}>Cancel</Button>
+          <div className="flex justify-end">
             <Button type="submit" disabled={busy || !allocId || !amountValid}>
               {busy ? 'Recording…' : 'Record & generate receipt'}
             </Button>

@@ -494,10 +494,7 @@ function EditResidentModal({
         <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         <Input label="ID number" value={idNumber} onChange={(e) => setIdNumber(e.target.value)} />
         <Input label="Next of kin" value={nextOfKin} onChange={(e) => setNextOfKin(e.target.value)} />
-        <div className="flex justify-end gap-3">
-          <Button variant="tertiary" onClick={() => onOpenChange(false)} disabled={busy}>
-            Cancel
-          </Button>
+        <div className="flex justify-end">
           <Button type="submit" disabled={busy || !nameValid}>
             {busy ? 'Saving…' : 'Save'}
           </Button>

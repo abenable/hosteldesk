@@ -143,7 +143,7 @@ const sidebarMenuButtonVariants = {
 const sidebarMenuButtonSizes = {
   default: 'h-8 text-body-sm',
   sm: 'h-7 text-caption-sm',
-  lg: 'h-12 text-body-sm',
+  lg: 'h-12 text-body-md',
 }
 
 export function SidebarMenuButton({

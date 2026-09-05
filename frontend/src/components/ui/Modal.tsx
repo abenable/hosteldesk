@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react';
 import * as Dialog from '@radix-ui/react-dialog';
-import { CloseIcon } from './icons.tsx';
 
 type Props = {
   open: boolean;
@@ -26,11 +25,8 @@ export function Modal({ open, onOpenChange, title, description, children, footer
                 </Dialog.Description>
               )}
             </div>
-            <Dialog.Close
-              className="rounded-full p-1 text-muted hover:bg-surface-soft hover:text-ink"
-              aria-label="Close"
-            >
-              <CloseIcon width={18} height={18} />
+            <Dialog.Close className="shrink-0 rounded-full px-3 py-1.5 text-button-sm text-muted hover:bg-surface-soft hover:text-ink">
+              Cancel
             </Dialog.Close>
           </div>
           <div className="flex flex-col gap-4">{children}</div>

@@ -70,10 +70,7 @@ export function CheckOutConfirm({
           </p>
         )}
       </div>
-      <div className="flex justify-end gap-3">
-        <Button variant="tertiary" onClick={() => onOpenChange(false)} disabled={busy}>
-          Cancel
-        </Button>
+      <div className="flex justify-end">
         <Button variant={owed ? 'secondary' : 'primary'} onClick={handleConfirm} disabled={busy}>
           {busy ? 'Checking out…' : 'Confirm check-out'}
         </Button>
