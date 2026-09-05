@@ -1,0 +1,187 @@
+import { useEffect, useRef, useState } from 'react';
+import { convertFileSrc } from '@tauri-apps/api/core';
+import { Card } from '../../components/ui/Card.tsx';
+import { Button } from '../../components/ui/Button.tsx';
+import { Input } from '../../components/ui/Input.tsx';
+import { Select } from '../../components/ui/Select.tsx';
+import { addToast } from '../../lib/toasts.ts';
+import {
+  getHostelProfile,
+  updateHostel,
+  uploadHostelLogo,
+  type HostelProfile,
+} from '../../lib/tauri.ts';
+
+const CURRENCIES = ['UGX', 'KES', 'TZS', 'RWF', 'USD'];
+
+type Props = {
+  hostelId: number;
+  onSaved: () => void;
+};
+
+export function BusinessSection({ hostelId, onSaved }: Props) {
+  const [profile, setProfile] = useState<HostelProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [name, setName] = useState('');
+  const [address, setAddress] = useState('');
+  const [phone, setPhone] = useState('');
+  const [currency, setCurrency] = useState('UGX');
+  const [logoPath, setLogoPath] = useState<string | undefined>();
+  const [uploading, setUploading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!hostelId) return;
+    let cancelled = false;
+    setLoading(true);
+    getHostelProfile(hostelId)
+      .then((p) => {
+        if (cancelled || !p) return;
+        setProfile(p);
+        setName(p.name);
+        setAddress(p.address ?? '');
+        setPhone(p.phone ?? '');
+        setCurrency(p.currency);
+        setLogoPath(p.branding_logo_path);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hostelId]);
+
+  const dirty = profile && (
+    name !== profile.name ||
+    address !== (profile.address ?? '') ||
+    phone !== (profile.phone ?? '') ||
+    currency !== profile.currency
+  );
+
+  async function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !hostelId) return;
+
+    setUploading(true);
+    try {
+      const buffer = await file.arrayBuffer();
+      const bytes = Array.from(new Uint8Array(buffer));
+      const path = await uploadHostelLogo({
+        hostel_id: hostelId,
+        data: bytes,
+        filename: file.name,
+      });
+      setLogoPath(path);
+      await updateHostel({
+        hostel_id: hostelId,
+        name: name.trim(),
+        address: address.trim() || undefined,
+        phone: phone.trim() || undefined,
+        currency,
+        branding_logo_path: path,
+      });
+      addToast('Logo uploaded.', 'success');
+      onSaved();
+    } catch {
+      // toast surfaced
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  }
+
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim() || !hostelId) return;
+    setBusy(true);
+    try {
+      await updateHostel({
+        hostel_id: hostelId,
+        name: name.trim(),
+        address: address.trim() || undefined,
+        phone: phone.trim() || undefined,
+        currency,
+        branding_logo_path: logoPath,
+      });
+      addToast('Hostel profile updated.', 'success');
+      onSaved();
+    } catch {
+      // toast already surfaced
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <Card shadow className="p-6">
+        <div className="flex flex-col gap-3">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="h-14 animate-pulse rounded-full bg-surface-soft" />
+          ))}
+        </div>
+      </Card>
+    );
+  }
+
+  return (
+    <Card shadow className="p-6">
+      <h2 className="text-title-md text-ink">Hostel profile</h2>
+      <p className="mt-1 text-body-sm text-muted">Edit your hostel details and branding.</p>
+
+      <div className="mt-5 flex items-center gap-5">
+        <div className="flex h-24 w-24 items-center justify-center rounded-md border border-hairline bg-surface-soft">
+          {logoPath ? (
+            <img
+              src={convertFileSrc(logoPath)}
+              alt="Hostel logo"
+              className="h-full w-full rounded-md object-contain"
+            />
+          ) : (
+            <span className="text-caption text-muted">No logo</span>
+          )}
+        </div>
+        <div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            className="hidden"
+            onChange={handleFileSelect}
+          />
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+          >
+            {uploading ? 'Uploading…' : 'Upload logo'}
+          </Button>
+          <p className="mt-1 text-caption-sm text-muted">PNG, JPG or WebP, max 2 MB.</p>
+        </div>
+      </div>
+
+      <form onSubmit={handleSave} className="mt-6 flex flex-col gap-4">
+        <Input label="Hostel name" value={name} onChange={(e) => setName(e.target.value)} required />
+        <Input label="Address" value={address} onChange={(e) => setAddress(e.target.value)} />
+        <Input label="Phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} />
+        <Select label="Currency" value={currency} onChange={(e) => setCurrency(e.target.value)}>
+          {CURRENCIES.map((c) => (
+            <option key={c} value={c}>{c}</option>
+          ))}
+        </Select>
+        <div className="flex justify-end">
+          <Button type="submit" disabled={busy || !dirty || !name.trim()}>
+            {busy ? 'Saving…' : 'Save changes'}
+          </Button>
+        </div>
+      </form>
+    </Card>
+  );
+}

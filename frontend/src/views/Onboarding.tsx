@@ -1,49 +1,25 @@
 import { useState } from 'react';
 import { Button } from '../components/ui/Button.tsx';
 import { Input } from '../components/ui/Input.tsx';
-import { Select } from '../components/ui/Select.tsx';
 import { Card } from '../components/ui/Card.tsx';
 import { Stepper } from '../components/ui/Stepper.tsx';
 import { addToast } from '../lib/toasts.ts';
 import logo from '../assets/logo.png';
-import {
-  createStaffUser,
-  createHostel,
-  listHostels,
-  activateLicense,
-  generateTrialLicense,
-} from '../lib/tauri.ts';
-import {
-  saveHostelProfile,
-  saveAdminAccount,
-  completeOnboarding,
-  type HostelProfile,
-  type StaffRole,
-} from '../lib/onboarding.ts';
+import { completeOnboarding as completeOnboardingCommand } from '../lib/tauri.ts';
+import { completeOnboarding } from '../lib/onboarding.ts';
+import { setCurrentUser } from '../lib/current-user.ts';
+
+type HostelProfile = {
+  name: string;
+  address?: string;
+  phone?: string;
+};
 
 const STEPS = [
   { id: 1, label: 'Hostel profile' },
   { id: 2, label: 'Admin account' },
   { id: 3, label: 'Review & finish' },
 ];
-
-const ROLES: { value: StaffRole; label: string }[] = [
-  { value: 'admin', label: 'Admin' },
-  { value: 'manager', label: 'Manager' },
-];
-
-type LicenseChoice = 'trial' | 'key';
-
-async function ensureHostel(profile: HostelProfile): Promise<number> {
-  const existing = await listHostels();
-  if (existing.length > 0) return existing[0].id;
-  const hostel = await createHostel({
-    name: profile.name.trim(),
-    address: profile.address?.trim() || undefined,
-    phone: profile.phone?.trim() || undefined,
-  });
-  return hostel.id;
-}
 
 export function Onboarding() {
   const [phase, setPhase] = useState<'welcome' | 'wizard'>('welcome');
@@ -55,7 +31,7 @@ export function Onboarding() {
 
 function Welcome({ onStart }: { onStart: () => void }) {
   return (
-    <div className="flex min-h-screen flex-col items-center justify-center bg-canvas px-4 py-16 text-center">
+    <div className="flex h-screen flex-col items-center justify-center overflow-y-auto bg-canvas px-4 py-16 text-center">
       <div className="mx-auto max-w-md">
         <img
           src={logo}
@@ -90,13 +66,7 @@ function Wizard() {
   const [adminEmail, setAdminEmail] = useState('');
   const [adminPhone, setAdminPhone] = useState('');
   const [adminPassword, setAdminPassword] = useState('');
-  const [adminRole, setAdminRole] = useState<StaffRole>('admin');
   const [creating, setCreating] = useState(false);
-
-  // Step 3 — license
-  const [licenseChoice, setLicenseChoice] = useState<LicenseChoice>('trial');
-  const [licenseKey, setLicenseKey] = useState('');
-  const [finishing, setFinishing] = useState(false);
 
   const profileValid = profile.name.trim().length > 0;
   const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(adminEmail.trim());
@@ -112,12 +82,11 @@ function Wizard() {
         addToast('Hostel name is required.', 'error');
         return;
       }
-      saveHostelProfile(profile);
       setStep(2);
       return;
     }
     if (step === 2) {
-      void handleCreateAdmin();
+      setStep(3);
       return;
     }
     if (step === 3) {
@@ -129,7 +98,7 @@ function Wizard() {
     if (step > 1) setStep(step - 1);
   }
 
-  async function handleCreateAdmin() {
+  async function handleFinish() {
     if (!adminValid) {
       addToast(
         'Fill all fields. Use a valid email, a phone number, and a password of 8+ characters.',
@@ -139,54 +108,27 @@ function Wizard() {
     }
     setCreating(true);
     try {
-      const hostelId = await ensureHostel(profile);
-      await createStaffUser({
-        hostel_id: hostelId,
-        name: adminName.trim(),
+      const user = await completeOnboardingCommand({
+        hostel_name: profile.name.trim(),
+        address: profile.address?.trim() || null,
+        phone: profile.phone?.trim() || null,
+        currency: null,
+        branding_logo_path: null,
+        admin_name: adminName.trim(),
         username: adminEmail.trim(),
         password: adminPassword,
-        role: adminRole,
       });
-      saveAdminAccount({
-        name: adminName.trim(),
-        email: adminEmail.trim(),
-        phone: adminPhone.trim(),
-        role: adminRole,
-      });
-      addToast('Account created.', 'success');
-      setStep(3);
+      setCurrentUser(user);
+      completeOnboarding(user);
     } catch {
-      // toast already surfaced by the tauri wrapper
+      // The Tauri wrapper already surfaced the error.
     } finally {
       setCreating(false);
     }
   }
 
-  async function handleFinish() {
-    setFinishing(true);
-    try {
-      if (licenseChoice === 'key') {
-        if (!licenseKey.trim()) {
-          addToast('Paste your license key to continue.', 'error');
-          setFinishing(false);
-          return;
-        }
-        await activateLicense(licenseKey.trim());
-      } else {
-        const trial = await generateTrialLicense();
-        await activateLicense(trial);
-      }
-      completeOnboarding();
-      addToast('Onboarding complete. Welcome to HostelDesk.', 'success');
-    } catch {
-      // toast already surfaced by the tauri wrapper
-    } finally {
-      setFinishing(false);
-    }
-  }
-
   return (
-    <div className="min-h-screen bg-canvas px-4 py-16">
+    <div className="h-screen overflow-y-auto bg-canvas px-4 py-16">
       <div className="mx-auto max-w-xl text-center">
         <header className="mb-8">
           <h1 className="text-display-lg text-ink">Set up your hostel</h1>
@@ -239,7 +181,7 @@ function Wizard() {
                 placeholder="Jane Doe"
               />
               <Input
-                label="Email address"
+                label="Email"
                 type="email"
                 value={adminEmail}
                 onChange={(e) => setAdminEmail(e.target.value)}
@@ -264,18 +206,6 @@ function Wizard() {
                 onChange={(e) => setAdminPassword(e.target.value)}
                 hint="At least 8 characters."
               />
-              <Select
-                label="Role"
-                value={adminRole}
-                capitalize
-                onChange={(e) => setAdminRole(e.target.value as StaffRole)}
-              >
-                {ROLES.map((r) => (
-                  <option key={r.value} value={r.value}>
-                    {r.label}
-                  </option>
-                ))}
-              </Select>
             </div>
           )}
 
@@ -297,44 +227,13 @@ function Wizard() {
                 </div>
                 <div>
                   <dt className="text-caption text-muted">Role</dt>
-                  <dd className="text-ink capitalize">{adminRole}</dd>
+                  <dd className="text-ink">Administrator</dd>
                 </div>
               </dl>
 
-              <div className="border-t border-hairline pt-5">
-                <h3 className="text-title-sm text-ink">License</h3>
-                <p className="mt-1 text-caption-sm text-muted">
-                  Start a 30-day free trial, or enter a license key if you have one.
-                </p>
-                <div className="mt-3 inline-flex rounded-full bg-surface-soft p-1">
-                  {([
-                    { id: 'trial', label: 'Free trial' },
-                    { id: 'key', label: 'I have a key' },
-                  ] as const).map((o) => (
-                    <button
-                      key={o.id}
-                      type="button"
-                      onClick={() => setLicenseChoice(o.id)}
-                      className={`rounded-full px-4 py-1.5 text-button-sm transition-colors ${
-                        licenseChoice === o.id
-                          ? 'bg-canvas text-ink shadow-card'
-                          : 'text-muted hover:text-ink'
-                      }`}
-                    >
-                      {o.label}
-                    </button>
-                  ))}
-                </div>
-                {licenseChoice === 'key' && (
-                  <Input
-                    className="mt-3"
-                    label="License key"
-                    value={licenseKey}
-                    onChange={(e) => setLicenseKey(e.target.value)}
-                    placeholder="Paste your license key"
-                  />
-                )}
-              </div>
+              <p className="text-center text-body-sm text-muted">
+                Everything looks good. Click Finish to start using HostelDesk.
+              </p>
             </div>
           )}
 
@@ -344,7 +243,7 @@ function Wizard() {
             }`}
           >
             {step > 1 && (
-              <Button variant="tertiary" onClick={back} disabled={creating || finishing}>
+              <Button variant="tertiary" onClick={back} disabled={creating}>
                 Back
               </Button>
             )}
@@ -353,16 +252,15 @@ function Wizard() {
               disabled={
                 (step === 1 && !profileValid) ||
                 (step === 2 && (!adminValid || creating)) ||
-                creating ||
-                finishing
+                creating
               }
             >
-              {creating || finishing
+              {creating
                 ? 'Working…'
                 : step === 3
                   ? 'Finish'
                   : step === 2
-                    ? 'Create account & continue'
+                    ? 'Continue'
                     : 'Continue'}
             </Button>
           </div>

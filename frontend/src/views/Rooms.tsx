@@ -4,31 +4,31 @@ import { Tabs } from '../components/ui/Tabs.tsx';
 import { Modal } from '../components/ui/Modal.tsx';
 import { RoomStatusBoard } from '../components/RoomStatusBoard.tsx';
 import { RoomForm } from '../components/RoomForm.tsx';
-import { PlusIcon } from '../components/ui/icons.tsx';
-import { getRooms, listHostels, type Room, type Hostel } from '../lib/tauri.ts';
+import { useHostel } from '../hooks/use-hostel.ts';
+import { getRooms, type Room } from '../lib/tauri.ts';
 
 type Filter = 'all' | 'vacant' | 'occupied' | 'maintenance';
 
 export function Rooms() {
+  const { hostel, hostelId } = useHostel();
   const [filter, setFilter] = useState<Filter>('all');
   const [addOpen, setAddOpen] = useState(false);
   const [rooms, setRooms] = useState<Room[]>([]);
-  const [hostel, setHostel] = useState<Hostel | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
+    if (!hostelId) return;
     let cancelled = false;
-    Promise.all([getRooms(), listHostels()])
-      .catch(() => [null, null] as const)
-      .then(([r, h]) => {
-        if (cancelled) return;
-        if (Array.isArray(r)) setRooms(r);
-        if (Array.isArray(h)) setHostel(h[0] ?? null);
-      });
+    setRooms([]);
+    getRooms(hostelId)
+      .then((r) => {
+        if (!cancelled) setRooms(r);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [refreshKey]);
+  }, [hostelId, refreshKey]);
 
   const tabs = [
     { value: 'all', label: 'All', content: null },
@@ -46,12 +46,11 @@ export function Rooms() {
           onValueChange={(v) => setFilter(v as Filter)}
         />
         <Button onClick={() => setAddOpen(true)}>
-          <PlusIcon width={16} height={16} />
           Add room
         </Button>
       </div>
 
-      <RoomStatusBoard filter={filter} refreshKey={refreshKey} />
+      <RoomStatusBoard filter={filter} refreshKey={refreshKey} hostelId={hostel?.id} />
 
       <Modal
         open={addOpen}

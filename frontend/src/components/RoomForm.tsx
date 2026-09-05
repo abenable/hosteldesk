@@ -12,6 +12,13 @@ const ROOM_TYPES = [
   { value: 'dorm', label: 'Dorm' },
 ];
 
+const BILLING_PERIODS = [
+  { value: 'night', label: 'Night' },
+  { value: 'week', label: 'Week' },
+  { value: 'month', label: 'Month' },
+  { value: 'semester', label: 'Semester' },
+];
+
 type Props = {
   hostelId: number;
   existing: Room[];
@@ -23,6 +30,7 @@ export function RoomForm({ hostelId, existing, onCreated }: Props) {
   const [roomType, setRoomType] = useState('single');
   const [capacity, setCapacity] = useState('1');
   const [rate, setRate] = useState('');
+  const [billingPeriod, setBillingPeriod] = useState('semester');
   const [busy, setBusy] = useState(false);
 
   const nextOrdinal = (letter: string) => {
@@ -53,6 +61,7 @@ export function RoomForm({ hostelId, existing, onCreated }: Props) {
         capacity: capacityNum,
         floor: floor.charCodeAt(0) - 65,
         rate_per_period: rate.trim(),
+        billing_period: billingPeriod,
       });
       addToast(`Room ${roomNumber} added.`, 'success');
       onCreated?.();
@@ -96,6 +105,18 @@ export function RoomForm({ hostelId, existing, onCreated }: Props) {
           {ROOM_TYPES.map((t) => (
             <option key={t.value} value={t.value}>
               {t.label}
+            </option>
+          ))}
+        </Select>
+        <Select
+          label="Billing period"
+          value={billingPeriod}
+          capitalize
+          onChange={(e) => setBillingPeriod(e.target.value)}
+        >
+          {BILLING_PERIODS.map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.label}
             </option>
           ))}
         </Select>

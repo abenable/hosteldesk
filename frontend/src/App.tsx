@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Layout } from './components/Layout.tsx';
-import type { View } from './components/Sidebar.tsx';
+import type { View } from './components/types';
 import { LockScreen } from './components/LockScreen.tsx';
+import { SignIn } from './components/SignIn.tsx';
 import { ToastContainer } from './components/ToastContainer.tsx';
 import { Dashboard } from './views/Dashboard.tsx';
 import { Residents } from './views/Residents.tsx';
@@ -9,47 +10,71 @@ import { Rooms } from './views/Rooms.tsx';
 import { Invoices } from './views/Invoices.tsx';
 import { Settings } from './views/Settings.tsx';
 import { Onboarding } from './views/Onboarding.tsx';
-import { getLicenseStatus, type LicensePayload } from './lib/tauri.ts';
-import { isOnboardingComplete, getHostelProfile } from './lib/onboarding.ts';
-
-const views: Record<View, React.ComponentType> = {
-  dashboard: Dashboard,
-  rooms: Rooms,
-  residents: Residents,
-  invoices: Invoices,
-  settings: Settings,
-};
+import {
+  getLicenseStatus,
+  getOnboardingStatus,
+  getSession,
+  logout,
+  type LicensePayload,
+  type StaffUser,
+} from './lib/tauri.ts';
+import { setCurrentUser } from './lib/current-user.ts';
+import { HostelProvider } from './lib/hostel-context.tsx';
 
 export default function App() {
   const [view, setView] = useState<View>('dashboard');
   const [license, setLicense] = useState<LicensePayload | null>(null);
+  const [onboardingComplete, setOnboardingComplete] = useState(false);
+  const [currentUser, setCurrentUserState] = useState<StaffUser | null>(null);
   const [checking, setChecking] = useState(true);
   const [licenseError, setLicenseError] = useState<string | null>(null);
-  const [onboardingDone, setOnboardingDone] = useState(isOnboardingComplete());
 
   useEffect(() => {
-    getLicenseStatus()
-      .then(setLicense)
-      .catch((e) =>
-        setLicenseError(e instanceof Error ? e.message : String(e)),
-      )
-      .finally(() => setChecking(false));
-  }, []);
-
-  useEffect(() => {
-    const onComplete = () => setOnboardingDone(true);
-    const onReset = () => setOnboardingDone(false);
-    window.addEventListener('hosteldesk:onboarding-complete', onComplete);
-    window.addEventListener('hosteldesk:onboarding-reset', onReset);
+    let cancelled = false;
+    Promise.all([getLicenseStatus(), getOnboardingStatus(), getSession()])
+      .then(([license, onboardingComplete, user]) => {
+        if (cancelled) return;
+        setLicense(license);
+        setOnboardingComplete(onboardingComplete);
+        setCurrentUserState(user);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setLicenseError(
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setChecking(false);
+      });
     return () => {
-      window.removeEventListener('hosteldesk:onboarding-complete', onComplete);
-      window.removeEventListener('hosteldesk:onboarding-reset', onReset);
+      cancelled = true;
     };
   }, []);
 
+  useEffect(() => {
+    const onComplete = (event: Event) => {
+      const user = (event as CustomEvent<StaffUser | undefined>).detail;
+      setOnboardingComplete(true);
+      if (user) setCurrentUserState(user);
+    };
+    window.addEventListener('hosteldesk:onboarding-complete', onComplete);
+    return () => {
+      window.removeEventListener('hosteldesk:onboarding-complete', onComplete);
+    };
+  }, []);
+
+  async function handleSignOut() {
+    await logout();
+    setCurrentUser(null);
+    setCurrentUserState(null);
+    setView('dashboard');
+  }
+
   if (checking) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-canvas text-ink">
+      <div className="flex h-screen items-center justify-center overflow-y-auto bg-canvas text-ink">
         <p className="text-body-sm text-muted">Loading…</p>
       </div>
     );
@@ -57,7 +82,7 @@ export default function App() {
 
   if (licenseError) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-canvas p-6 text-center">
+      <div className="flex h-screen items-center justify-center overflow-y-auto bg-canvas p-6 text-center">
         <div>
           <p className="text-display-sm text-ink">Could not start HostelDesk</p>
           <p className="mt-2 text-body-sm text-error-text">{licenseError}</p>
@@ -66,17 +91,6 @@ export default function App() {
     );
   }
 
-  if (!onboardingDone) {
-    return (
-      <>
-        <Onboarding />
-        <ToastContainer />
-      </>
-    );
-  }
-
-  // ponytail: onboarding activates the license on the review step; this
-  // fallback only shows if onboarding is done but the license later went missing.
   if (!license) {
     return (
       <>
@@ -86,25 +100,62 @@ export default function App() {
     );
   }
 
-  const ViewComponent = views[view];
-  const hostel = getHostelProfile();
-  const userName = 'A'; // ponytail: real session user pending login wiring
+  if (!onboardingComplete) {
+    return (
+      <>
+        <Onboarding />
+        <ToastContainer />
+      </>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <>
+        <SignIn onSignedIn={setCurrentUserState} />
+        <ToastContainer />
+      </>
+    );
+  }
 
   return (
-    <>
-      <Layout
-        active={view}
+    <HostelProvider>
+      <AppShell
+        view={view}
         onSelect={setView}
-        hostelName={hostel?.name}
-        userName={userName}
-      >
-        {view === 'residents' ? (
-          <Residents onNavigate={setView} />
-        ) : (
-          <ViewComponent />
-        )}
-      </Layout>
+        currentUser={currentUser}
+        onSignOut={handleSignOut}
+      />
       <ToastContainer />
-    </>
+    </HostelProvider>
+  );
+}
+
+function AppShell({
+  view,
+  onSelect,
+  currentUser,
+  onSignOut,
+}: {
+  view: View;
+  onSelect: (view: View) => void;
+  currentUser: StaffUser;
+  onSignOut: () => Promise<void>;
+}) {
+
+  return (
+    <Layout
+      active={view}
+      onSelect={onSelect}
+      userName={currentUser.name || currentUser.username}
+      userEmail={currentUser.username}
+      onSignOut={onSignOut}
+    >
+      {view === 'dashboard' && <Dashboard onNavigate={onSelect} />}
+      {view === 'residents' && <Residents onNavigate={onSelect} />}
+      {view === 'rooms' && <Rooms />}
+      {view === 'invoices' && <Invoices onNavigate={onSelect} />}
+      {view === 'settings' && <Settings />}
+    </Layout>
   );
 }

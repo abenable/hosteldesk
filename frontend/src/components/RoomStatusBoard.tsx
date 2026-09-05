@@ -1,14 +1,15 @@
 import { useEffect, useState } from 'react';
-import { getRooms, type Room } from '../lib/tauri.ts';
+import { getRooms, listHostels, type Room } from '../lib/tauri.ts';
 import { Card } from './ui/Card.tsx';
 import { groupByFloor } from '../lib/roomNumber.ts';
 
 type Props = {
   filter?: 'all' | 'vacant' | 'occupied' | 'maintenance';
   refreshKey?: number;
+  hostelId?: number;
 };
 
-export function RoomStatusBoard({ filter = 'all', refreshKey = 0 }: Props) {
+export function RoomStatusBoard({ filter = 'all', refreshKey = 0, hostelId }: Props) {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -17,7 +18,11 @@ export function RoomStatusBoard({ filter = 'all', refreshKey = 0 }: Props) {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    getRooms()
+    (hostelId !== undefined
+      ? Promise.resolve(hostelId)
+      : listHostels().then((h) => h[0]?.id ?? 0)
+    )
+      .then((hid) => getRooms(hid))
       .catch((e) => {
         setError(e instanceof Error ? e.message : String(e));
         return [] as Room[];
@@ -31,7 +36,7 @@ export function RoomStatusBoard({ filter = 'all', refreshKey = 0 }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [refreshKey]);
+  }, [refreshKey, hostelId]);
 
   if (loading) return <p className="text-body-sm text-muted">Loading rooms…</p>;
 
