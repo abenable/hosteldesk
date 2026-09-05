@@ -6,6 +6,7 @@ import {
   listResidents,
   type ResidentSummary,
   type Room,
+  type Term,
 } from '../lib/tauri.ts';
 import { useHostel } from '../hooks/use-hostel.ts';
 import { Input } from './ui/Input.tsx';
@@ -33,6 +34,8 @@ export function CheckInForm({ onSuccess }: { onSuccess?: () => void }) {
   const [checkInDate, setCheckInDate] = useState('');
   const [expectedCheckout, setExpectedCheckout] = useState('');
   const [rateAgreed, setRateAgreed] = useState('');
+  const [term, setTerm] = useState<Term>('semester_1');
+  const [academicYear, setAcademicYear] = useState('');
 
   useEffect(() => {
     if (!hostelId) return;
@@ -70,11 +73,23 @@ export function CheckInForm({ onSuccess }: { onSuccess?: () => void }) {
     if (mode === 'new') setResidentQuery('');
   }
 
+  function rateForTerm(room: Room, t: Term) {
+    return t === 'recess' ? room.recess_rate : room.semester_rate;
+  }
+
   function handleRoomChange(value: string) {
     setRoomId(value);
     const room = rooms.find((r) => r.id === Number(value));
     if (room && !rateAgreed) {
-      setRateAgreed(room.rate_per_period);
+      setRateAgreed(rateForTerm(room, term));
+    }
+  }
+
+  function handleTermChange(value: Term) {
+    setTerm(value);
+    const room = rooms.find((r) => r.id === Number(roomId));
+    if (room && !rateAgreed) {
+      setRateAgreed(rateForTerm(room, value));
     }
   }
 
@@ -94,6 +109,10 @@ export function CheckInForm({ onSuccess }: { onSuccess?: () => void }) {
       setError('Agreed rate is required and must be a valid decimal amount.');
       return;
     }
+    if (!/^\d{4}\/\d{4}$/.test(academicYear.trim())) {
+      setError('Academic year must look like "2026/2027".');
+      return;
+    }
 
     setBusy(true);
     try {
@@ -109,6 +128,8 @@ export function CheckInForm({ onSuccess }: { onSuccess?: () => void }) {
           check_in_date: checkInDate,
           expected_checkout: expectedCheckout,
           rate_agreed: rateAgreed.trim(),
+          term,
+          academic_year: academicYear.trim(),
         });
 
       await getRooms(hostelId).then((data) => setRooms(data.filter((r) => r.status.toLowerCase() === 'vacant')));
@@ -125,6 +146,8 @@ export function CheckInForm({ onSuccess }: { onSuccess?: () => void }) {
       setCheckInDate('');
       setExpectedCheckout('');
       setRateAgreed('');
+      setTerm('semester_1');
+      setAcademicYear('');
       onSuccess?.();
     } catch {
       // Errors are already reported as toasts by the Tauri command wrapper.
@@ -274,6 +297,26 @@ export function CheckInForm({ onSuccess }: { onSuccess?: () => void }) {
             min={checkInDate || today}
             onChange={(e) => setExpectedCheckout(e.target.value)}
             required
+          />
+
+          <Select
+            label="Term"
+            value={term}
+            onChange={(e) => handleTermChange(e.target.value as Term)}
+            required
+          >
+            <option value="semester_1">Semester 1</option>
+            <option value="semester_2">Semester 2</option>
+            <option value="recess">Recess / Internship</option>
+          </Select>
+
+          <Input
+            label="Academic year"
+            type="text"
+            value={academicYear}
+            onChange={(e) => setAcademicYear(e.target.value)}
+            required
+            placeholder="2026/2027"
           />
 
           <div className="sm:col-span-2">

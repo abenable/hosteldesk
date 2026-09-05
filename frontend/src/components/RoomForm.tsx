@@ -12,13 +12,6 @@ const ROOM_TYPES = [
   { value: 'dorm', label: 'Dorm' },
 ];
 
-const BILLING_PERIODS = [
-  { value: 'night', label: 'Night' },
-  { value: 'week', label: 'Week' },
-  { value: 'month', label: 'Month' },
-  { value: 'semester', label: 'Semester' },
-];
-
 type Props = {
   hostelId: number;
   existing: Room[];
@@ -29,8 +22,8 @@ export function RoomForm({ hostelId, existing, onCreated }: Props) {
   const [floor, setFloor] = useState('A');
   const [roomType, setRoomType] = useState('single');
   const [capacity, setCapacity] = useState('1');
-  const [rate, setRate] = useState('');
-  const [billingPeriod, setBillingPeriod] = useState('semester');
+  const [semesterRate, setSemesterRate] = useState('');
+  const [recessRate, setRecessRate] = useState('');
   const [busy, setBusy] = useState(false);
 
   const nextOrdinal = (letter: string) => {
@@ -44,12 +37,14 @@ export function RoomForm({ hostelId, existing, onCreated }: Props) {
   const [roomNumber, setRoomNumber] = useState(suggested);
 
   const capacityNum = Number(capacity);
-  const valid = capacityNum > 0 && /^\d+(\.\d+)?$/.test(rate.trim());
+  const rateRe = /^\d+(\.\d+)?$/;
+  const valid =
+    capacityNum > 0 && rateRe.test(semesterRate.trim()) && rateRe.test(recessRate.trim());
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!valid) {
-      addToast('Capacity must be > 0 and rate a valid amount.', 'error');
+      addToast('Capacity must be > 0 and both rates valid amounts.', 'error');
       return;
     }
     setBusy(true);
@@ -60,8 +55,8 @@ export function RoomForm({ hostelId, existing, onCreated }: Props) {
         room_type: roomType,
         capacity: capacityNum,
         floor: floor.charCodeAt(0) - 65,
-        rate_per_period: rate.trim(),
-        billing_period: billingPeriod,
+        semester_rate: semesterRate.trim(),
+        recess_rate: recessRate.trim(),
       });
       addToast(`Room ${roomNumber} added.`, 'success');
       onCreated?.();
@@ -108,18 +103,6 @@ export function RoomForm({ hostelId, existing, onCreated }: Props) {
             </option>
           ))}
         </Select>
-        <Select
-          label="Billing period"
-          value={billingPeriod}
-          capitalize
-          onChange={(e) => setBillingPeriod(e.target.value)}
-        >
-          {BILLING_PERIODS.map((p) => (
-            <option key={p.value} value={p.value}>
-              {p.label}
-            </option>
-          ))}
-        </Select>
         <Input
           label="Capacity"
           type="number"
@@ -127,15 +110,20 @@ export function RoomForm({ hostelId, existing, onCreated }: Props) {
           value={capacity}
           onChange={(e) => setCapacity(e.target.value)}
         />
-        <div className="sm:col-span-2">
-          <Input
-            label="Rate per period (UGX)"
-            inputMode="decimal"
-            value={rate}
-            onChange={(e) => setRate(e.target.value)}
-            placeholder="50000.00"
-          />
-        </div>
+        <Input
+          label="Semester rate (UGX)"
+          inputMode="decimal"
+          value={semesterRate}
+          onChange={(e) => setSemesterRate(e.target.value)}
+          placeholder="500000.00"
+        />
+        <Input
+          label="Recess rate (UGX)"
+          inputMode="decimal"
+          value={recessRate}
+          onChange={(e) => setRecessRate(e.target.value)}
+          placeholder="200000.00"
+        />
       </div>
       <div className="flex justify-end gap-3">
         <Button type="submit" disabled={busy || !valid}>

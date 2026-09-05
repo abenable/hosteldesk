@@ -18,11 +18,13 @@ export type Room = {
   room_type: string;
   capacity: number;
   floor: number | null;
-  rate_per_period: string;
-  billing_period: string;
+  semester_rate: string;
+  recess_rate: string;
   status: 'vacant' | 'occupied' | 'maintenance' | string;
   created_at: string;
 };
+
+export type Term = 'semester_1' | 'semester_2' | 'recess';
 
 export type UserInput = {
   hostel_id: number;
@@ -116,6 +118,8 @@ export type CheckInInput = {
   check_out_date?: string | null;
   expected_checkout: string;
   rate_agreed: string;
+  term: Term;
+  academic_year: string;
 };
 
 export type CompleteOnboardingInput = {
@@ -228,8 +232,8 @@ export type AddRoomInput = {
   room_type: string;
   capacity: number;
   floor?: number | null;
-  rate_per_period: string;
-  billing_period?: string | null;
+  semester_rate: string;
+  recess_rate: string;
 };
 
 export async function addRoom(input: AddRoomInput): Promise<number> {
@@ -268,11 +272,16 @@ export async function recordPaymentWithReceipt(
 export type ReceiptInput = {
   hostel_id: number;
   hostel_name: string;
+  hostel_address?: string | null;
+  hostel_phone?: string | null;
   receipt_number: number;
   resident_name: string;
+  room_number: string;
   amount: string;
   date: string;
   balance: string;
+  payment_method: string;
+  notes?: string | null;
   currency_code: string;
   footer_text?: string | null;
   logo_path?: string | null;
@@ -335,9 +344,10 @@ export type AllocationWithRoom = {
   expected_checkout: string;
   status: string;
   rate_agreed: string;
+  term: Term;
+  academic_year: string;
   created_at: string;
   room_number: string;
-  billing_period: string;
 };
 
 export type ResidentDetail = {
@@ -374,6 +384,8 @@ export type ActiveAllocation = {
   resident_name: string;
   room_number: string;
   rate_agreed: string;
+  term: Term;
+  academic_year: string;
   check_in_date: string;
   expected_checkout: string;
   total_paid: string;

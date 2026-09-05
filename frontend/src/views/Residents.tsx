@@ -38,6 +38,12 @@ function fmtDate(d?: string): string {
   return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+const TERM_LABEL: Record<string, string> = {
+  semester_1: 'Semester 1',
+  semester_2: 'Semester 2',
+  recess: 'Recess',
+};
+
 export function Residents({ onNavigate }: Props) {
   const { hostelId, currency } = useHostel();
   const [residents, setResidents] = useState<ResidentSummary[]>([]);
@@ -362,6 +368,9 @@ function ResidentDrawerContent({
           <p className="mt-1 text-body-sm text-ink">
             {active.room_number} · {fmtDate(active.check_in_date)} → {fmtDate(active.expected_checkout)}
           </p>
+          <p className="text-caption-sm text-muted">
+            {TERM_LABEL[active.term] ?? active.term} · {active.academic_year}
+          </p>
           <p className="mt-2 text-caption text-muted">Balance</p>
           <p className={`text-display-md ${owes ? 'text-error-text' : 'text-ink'}`}>
             {currency} {formatDecimal(detail.balance)}
@@ -385,7 +394,12 @@ function ResidentDrawerContent({
           <div className="flex flex-col gap-2">
             {detail.allocations.map((a) => (
               <div key={a.id} className="flex items-center justify-between text-body-sm">
-                <span className="text-ink">{a.room_number}</span>
+                <span className="text-ink">
+                  {a.room_number}
+                  <span className="ml-2 text-caption-sm text-muted">
+                    {TERM_LABEL[a.term] ?? a.term} · {a.academic_year}
+                  </span>
+                </span>
                 <span className="text-muted">
                   {fmtDate(a.check_in_date)} → {a.check_out_date ? fmtDate(a.check_out_date) : '—'}
                 </span>

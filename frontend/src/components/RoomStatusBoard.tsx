@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { getRooms, listHostels, type Room } from '../lib/tauri.ts';
 import { Card } from './ui/Card.tsx';
 import { groupByFloor } from '../lib/roomNumber.ts';
+import { useHostel } from '../hooks/use-hostel.ts';
 
 type Props = {
   filter?: 'all' | 'vacant' | 'occupied' | 'maintenance';
@@ -10,6 +11,7 @@ type Props = {
 };
 
 export function RoomStatusBoard({ filter = 'all', refreshKey = 0, hostelId }: Props) {
+  const { currency } = useHostel();
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -107,7 +109,14 @@ export function RoomStatusBoard({ filter = 'all', refreshKey = 0, hostelId }: Pr
                       isOccupied ? 'text-on-primary' : 'text-ink'
                     }`}
                   >
-                    UGX {room.rate_per_period}
+                    {currency} {room.semester_rate} <span className="font-normal">semester</span>
+                  </p>
+                  <p
+                    className={`text-caption-sm ${
+                      isOccupied ? 'text-on-primary opacity-80' : 'text-muted'
+                    }`}
+                  >
+                    {currency} {room.recess_rate} <span>recess</span>
                   </p>
                 </Card>
               );
