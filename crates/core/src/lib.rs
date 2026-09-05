@@ -5,7 +5,4 @@
 //! tested in isolation and reused by future tools (CLI, web API, etc.).
 
 pub mod currency;
-pub mod domain;
-
 pub use currency::*;
-pub use domain::*;
