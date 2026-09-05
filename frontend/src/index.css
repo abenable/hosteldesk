@@ -10,9 +10,24 @@ body,
 
 body {
   margin: 0;
+  height: 100vh;
+  overflow: hidden;
   background: #ffffff;
   color: #222222;
   font-family: 'Inter', -apple-system, system-ui, Roboto, 'Helvetica Neue', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes lock-screen-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
 }

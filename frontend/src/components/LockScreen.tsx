@@ -1,101 +1,76 @@
 import { useState } from 'react';
-import {
-  activateLicense,
-  generateTrialLicense,
-  type LicensePayload,
-} from '../lib/tauri.ts';
+import { activateLicense, type LicensePayload } from '../lib/tauri.ts';
 import logo from '../assets/logo.png';
 import { Button } from './ui/Button.tsx';
-import { Textarea } from './ui/Textarea.tsx';
+import { Card } from './ui/Card.tsx';
+import { Input } from './ui/Input.tsx';
 
 type Props = {
   onActivated: (payload: LicensePayload) => void;
 };
 
 export function LockScreen({ onActivated }: Props) {
-  const [license, setLicense] = useState('');
+  const [licenseKey, setLicenseKey] = useState('');
   const [status, setStatus] = useState<'idle' | 'submitting'>('idle');
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     setError(null);
-    setStatus('submitting');
 
-    try {
-      const payload = await activateLicense(license.trim());
-      onActivated(payload);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setStatus('idle');
+    if (!licenseKey.trim()) {
+      setError('Paste a license key to continue.');
+      return;
     }
-  };
 
-  const handleStartTrial = async () => {
-    setError(null);
     setStatus('submitting');
 
     try {
-      const trial = await generateTrialLicense();
-      const payload = await activateLicense(trial);
+      const payload = await activateLicense(licenseKey.trim());
       onActivated(payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
-    } finally {
       setStatus('idle');
     }
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-canvas p-4">
-      <div className="w-full max-w-md rounded-md bg-canvas p-8 shadow-card">
+    <div className="flex h-screen items-center justify-center overflow-y-auto bg-canvas p-4">
+      <Card
+        shadow
+        className="w-full max-w-xl animate-[lock-screen-in_0.3s_ease-out] p-8 text-center"
+      >
         <img
           src={logo}
           alt="HostelDesk"
-          className="mx-auto mb-4 h-24 w-24 rounded-lg"
+          className="mx-auto mb-6 h-20 w-20 rounded-lg ring-1 ring-ink/10"
         />
-        <h1 className="mb-2 text-center text-display-md text-ink">
-          Activate HostelDesk
-        </h1>
-        <p className="mb-6 text-center text-body-sm text-muted">
-          Enter your license key to unlock the application.
+        <h1 className="text-display-md text-ink">Activate HostelDesk</h1>
+        <p className="mt-2 text-body-sm text-muted">
+          Paste the license key you received to unlock the app.
         </p>
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <Textarea
+        <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-4 text-left">
+          <Input
             label="License key"
-            value={license}
-            onChange={(e) => setLicense(e.target.value)}
-            rows={6}
+            value={licenseKey}
+            onChange={(e) => {
+              setLicenseKey(e.target.value);
+              if (error) setError(null);
+            }}
             placeholder="Paste your license key here"
-            required
             error={error ?? undefined}
+            autoFocus
           />
-
-          <Button type="submit" disabled={status === 'submitting'} className="w-full">
+          <Button
+            type="submit"
+            disabled={status === 'submitting' || !licenseKey.trim()}
+            className="transition-transform active:scale-[0.96]"
+          >
             {status === 'submitting' ? 'Activating…' : 'Activate'}
           </Button>
-
-          <div className="relative py-2">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-hairline" />
-            </div>
-            <div className="relative flex justify-center">
-              <span className="bg-canvas px-2 text-caption-sm text-muted">or</span>
-            </div>
-          </div>
-
-          <Button
-            variant="secondary"
-            onClick={handleStartTrial}
-            disabled={status === 'submitting'}
-            className="w-full"
-          >
-            Start 30-day trial
-          </Button>
         </form>
-      </div>
+      </Card>
     </div>
   );
 }
