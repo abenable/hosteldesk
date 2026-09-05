@@ -15,10 +15,6 @@ pub struct LicensePayload {
     pub tier: String,
 }
 
-/// License generator helpers. Only compiled when the `generator` feature is enabled.
-#[cfg(feature = "generator")]
-pub mod generator;
-
 /// Errors that can occur during license verification.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum LicenseError {
@@ -47,9 +43,16 @@ pub enum LicenseError {
 
 /// Base64-encoded Ed25519 public key baked into the application.
 ///
-/// The matching private key lives outside this repository and is used to sign
-/// customer license payloads.
-pub const PUBLIC_KEY_BASE64: &str = "7hhviziBM6uuXQ3aoqAE+E0sqANqvJbHWZSWk87DYas=";
+/// The matching production private key is kept outside this repository. The
+/// test-only signing key generated in unit tests is not valid for customer
+/// licenses.
+pub const PUBLIC_KEY_BASE64: &str = "tRnJ7rRm/x/rd9jQJp1MJaBxsNej8cqfNX6cd9up1tI=";
+
+/// Base64-encoded Ed25519 public key accepted only in debug builds, so
+/// developers can activate the app locally with [`examples/generate_dev_license.rs`]
+/// without holding the production signing key. Never checked in release builds.
+#[cfg(debug_assertions)]
+const DEV_PUBLIC_KEY_BASE64: &str = "mv6SftzK8LBfqpzFllzUXmi68B3esJNjHekmhGmfjeg=";
 
 /// Separator between the base64 signature and base64 payload.
 const SEPARATOR: char = ':';
@@ -66,8 +69,32 @@ pub fn verify_license(license: &str) -> Result<LicensePayload, LicenseError> {
 ///
 /// Useful for tests and for consumers that want to control the current date.
 pub fn verify_license_at(license: &str, today: NaiveDate) -> Result<LicensePayload, LicenseError> {
-    let (signature, payload) = split_license(license)?;
     let verifying_key = load_public_key()?;
+    let result = verify_license_with_key_at(license, today, &verifying_key);
+
+    #[cfg(debug_assertions)]
+    let result = match result {
+        Err(LicenseError::BadSignature) => {
+            let dev_key = load_key(DEV_PUBLIC_KEY_BASE64)?;
+            verify_license_with_key_at(license, today, &dev_key)
+        }
+        other => other,
+    };
+
+    result
+}
+
+/// Verify a signed license against a caller-supplied key.
+///
+/// This is the internal seam used by the public API and by unit tests. Keeping
+/// it private prevents the shipped crate from becoming a general-purpose
+/// license tool.
+fn verify_license_with_key_at(
+    license: &str,
+    today: NaiveDate,
+    verifying_key: &VerifyingKey,
+) -> Result<LicensePayload, LicenseError> {
+    let (signature, payload) = split_license(license)?;
     verifying_key
         .verify(&payload, &signature)
         .map_err(|_| LicenseError::BadSignature)?;
@@ -104,8 +131,13 @@ fn split_license(license: &str) -> Result<(Signature, Vec<u8>), LicenseError> {
 
 /// Load the baked-in Ed25519 public key.
 fn load_public_key() -> Result<VerifyingKey, LicenseError> {
+    load_key(PUBLIC_KEY_BASE64)
+}
+
+/// Decode a base64-encoded Ed25519 public key.
+fn load_key(key_base64: &str) -> Result<VerifyingKey, LicenseError> {
     let bytes: [u8; 32] = STANDARD
-        .decode(PUBLIC_KEY_BASE64)
+        .decode(key_base64)
         .map_err(|_| LicenseError::InvalidPublicKey)?
         .try_into()
         .map_err(|_| LicenseError::InvalidPublicKey)?;
@@ -118,31 +150,15 @@ mod tests {
     use super::*;
     use base64::{engine::general_purpose::STANDARD, Engine};
     use ed25519_dalek::{Signer, SigningKey};
+    use rand::random;
 
-    /// Deterministic signing key used only in tests.
-    ///
-    /// The public key must match [`PUBLIC_KEY_BASE64`].
     fn signing_key() -> SigningKey {
-        // Decoded seed bytes from the key generation step that produced
-        // PUBLIC_KEY_BASE64 = "7hhviziBM6uuXQ3aoqAE+E0sqANqvJbHWZSWk87DYas="
-        let seed_b64 = "R5IjGWlJwwSgPqamES9RPlZ2Ts2RTHvnRWV9VHzUp3g=";
-        let seed = STANDARD
-            .decode(seed_b64)
-            .expect("seed bytes are valid base64");
-        let seed: [u8; 32] = seed.try_into().expect("seed is 32 bytes");
-        SigningKey::from_bytes(&seed)
+        SigningKey::from_bytes(&random())
     }
 
-    #[test]
-    fn test_public_key_matches_signing_key() {
-        let key = signing_key();
-        let public_b64 = STANDARD.encode(key.verifying_key().as_bytes());
-        assert_eq!(public_b64, PUBLIC_KEY_BASE64);
-    }
-
-    fn sign_payload(payload: &LicensePayload) -> String {
+    fn sign_payload(payload: &LicensePayload, key: &SigningKey) -> String {
         let json = serde_json::to_vec(payload).expect("payload serializes");
-        let signature = signing_key().sign(&json);
+        let signature = key.sign(&json);
         format!(
             "{}:{}",
             STANDARD.encode(signature.to_bytes()),
@@ -158,9 +174,10 @@ mod tests {
             expiry_date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
             tier: "pro".to_string(),
         };
-        let license = sign_payload(&payload);
+        let key = signing_key();
+        let license = sign_payload(&payload, &key);
 
-        let result = verify_license_at(&license, today).unwrap();
+        let result = verify_license_with_key_at(&license, today, &key.verifying_key()).unwrap();
 
         assert_eq!(result, payload);
     }
@@ -173,10 +190,10 @@ mod tests {
             expiry_date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
             tier: "pro".to_string(),
         };
+        let key = signing_key();
         let json = serde_json::to_vec(&payload).expect("payload serializes");
-        let signature = signing_key().sign(&json);
+        let signature = key.sign(&json);
 
-        // Tamper with the payload without updating the signature.
         let tampered = LicensePayload {
             hostel_name: "Evil Hostel".to_string(),
             ..payload
@@ -190,7 +207,7 @@ mod tests {
         );
 
         assert!(matches!(
-            verify_license_at(&license, today),
+            verify_license_with_key_at(&license, today, &key.verifying_key()),
             Err(LicenseError::BadSignature)
         ));
     }
@@ -203,10 +220,11 @@ mod tests {
             expiry_date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
             tier: "pro".to_string(),
         };
-        let license = sign_payload(&payload);
+        let key = signing_key();
+        let license = sign_payload(&payload, &key);
 
         assert!(matches!(
-            verify_license_at(&license, today),
+            verify_license_with_key_at(&license, today, &key.verifying_key()),
             Err(LicenseError::Expired(_))
         ));
     }
