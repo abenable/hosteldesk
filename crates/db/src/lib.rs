@@ -78,7 +78,7 @@ impl DbPool {
     pub async fn get_rooms(&self, hostel_id: i64) -> anyhow::Result<Vec<Room>> {
         debug!(hostel_id, "fetching rooms");
         let rooms = sqlx::query_as::<_, Room>(
-            "SELECT id, hostel_id, room_number, room_type, capacity, floor, rate_per_period, billing_period, status, created_at FROM rooms WHERE hostel_id = ? ORDER BY room_number"
+            "SELECT id, hostel_id, room_number, room_type, capacity, floor, semester_rate, recess_rate, status, created_at FROM rooms WHERE hostel_id = ? ORDER BY room_number"
         )
         .bind(hostel_id)
         .fetch_all(&self.inner)
@@ -134,6 +134,8 @@ impl DbPool {
                 check_out_date: check_in.check_out_date,
                 expected_checkout: check_in.expected_checkout,
                 rate_agreed: check_in.rate_agreed,
+                term: check_in.term,
+                academic_year: check_in.academic_year,
             },
         )
         .await?;
@@ -806,7 +808,7 @@ impl DbPool {
                 a.check_out_date,
                 a.expected_checkout,
                 a.status AS allocation_status,
-                rm.billing_period,
+                a.term,
                 a.rate_agreed,
                 GROUP_CONCAT(p.amount) AS payment_amounts
             FROM residents r
@@ -829,7 +831,7 @@ impl DbPool {
             let resident_id: i64 = row.try_get("resident_id")?;
             let allocation_status: Option<String> = row.try_get("allocation_status")?;
             let check_in: Option<NaiveDate> = row.try_get("check_in_date")?;
-            let billing_period: Option<String> = row.try_get("billing_period")?;
+            let term: Option<String> = row.try_get("term")?;
             let rate_agreed: Option<String> = row.try_get("rate_agreed")?;
             let check_out: Option<NaiveDate> = row.try_get("check_out_date")?;
             let payment_amounts: Option<String> = row.try_get("payment_amounts")?;
@@ -838,11 +840,11 @@ impl DbPool {
                 .unwrap_or("never_allocated")
                 .to_string();
 
-            let balance = match (check_in, billing_period.as_deref(), rate_agreed.as_deref()) {
-                (Some(check_in), Some(bp), Some(rate)) => {
+            let balance = match (check_in, term.as_deref(), rate_agreed.as_deref()) {
+                (Some(check_in), Some(term), Some(rate)) => {
                     let paid = sum_decimal_amounts(payment_amounts.as_deref())?;
                     let reference = check_out.map_or(today, |d| if d < today { d } else { today });
-                    allocation_balance(rate, check_in, reference, bp, paid)?
+                    allocation_balance(rate, check_in, reference, term, paid)?
                 }
                 _ => Decimal::ZERO,
             };
@@ -915,7 +917,7 @@ impl DbPool {
             SELECT
                 a.id, a.hostel_id, a.resident_id, a.room_id,
                 a.check_in_date, a.check_out_date, a.expected_checkout, a.status,
-                a.rate_agreed, a.created_at, r.room_number, r.billing_period
+                a.rate_agreed, a.term, a.academic_year, a.created_at, r.room_number
             FROM allocations a
             JOIN rooms r ON r.id = a.room_id
             WHERE a.hostel_id = ?1 AND a.resident_id = ?2
@@ -956,7 +958,7 @@ impl DbPool {
                 &allocation.rate_agreed,
                 allocation.check_in_date,
                 reference,
-                &allocation.billing_period,
+                &allocation.term,
                 paid,
             )?;
         }
@@ -1107,8 +1109,8 @@ impl DbPool {
             SELECT
                 a.id AS allocation_id, a.resident_id,
                 r.full_name AS resident_name, rm.room_number,
-                a.rate_agreed, a.check_in_date, a.expected_checkout,
-                rm.billing_period, GROUP_CONCAT(p.amount) AS payment_amounts
+                a.rate_agreed, a.term, a.academic_year, a.check_in_date, a.expected_checkout,
+                GROUP_CONCAT(p.amount) AS payment_amounts
             FROM allocations a
             JOIN residents r ON r.id = a.resident_id
             JOIN rooms rm ON rm.id = a.room_id
@@ -1132,9 +1134,10 @@ impl DbPool {
             let resident_name: String = row.try_get("resident_name")?;
             let room_number: String = row.try_get("room_number")?;
             let rate_agreed: String = row.try_get("rate_agreed")?;
+            let term: String = row.try_get("term")?;
+            let academic_year: String = row.try_get("academic_year")?;
             let check_in_date: NaiveDate = row.try_get("check_in_date")?;
             let expected_checkout: NaiveDate = row.try_get("expected_checkout")?;
-            let billing_period: String = row.try_get("billing_period")?;
             let payment_amounts: Option<String> = row.try_get("payment_amounts")?;
 
             let total_paid = sum_decimal_amounts(payment_amounts.as_deref())?;
@@ -1142,7 +1145,7 @@ impl DbPool {
                 &rate_agreed,
                 check_in_date,
                 today,
-                &billing_period,
+                &term,
                 total_paid,
             )?;
 
@@ -1152,6 +1155,8 @@ impl DbPool {
                 resident_name,
                 room_number,
                 rate_agreed,
+                term,
+                academic_year,
                 check_in_date,
                 expected_checkout,
                 total_paid: total_paid.to_string(),
@@ -1467,10 +1472,9 @@ impl DbPool {
         let rows = sqlx::query(
             r#"
             SELECT
-                a.check_in_date, a.rate_agreed, rm.billing_period,
+                a.check_in_date, a.rate_agreed, a.term,
                 GROUP_CONCAT(p.amount) AS payment_amounts
             FROM allocations a
-            JOIN rooms rm ON rm.id = a.room_id
             LEFT JOIN payments p ON p.allocation_id = a.id
             WHERE a.hostel_id = ?1 AND a.status = 'active'
             GROUP BY a.id
@@ -1487,10 +1491,10 @@ impl DbPool {
         for row in rows {
             let check_in: NaiveDate = row.try_get("check_in_date")?;
             let rate_agreed: String = row.try_get("rate_agreed")?;
-            let billing_period: String = row.try_get("billing_period")?;
+            let term: String = row.try_get("term")?;
             let payment_amounts: Option<String> = row.try_get("payment_amounts")?;
             let paid = sum_decimal_amounts(payment_amounts.as_deref())?;
-            let balance = allocation_balance(&rate_agreed, check_in, today, &billing_period, paid)?;
+            let balance = allocation_balance(&rate_agreed, check_in, today, &term, paid)?;
             if balance > Decimal::ZERO {
                 total += balance;
             }
@@ -1544,30 +1548,28 @@ fn sum_decimal_amounts(amounts: Option<&str>) -> anyhow::Result<Decimal> {
     }
 }
 
-/// Map a billing period to its length in days for the rolled-up balance calc.
+/// Map a billing term to its length in days for the rolled-up balance calc.
 ///
-/// This is a deliberate simplification: month ≡ 30 days, semester ≡ 120 days.
-fn billing_period_days(period: &str) -> Option<i64> {
-    match period {
-        "night" => Some(1),
-        "week" => Some(7),
-        "month" => Some(30),
-        "semester" => Some(120),
+/// This is a deliberate simplification: semester ≡ 120 days, recess ≡ 60 days.
+fn term_days(term: &str) -> Option<i64> {
+    match term {
+        "semester_1" | "semester_2" => Some(120),
+        "recess" => Some(60),
         _ => None,
     }
 }
 
-/// Number of whole billing periods elapsed between check-in and the reference
+/// Number of whole billing terms elapsed between check-in and the reference
 /// date, rounded up.
-fn periods_elapsed(check_in: NaiveDate, reference: NaiveDate, billing_period: &str) -> i64 {
+fn periods_elapsed(check_in: NaiveDate, reference: NaiveDate, term: &str) -> i64 {
     if reference < check_in {
         return 0;
     }
-    if let Some(days) = billing_period_days(billing_period) {
+    if let Some(days) = term_days(term) {
         let total_days = (reference - check_in).num_days() + 1;
         (total_days + days - 1) / days
     } else {
-        // ponytail: unknown billing_period falls back to one period (flat rate per stay)
+        // ponytail: unknown term falls back to one period (flat rate per stay)
         1
     }
 }
@@ -1580,11 +1582,11 @@ fn allocation_balance(
     rate_agreed: &str,
     check_in: NaiveDate,
     reference: NaiveDate,
-    billing_period: &str,
+    term: &str,
     total_paid: Decimal,
 ) -> anyhow::Result<Decimal> {
     let rate = parse_decimal(rate_agreed)?;
-    let periods = periods_elapsed(check_in, reference, billing_period);
+    let periods = periods_elapsed(check_in, reference, term);
     let owed = rate * Decimal::from(periods);
     Ok(owed - total_paid)
 }
@@ -1603,13 +1605,9 @@ async fn insert_room(
     if !matches!(room.room_type.as_str(), "single" | "double" | "dorm") {
         anyhow::bail!("room_type must be one of: single, double, dorm");
     }
-    let billing_period = room.billing_period.as_deref().unwrap_or("semester");
-    if !matches!(billing_period, "night" | "week" | "month" | "semester") {
-        anyhow::bail!("billing_period must be one of: night, week, month, semester");
-    }
     let id = sqlx::query(
         r#"
-        INSERT INTO rooms (hostel_id, room_number, room_type, capacity, floor, rate_per_period, billing_period, status)
+        INSERT INTO rooms (hostel_id, room_number, room_type, capacity, floor, semester_rate, recess_rate, status)
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'vacant')
         "#,
     )
@@ -1618,8 +1616,8 @@ async fn insert_room(
     .bind(&room.room_type)
     .bind(room.capacity)
     .bind(room.floor)
-    .bind(&room.rate_per_period)
-    .bind(billing_period)
+    .bind(&room.semester_rate)
+    .bind(&room.recess_rate)
     .execute(&mut **tx)
     .await
     .inspect_err(|e| error!(error = %e, hostel_id = room.hostel_id, room_number = %room.room_number, "database error inserting room"))?
@@ -1741,13 +1739,16 @@ async fn insert_allocation(
     allocation: &NewAllocation,
 ) -> anyhow::Result<i64> {
     validate_allocation_dates(allocation)?;
+    if !matches!(allocation.term.as_str(), "semester_1" | "semester_2" | "recess") {
+        anyhow::bail!("term must be one of: semester_1, semester_2, recess");
+    }
     prepare_room_for_allocation(tx, allocation.hostel_id, allocation.room_id).await?;
 
     let id = sqlx::query(
         r#"
         INSERT INTO allocations
-            (hostel_id, resident_id, room_id, check_in_date, check_out_date, expected_checkout, status, rate_agreed)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7)
+            (hostel_id, resident_id, room_id, check_in_date, check_out_date, expected_checkout, status, rate_agreed, term, academic_year)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'active', ?7, ?8, ?9)
         "#,
     )
     .bind(allocation.hostel_id)
@@ -1757,6 +1758,8 @@ async fn insert_allocation(
     .bind(allocation.check_out_date)
     .bind(allocation.expected_checkout)
     .bind(&allocation.rate_agreed)
+    .bind(&allocation.term)
+    .bind(&allocation.academic_year)
     .execute(&mut **tx)
     .await
     .inspect_err(|e| error!(error = %e, "database error inserting allocation"))?
@@ -1818,8 +1821,8 @@ mod tests {
             room_type: "single".to_string(),
             capacity: 1,
             floor: None,
-            rate_per_period: "10".to_string(),
-            billing_period: None,
+            semester_rate: "10".to_string(),
+            recess_rate: "10".to_string(),
         })
         .await
         .expect("add room");
@@ -1843,9 +1846,10 @@ mod tests {
         assert!(profile.onboarding_complete);
     }
 
-    /// A nightly room accrues balance per night, not once per semester.
+    /// A recess-term allocation accrues balance per 60-day period, not once
+    /// for the whole stay.
     #[tokio::test]
-    async fn nightly_room_accrues_per_night_balance() {
+    async fn recess_term_accrues_per_period_balance() {
         let pool = test_pool().await;
         let hostel = seed_hostel(&pool).await;
         let room_id = pool
@@ -1855,18 +1859,18 @@ mod tests {
                 room_type: "single".to_string(),
                 capacity: 1,
                 floor: None,
-                rate_per_period: "50.00".to_string(),
-                billing_period: Some("night".to_string()),
+                semester_rate: "300000.00".to_string(),
+                recess_rate: "50.00".to_string(),
             })
             .await
-            .expect("add nightly room");
+            .expect("add room");
 
         let rooms = pool.get_rooms(hostel.id).await.expect("get rooms");
         let room = rooms.iter().find(|r| r.id == room_id).expect("room");
-        assert_eq!(room.billing_period, "night");
+        assert_eq!(room.recess_rate, "50.00");
 
-        let resident_id = seed_resident(&pool, "Nightly").await;
-        let check_in = today() - Duration::days(2);
+        let resident_id = seed_resident(&pool, "Intern").await;
+        let check_in = today() - Duration::days(61);
         let _allocation_id = pool
             .check_in(NewCheckIn {
                 hostel_id: hostel.id,
@@ -1880,8 +1884,10 @@ mod tests {
                 room_id,
                 check_in_date: check_in,
                 check_out_date: None,
-                expected_checkout: check_in + Duration::days(5),
+                expected_checkout: check_in + Duration::days(65),
                 rate_agreed: "50.00".to_string(),
+                term: "recess".to_string(),
+                academic_year: "2026/2027".to_string(),
             })
             .await
             .expect("create allocation");
@@ -1890,8 +1896,11 @@ mod tests {
             .get_resident_detail(hostel.id, resident_id)
             .await
             .expect("detail");
-        assert_eq!(detail.allocations[0].billing_period, "night");
-        assert_eq!(detail.balance, "150.00", "3 nights at 50 should be 150");
+        assert_eq!(detail.allocations[0].term, "recess");
+        assert_eq!(
+            detail.balance, "100.00",
+            "62 days into a 60-day recess period should be 2 periods at 50"
+        );
 
         // A single-period billing would have produced 50.00; ensure it did not.
         assert_ne!(detail.balance, "50.00");
@@ -1901,11 +1910,11 @@ mod tests {
             .list_residents(hostel.id)
             .await
             .expect("list residents");
-        let nightly = residents
+        let intern = residents
             .iter()
             .find(|r| r.id == resident_id)
             .expect("resident");
-        assert_eq!(nightly.balance, "150.00");
+        assert_eq!(intern.balance, "100.00");
     }
 
     #[tokio::test]
@@ -1967,8 +1976,8 @@ mod tests {
                 room_type: "single".to_string(),
                 capacity: 1,
                 floor: None,
-                rate_per_period: "10".to_string(),
-                billing_period: None,
+                semester_rate: "10".to_string(),
+                recess_rate: "10".to_string(),
             })
             .await
             .expect("add room");
@@ -2000,6 +2009,8 @@ mod tests {
                 check_out_date: None,
                 expected_checkout: chrono::NaiveDate::from_ymd_opt(2026, 4, 30).expect("date"),
                 rate_agreed: "10.00".to_string(),
+                term: "semester_2".to_string(),
+                academic_year: "2025/2026".to_string(),
             })
             .await
             .expect("create allocation");
@@ -2053,6 +2064,8 @@ mod tests {
                 check_out_date: None,
                 expected_checkout: today() + Duration::days(30),
                 rate_agreed: "100.00".to_string(),
+                term: "semester_1".to_string(),
+                academic_year: "2026/2027".to_string(),
             })
             .await
             .expect("create allocation");
@@ -2096,14 +2109,14 @@ mod tests {
         let pool = test_pool().await;
         let hostel = seed_hostel(&pool).await;
         let err = sqlx::query(
-            "INSERT INTO rooms (hostel_id, room_number, room_type, capacity, rate_per_period, billing_period) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO rooms (hostel_id, room_number, room_type, capacity, semester_rate, recess_rate) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )
         .bind(hostel.id)
         .bind("101")
         .bind("suite")
         .bind(1)
         .bind("100.00")
-        .bind("semester")
+        .bind("50.00")
         .execute(&pool.inner)
         .await
         .expect_err("invalid room_type should fail CHECK");
@@ -2303,8 +2316,8 @@ mod tests {
             room_type: "single".to_string(),
             capacity: 1,
             floor: None,
-            rate_per_period: "10".to_string(),
-            billing_period: None,
+            semester_rate: "10".to_string(),
+            recess_rate: "10".to_string(),
         })
         .await
         .expect("add room to hostel a");
@@ -3031,6 +3044,8 @@ mod tests {
                 check_out_date: None,
                 expected_checkout: expected,
                 rate_agreed: "100.00".to_string(),
+                term: "semester_2".to_string(),
+                academic_year: "2025/2026".to_string(),
             })
             .await
             .expect_err("expected checkout before check-in should be rejected");
@@ -3062,6 +3077,8 @@ mod tests {
                 check_out_date: Some(check_out),
                 expected_checkout: expected,
                 rate_agreed: "100.00".to_string(),
+                term: "semester_2".to_string(),
+                academic_year: "2025/2026".to_string(),
             })
             .await
             .expect_err("actual checkout before check-in should be rejected");

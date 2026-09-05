@@ -6,5 +6,6 @@ edition = "2021"
 [dependencies]
 anyhow = { workspace = true }
 chrono = { workspace = true }
-printpdf = "0.7"
+image = { version = "0.24", default-features = false, features = ["png", "jpeg", "webp"] }
+printpdf = { version = "0.7", features = ["embedded_images", "webp"] }
 rust_decimal = { workspace = true }

@@ -1,5 +1,8 @@
 use chrono::NaiveDate;
-use printpdf::{BuiltinFont, Mm, PdfDocument};
+use printpdf::path::PaintMode;
+use printpdf::{
+    BuiltinFont, Color, Line, Mm, PdfDocument, Point, Rect, Rgb,
+};
 use rust_decimal::Decimal;
 use std::fs::File;
 use std::io::BufWriter;
@@ -10,16 +13,26 @@ use std::path::Path;
 pub struct ReceiptPayload {
     /// Name of the hostel issuing the receipt.
     pub hostel_name: String,
+    /// Optional postal/physical address, shown under the hostel name.
+    pub hostel_address: Option<String>,
+    /// Optional contact phone number, shown under the address.
+    pub hostel_phone: Option<String>,
     /// Sequential receipt number, zero-padded in the rendered output.
     pub receipt_number: u64,
     /// Full name of the resident who made the payment.
     pub resident_name: String,
+    /// Room the payment is associated with.
+    pub room_number: String,
     /// Payment amount.
     pub amount: Decimal,
     /// Date the payment was recorded.
     pub date: NaiveDate,
     /// Outstanding balance after the payment.
     pub balance: Decimal,
+    /// Payment method (e.g. "cash", "bank_transfer").
+    pub payment_method: String,
+    /// Optional free-text note describing what the payment covers.
+    pub notes: Option<String>,
     /// ISO currency code (e.g. "USD") used to prefix monetary amounts.
     pub currency_code: String,
     /// Optional footer text rendered at the bottom of the receipt.
@@ -30,28 +43,120 @@ pub struct ReceiptPayload {
 
 impl ReceiptPayload {
     fn format_amount(&self, amount: Decimal) -> String {
-        format!("{} {}", self.currency_code, amount)
+        format!("{} {}", self.currency_code, format_with_commas(amount))
     }
 
-    /// Format the receipt as plain text for rendering or testing.
-    pub fn format_text(&self) -> String {
-        format!(
-            "Hostel: {hostel}\nReceipt No: {receipt_no:08}\nResident: {resident}\nAmount Paid: {amount}\nDate: {date}\nBalance: {balance}",
-            hostel = self.hostel_name,
-            receipt_no = self.receipt_number,
-            resident = self.resident_name,
-            amount = self.format_amount(self.amount),
-            date = self.date.format("%Y-%m-%d"),
-            balance = self.format_amount(self.balance),
-        )
+    fn payment_method_label(&self) -> String {
+        self.payment_method.replace('_', " ").to_uppercase()
     }
+
+    fn being_payment_for(&self) -> String {
+        match &self.notes {
+            Some(notes) if !notes.trim().is_empty() => {
+                format!("Room {} - {}", self.room_number, notes.trim())
+            }
+            _ => format!("Room {} - Rent payment", self.room_number),
+        }
+    }
+}
+
+/// Group the integer part of a decimal amount with thousands separators,
+/// preserving any fractional part (e.g. `150000` -> `150,000`, `1234.5` ->
+/// `1,234.5`).
+fn format_with_commas(amount: Decimal) -> String {
+    let s = amount.round_dp(2).normalize().to_string();
+    let (int_part, frac_part) = match s.split_once('.') {
+        Some((i, f)) => (i, Some(f)),
+        None => (s.as_str(), None),
+    };
+    let (sign, digits) = match int_part.strip_prefix('-') {
+        Some(rest) => ("-", rest),
+        None => ("", int_part),
+    };
+    let mut grouped = String::new();
+    for (i, c) in digits.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    let grouped_int: String = grouped.chars().rev().collect();
+    match frac_part {
+        Some(f) => format!("{sign}{grouped_int}.{f}"),
+        None => format!("{sign}{grouped_int}"),
+    }
+}
+
+/// Spell out a non-negative whole number in English words (e.g. `100000` ->
+/// `ONE HUNDRED THOUSAND`).
+///
+/// ponytail: supports up to 999 trillion, far beyond any realistic hostel
+/// payment; larger values are truncated to the highest supported scale.
+fn number_to_words(mut n: u64) -> String {
+    const ONES: [&str; 20] = [
+        "ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN",
+        "ELEVEN", "TWELVE", "THIRTEEN", "FOURTEEN", "FIFTEEN", "SIXTEEN", "SEVENTEEN",
+        "EIGHTEEN", "NINETEEN",
+    ];
+    const TENS: [&str; 10] = [
+        "", "", "TWENTY", "THIRTY", "FORTY", "FIFTY", "SIXTY", "SEVENTY", "EIGHTY", "NINETY",
+    ];
+    const SCALES: [&str; 5] = ["", "THOUSAND", "MILLION", "BILLION", "TRILLION"];
+
+    fn three_digits(n: u64, ones: &[&str; 20], tens: &[&str; 10]) -> String {
+        let mut words = Vec::new();
+        let hundreds = n / 100;
+        let rest = n % 100;
+        if hundreds > 0 {
+            words.push(format!("{} HUNDRED", ones[hundreds as usize]));
+        }
+        if rest > 0 {
+            if rest < 20 {
+                words.push(ones[rest as usize].to_string());
+            } else {
+                let t = rest / 10;
+                let o = rest % 10;
+                if o > 0 {
+                    words.push(format!("{}-{}", tens[t as usize], ones[o as usize]));
+                } else {
+                    words.push(tens[t as usize].to_string());
+                }
+            }
+        }
+        words.join(" ")
+    }
+
+    if n == 0 {
+        return ONES[0].to_string();
+    }
+
+    let mut groups = Vec::new();
+    while n > 0 {
+        groups.push(n % 1000);
+        n /= 1000;
+    }
+
+    let mut parts = Vec::new();
+    for (i, group) in groups.iter().enumerate().rev() {
+        if *group == 0 {
+            continue;
+        }
+        let words = three_digits(*group, &ONES, &TENS);
+        let scale = SCALES.get(i).copied().unwrap_or("");
+        if scale.is_empty() {
+            parts.push(words);
+        } else {
+            parts.push(format!("{words} {scale}"));
+        }
+    }
+
+    parts.join(" ")
 }
 
 /// Generate a PDF receipt at `path` from `payload`.
 ///
 /// Overwrites any existing file at the path. The page size is fixed at A4.
 pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> anyhow::Result<()> {
-    let text = payload.format_text();
     let file = File::create(path.as_ref())?;
     let mut writer = BufWriter::new(file);
 
@@ -61,41 +166,209 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
         Mm(297.0),
         "Layer 1",
     );
-    let current_layer = doc.get_page(page).get_layer(layer);
-    let font = doc.add_builtin_font(BuiltinFont::Helvetica)?;
+    let l = doc.get_page(page).get_layer(layer);
+    let regular = doc.add_builtin_font(BuiltinFont::Helvetica)?;
+    let bold = doc.add_builtin_font(BuiltinFont::HelveticaBold)?;
 
-    let start_y: f32 = 270.0;
-    let line_height: f32 = 7.0;
-    let x: f32 = 20.0;
+    let black = Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None));
+    l.set_fill_color(black.clone());
+    l.set_outline_color(black);
+    l.set_outline_thickness(0.8);
 
-    // Leave room at the top when a logo is configured.
-    let logo_offset: f32 = if payload.logo_path.is_some() {
-        30.0
-    } else {
-        0.0
-    };
-    let mut y = start_y - logo_offset;
+    let margin_x: f32 = 20.0;
+    let right_x: f32 = 190.0;
+    let page_center: f32 = 105.0;
 
-    for line in text.lines() {
-        current_layer.use_text(line, 12.0, Mm(x), Mm(y), &font);
-        y -= line_height;
-    }
-
-    if let Some(footer) = &payload.footer_text {
-        current_layer.use_text(footer.as_str(), 10.0, Mm(x), Mm(20.0), &font);
-    }
-
-    // ponytail: embedding a logo needs printpdf's `image` feature. Enabling it
-    // pulls in image v0.24.* plus decoder crates that are not currently in
-    // Cargo.lock, so an existing logo path is ignored rather than blocking
-    // receipt generation.
+    // Header: logo (if any) at the left, hostel identity stacked beside it.
+    let logo_box = 22.0;
+    let mut text_x = margin_x;
+    let header_top = 277.0;
     if let Some(logo_path) = &payload.logo_path {
-        if Path::new(logo_path).is_file() {
-            eprintln!("pdf: ignoring logo at {logo_path:?}; image feature not enabled");
+        if draw_logo(&l, logo_path, margin_x, header_top - logo_box, logo_box, logo_box).is_ok() {
+            text_x = margin_x + logo_box + 6.0;
         }
     }
 
+    l.use_text(&payload.hostel_name, 16.0, Mm(text_x), Mm(header_top - 6.0), &bold);
+    let mut header_y = header_top - 12.0;
+    if let Some(address) = &payload.hostel_address {
+        if !address.trim().is_empty() {
+            l.use_text(address, 9.0, Mm(text_x), Mm(header_y), &regular);
+            header_y -= 5.0;
+        }
+    }
+    if let Some(phone) = &payload.hostel_phone {
+        if !phone.trim().is_empty() {
+            l.use_text(format!("Tel: {phone}"), 9.0, Mm(text_x), Mm(header_y), &regular);
+        }
+    }
+
+    // Divider under the header.
+    let divider_y = header_top - logo_box - 4.0;
+    hline(&l, margin_x, right_x, divider_y);
+
+    // Title box, receipt number and date.
+    let title = "PAYMENT RECEIPT";
+    let title_y = divider_y - 12.0;
+    let box_w = title.len() as f32 * 3.0 + 16.0;
+    l.add_rect(
+        Rect::new(
+            Mm(page_center - box_w / 2.0),
+            Mm(title_y - 3.0),
+            Mm(page_center + box_w / 2.0),
+            Mm(title_y + 6.0),
+        )
+        .with_mode(PaintMode::Stroke),
+    );
+    l.use_text(title, 12.0, Mm(page_center - (title.len() as f32 * 1.55)), Mm(title_y), &bold);
+    l.use_text(
+        format!("No. {:06}", payload.receipt_number),
+        11.0,
+        Mm(margin_x),
+        Mm(title_y),
+        &bold,
+    );
+    l.use_text(
+        format!("Date: {}", payload.date.format("%d/%m/%Y")),
+        11.0,
+        Mm(right_x - 35.0),
+        Mm(title_y),
+        &regular,
+    );
+
+    // Body fields.
+    let mut y = title_y - 16.0;
+    let line_gap = 9.0;
+    l.use_text(
+        format!("Received with thanks from: {}", payload.resident_name),
+        11.0,
+        Mm(margin_x),
+        Mm(y),
+        &regular,
+    );
+    y -= line_gap;
+
+    let whole_amount: u64 = payload.amount.round().to_string().parse().unwrap_or(0);
+    l.use_text(
+        format!(
+            "The Sum of Shillings: {} ONLY",
+            number_to_words(whole_amount)
+        ),
+        11.0,
+        Mm(margin_x),
+        Mm(y),
+        &regular,
+    );
+    y -= line_gap;
+
+    l.use_text(
+        format!("Being payment for: {}", payload.being_payment_for()),
+        11.0,
+        Mm(margin_x),
+        Mm(y),
+        &regular,
+    );
+    y -= line_gap;
+
+    l.use_text(
+        format!("Payment method: {}", payload.payment_method_label()),
+        11.0,
+        Mm(margin_x),
+        Mm(y),
+        &regular,
+    );
+    l.use_text(
+        format!("Balance: {}", payload.format_amount(payload.balance)),
+        11.0,
+        Mm(right_x - 60.0),
+        Mm(y),
+        &regular,
+    );
+    y -= line_gap + 4.0;
+
+    // Boxed total amount.
+    let box_top = y;
+    let box_bottom = y - 12.0;
+    l.add_rect(
+        Rect::new(Mm(margin_x), Mm(box_bottom), Mm(margin_x + 60.0), Mm(box_top))
+            .with_mode(PaintMode::Stroke),
+    );
+    l.use_text(
+        format!("SHS. {}", payload.format_amount(payload.amount)),
+        13.0,
+        Mm(margin_x + 4.0),
+        Mm(box_bottom + 4.0),
+        &bold,
+    );
+    l.use_text("With thanks.", 10.0, Mm(margin_x + 66.0), Mm(box_bottom + 4.0), &regular);
+
+    // Footer note.
+    let footer_y = box_bottom - 12.0;
+    let footer_text = payload
+        .footer_text
+        .clone()
+        .unwrap_or_else(|| "The amount paid is non-refundable.".to_string());
+    l.use_text(footer_text, 9.0, Mm(margin_x), Mm(footer_y), &regular);
+
+    // Signature.
+    let sign_y = 35.0;
+    hline(&l, right_x - 55.0, right_x, sign_y);
+    l.use_text("Sign", 9.0, Mm(right_x - 55.0), Mm(sign_y - 5.0), &regular);
+    l.use_text(
+        format!("For: {}", payload.hostel_name),
+        9.0,
+        Mm(right_x - 55.0),
+        Mm(sign_y + 2.0),
+        &regular,
+    );
+
     doc.save(&mut writer)?;
+    Ok(())
+}
+
+fn hline(layer: &printpdf::PdfLayerReference, x1: f32, x2: f32, y: f32) {
+    let line = Line {
+        points: vec![
+            (Point::new(Mm(x1), Mm(y)), false),
+            (Point::new(Mm(x2), Mm(y)), false),
+        ],
+        is_closed: false,
+    };
+    layer.add_line(line);
+}
+
+/// Decode and place a logo image so it fits within `max_w` x `max_h` mm, with
+/// its top-left corner at `(x, y + max_h)`.
+fn draw_logo(
+    layer: &printpdf::PdfLayerReference,
+    logo_path: &str,
+    x: f32,
+    y: f32,
+    max_w: f32,
+    max_h: f32,
+) -> anyhow::Result<()> {
+    let bytes = std::fs::read(logo_path)?;
+    let dynamic_image = image::load_from_memory(&bytes)?;
+    let (px_w, px_h) = (dynamic_image.width() as f32, dynamic_image.height() as f32);
+    if px_w == 0.0 || px_h == 0.0 {
+        anyhow::bail!("logo image has zero dimensions");
+    }
+
+    let dpi_w = px_w * 25.4 / max_w;
+    let dpi_h = px_h * 25.4 / max_h;
+    let dpi = dpi_w.max(dpi_h);
+    let rendered_h = px_h * 25.4 / dpi;
+
+    let image = printpdf::Image::from_dynamic_image(&dynamic_image);
+    image.add_to_layer(
+        layer.clone(),
+        printpdf::ImageTransform {
+            translate_x: Some(Mm(x)),
+            translate_y: Some(Mm(y + max_h - rendered_h)),
+            dpi: Some(dpi),
+            ..Default::default()
+        },
+    );
     Ok(())
 }
 
@@ -104,61 +377,59 @@ mod tests {
     use super::*;
     use std::str::FromStr;
 
-    #[test]
-    fn payload_formats_all_required_fields() {
-        let payload = ReceiptPayload {
+    fn sample_payload() -> ReceiptPayload {
+        ReceiptPayload {
             hostel_name: "Sunny Hostel".to_string(),
+            hostel_address: Some("Plot 1, Main Street".to_string()),
+            hostel_phone: Some("0700000000".to_string()),
             receipt_number: 123,
             resident_name: "Jane Doe".to_string(),
-            amount: Decimal::from_str("150.50").unwrap(),
+            room_number: "A01".to_string(),
+            amount: Decimal::from_str("150000").unwrap(),
             date: NaiveDate::from_ymd_opt(2024, 3, 15).unwrap(),
-            balance: Decimal::from_str("49.50").unwrap(),
-            currency_code: "USD".to_string(),
+            balance: Decimal::from_str("49500.50").unwrap(),
+            payment_method: "bank_transfer".to_string(),
+            notes: None,
+            currency_code: "UGX".to_string(),
             footer_text: None,
             logo_path: None,
-        };
+        }
+    }
 
-        let formatted = payload.format_text();
+    #[test]
+    fn formats_amounts_with_thousands_separators() {
+        assert_eq!(format_with_commas(Decimal::from_str("150000").unwrap()), "150,000");
+        assert_eq!(format_with_commas(Decimal::from_str("49500.50").unwrap()), "49,500.5");
+        assert_eq!(format_with_commas(Decimal::from_str("500").unwrap()), "500");
+    }
 
-        assert!(
-            formatted.contains("Hostel: Sunny Hostel"),
-            "missing hostel name: {formatted}"
-        );
-        assert!(
-            formatted.contains("Receipt No: 00000123"),
-            "missing or malformed receipt number: {formatted}"
-        );
-        assert!(
-            formatted.contains("Resident: Jane Doe"),
-            "missing resident name: {formatted}"
-        );
-        assert!(
-            formatted.contains("Amount Paid: USD 150.50"),
-            "missing or malformed amount: {formatted}"
-        );
-        assert!(
-            formatted.contains("Date: 2024-03-15"),
-            "missing date: {formatted}"
-        );
-        assert!(
-            formatted.contains("Balance: USD 49.50"),
-            "missing or malformed balance: {formatted}"
+    #[test]
+    fn spells_out_numbers_in_words() {
+        assert_eq!(number_to_words(0), "ZERO");
+        assert_eq!(number_to_words(100_000), "ONE HUNDRED THOUSAND");
+        assert_eq!(number_to_words(21), "TWENTY-ONE");
+        assert_eq!(
+            number_to_words(1_234_567),
+            "ONE MILLION TWO HUNDRED THIRTY-FOUR THOUSAND FIVE HUNDRED SIXTY-SEVEN"
         );
     }
 
     #[test]
+    fn being_payment_for_falls_back_without_notes() {
+        let payload = sample_payload();
+        assert_eq!(payload.being_payment_for(), "Room A01 - Rent payment");
+    }
+
+    #[test]
+    fn being_payment_for_uses_notes_when_present() {
+        let mut payload = sample_payload();
+        payload.notes = Some("June rent".to_string());
+        assert_eq!(payload.being_payment_for(), "Room A01 - June rent");
+    }
+
+    #[test]
     fn generates_valid_pdf_file() {
-        let payload = ReceiptPayload {
-            hostel_name: "Test Hostel".to_string(),
-            receipt_number: 999,
-            resident_name: "John Smith".to_string(),
-            amount: Decimal::from_str("200.00").unwrap(),
-            date: NaiveDate::from_ymd_opt(2024, 6, 1).unwrap(),
-            balance: Decimal::from_str("0.00").unwrap(),
-            currency_code: "USD".to_string(),
-            footer_text: Some("Thank you for your stay!".to_string()),
-            logo_path: Some("/nonexistent/logo.png".to_string()),
-        };
+        let payload = sample_payload();
         let path = std::env::temp_dir().join(format!(
             "hosteldesk_receipt_test_{}.pdf",
             std::process::id()

@@ -21,6 +21,8 @@ pub struct CreateAllocationRequest {
     pub check_out_date: Option<NaiveDate>,
     pub expected_checkout: NaiveDate,
     pub rate_agreed: String,
+    pub term: String,
+    pub academic_year: String,
 }
 
 /// Payload for an atomic check-in.
@@ -43,6 +45,10 @@ pub struct CheckInRequest {
     pub check_out_date: Option<NaiveDate>,
     pub expected_checkout: NaiveDate,
     pub rate_agreed: String,
+    /// `"semester_1"`, `"semester_2"` or `"recess"`.
+    pub term: String,
+    /// Academic year label, e.g. `"2026/2027"`.
+    pub academic_year: String,
 }
 
 /// Payload for recording a payment.
@@ -63,11 +69,16 @@ pub struct RecordPaymentRequest {
 pub struct GenerateReceiptRequest {
     pub hostel_id: i64,
     pub hostel_name: String,
+    pub hostel_address: Option<String>,
+    pub hostel_phone: Option<String>,
     pub receipt_number: u64,
     pub resident_name: String,
+    pub room_number: String,
     pub amount: String,
     pub date: NaiveDate,
     pub balance: String,
+    pub payment_method: String,
+    pub notes: Option<String>,
     /// ISO 4217 currency code used to prefix monetary amounts.
     pub currency_code: String,
     /// Optional footer text rendered at the bottom of the receipt.
@@ -137,6 +148,12 @@ pub async fn check_in(
     {
         return Err("full_name is required for a new resident".to_string());
     }
+    if !matches!(request.term.as_str(), "semester_1" | "semester_2" | "recess") {
+        return Err("term must be one of: semester_1, semester_2, recess".to_string());
+    }
+    if !is_academic_year(&request.academic_year) {
+        return Err("academic_year must look like \"2026/2027\"".to_string());
+    }
 
     let check_in = NewCheckIn {
         hostel_id: request.hostel_id,
@@ -152,6 +169,8 @@ pub async fn check_in(
         check_out_date: request.check_out_date,
         expected_checkout: request.expected_checkout,
         rate_agreed: rate_agreed.to_string(),
+        term: request.term,
+        academic_year: request.academic_year,
     };
 
     state.check_in(check_in).await.map_err(|e| {
@@ -233,11 +252,16 @@ pub async fn generate_and_open_receipt(
 
     let payload = pdf::ReceiptPayload {
         hostel_name: request.hostel_name,
+        hostel_address: request.hostel_address,
+        hostel_phone: request.hostel_phone,
         receipt_number: request.receipt_number,
         resident_name: request.resident_name,
+        room_number: request.room_number,
         amount,
         date: request.date,
         balance,
+        payment_method: request.payment_method,
+        notes: request.notes,
         currency_code: request.currency_code,
         footer_text: request.footer_text,
         logo_path: request.logo_path,
@@ -472,6 +496,16 @@ fn map_db_error(command: &str, error: anyhow::Error) -> String {
     format!("Something went wrong while processing your request. {error}")
 }
 
+/// Validate an academic year label like `"2026/2027"`: two 4-digit years
+/// separated by a slash. Not stricter than that (e.g. year ordering) — it's a
+/// free-text label, not a calculated value.
+fn is_academic_year(value: &str) -> bool {
+    let Some((a, b)) = value.split_once('/') else {
+        return false;
+    };
+    a.len() == 4 && b.len() == 4 && a.bytes().all(|c| c.is_ascii_digit()) && b.bytes().all(|c| c.is_ascii_digit())
+}
+
 /// Guard commands that require a valid, unexpired license.
 fn require_license(license_state: &crate::LicenseState) -> Result<LicensePayload, String> {
     let payload = license_state
@@ -536,10 +570,10 @@ pub struct AddRoomRequest {
     pub room_type: String,
     pub capacity: i32,
     pub floor: Option<i32>,
-    /// Nightly/period rate as a decimal string, e.g. `"50.00"`.
-    pub rate_per_period: String,
-    /// Billing period (`night`, `week`, `month`, `semester`). Defaults to `semester`.
-    pub billing_period: Option<String>,
+    /// Semester rate as a decimal string, e.g. `"500000.00"`.
+    pub semester_rate: String,
+    /// Recess/internship rate as a decimal string.
+    pub recess_rate: String,
 }
 
 /// Add a single room and return the generated room id.
@@ -559,24 +593,17 @@ pub async fn add_room(
     require_license(&license_state)?;
     require_session(&auth_state, request.hostel_id)?;
 
-    let rate = parse_positive_money(&request.rate_per_period).map_err(|e| e.to_string())?;
-    let billing_period = request
-        .billing_period
-        .unwrap_or_else(|| "semester".to_string());
-    if !matches!(
-        billing_period.as_str(),
-        "night" | "week" | "month" | "semester"
-    ) {
-        return Err("billing_period must be one of: night, week, month, semester".to_string());
-    }
+    let semester_rate =
+        parse_positive_money(&request.semester_rate).map_err(|e| e.to_string())?;
+    let recess_rate = parse_positive_money(&request.recess_rate).map_err(|e| e.to_string())?;
     let room = NewRoom {
         hostel_id: request.hostel_id,
         room_number: request.room_number,
         room_type: request.room_type,
         capacity: request.capacity,
         floor: request.floor,
-        rate_per_period: rate.to_string(),
-        billing_period: Some(billing_period),
+        semester_rate: semester_rate.to_string(),
+        recess_rate: recess_rate.to_string(),
     };
     state
         .add_room(room)
@@ -600,22 +627,16 @@ pub async fn bulk_add_rooms(
 
     let mut rooms = Vec::with_capacity(requests.len());
     for r in requests {
-        let rate = parse_positive_money(&r.rate_per_period).map_err(|e| e.to_string())?;
-        let billing_period = r.billing_period.unwrap_or_else(|| "semester".to_string());
-        if !matches!(
-            billing_period.as_str(),
-            "night" | "week" | "month" | "semester"
-        ) {
-            return Err("billing_period must be one of: night, week, month, semester".to_string());
-        }
+        let semester_rate = parse_positive_money(&r.semester_rate).map_err(|e| e.to_string())?;
+        let recess_rate = parse_positive_money(&r.recess_rate).map_err(|e| e.to_string())?;
         rooms.push(NewRoom {
             hostel_id: r.hostel_id,
             room_number: r.room_number,
             room_type: r.room_type,
             capacity: r.capacity,
             floor: r.floor,
-            rate_per_period: rate.to_string(),
-            billing_period: Some(billing_period),
+            semester_rate: semester_rate.to_string(),
+            recess_rate: recess_rate.to_string(),
         });
     }
     state

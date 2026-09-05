@@ -33,9 +33,8 @@ CREATE TABLE IF NOT EXISTS rooms (
         CHECK (room_type IN ('single', 'double', 'dorm')),
     capacity INTEGER NOT NULL DEFAULT 1,
     floor INTEGER,
-    rate_per_period TEXT NOT NULL,
-    billing_period TEXT NOT NULL DEFAULT 'semester'
-        CHECK (billing_period IN ('night', 'week', 'month', 'semester')),
+    semester_rate TEXT NOT NULL,
+    recess_rate TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'vacant',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (hostel_id) REFERENCES hostels(id) ON DELETE CASCADE,
@@ -43,13 +42,22 @@ CREATE TABLE IF NOT EXISTS rooms (
     CHECK (status IN ('vacant', 'occupied', 'maintenance')),
     CHECK (capacity > 0),
     CHECK (
-        rate_per_period GLOB '*[0-9]*'
-        AND rate_per_period NOT GLOB '*[^0-9.]*'
-        AND length(rate_per_period) - length(replace(rate_per_period, '.', '')) <= 1
-        AND substr(rate_per_period, 1, 1) GLOB '[0-9.]'
-        AND rate_per_period NOT GLOB '*-*'
-        AND rate_per_period NOT GLOB '*+*'
-        AND replace(replace(rate_per_period, '.', ''), '0', '') <> ''
+        semester_rate GLOB '*[0-9]*'
+        AND semester_rate NOT GLOB '*[^0-9.]*'
+        AND length(semester_rate) - length(replace(semester_rate, '.', '')) <= 1
+        AND substr(semester_rate, 1, 1) GLOB '[0-9.]'
+        AND semester_rate NOT GLOB '*-*'
+        AND semester_rate NOT GLOB '*+*'
+        AND replace(replace(semester_rate, '.', ''), '0', '') <> ''
+    ),
+    CHECK (
+        recess_rate GLOB '*[0-9]*'
+        AND recess_rate NOT GLOB '*[^0-9.]*'
+        AND length(recess_rate) - length(replace(recess_rate, '.', '')) <= 1
+        AND substr(recess_rate, 1, 1) GLOB '[0-9.]'
+        AND recess_rate NOT GLOB '*-*'
+        AND recess_rate NOT GLOB '*+*'
+        AND replace(replace(recess_rate, '.', ''), '0', '') <> ''
     )
 );
 
@@ -74,6 +82,8 @@ CREATE TABLE IF NOT EXISTS allocations (
     expected_checkout DATE NOT NULL,
     status TEXT NOT NULL DEFAULT 'active',
     rate_agreed TEXT NOT NULL,
+    term TEXT NOT NULL CHECK (term IN ('semester_1', 'semester_2', 'recess')),
+    academic_year TEXT NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (hostel_id) REFERENCES hostels(id) ON DELETE CASCADE,
     FOREIGN KEY (resident_id) REFERENCES residents(id) ON DELETE RESTRICT,

@@ -29,9 +29,8 @@ pub struct Room {
     pub room_type: String,
     pub capacity: i32,
     pub floor: Option<i32>,
-    pub rate_per_period: String,
-    /// Billing period for this room (`night`, `week`, `month`, `semester`).
-    pub billing_period: String,
+    pub semester_rate: String,
+    pub recess_rate: String,
     pub status: String,
     pub created_at: DateTime<Utc>,
 }
@@ -56,6 +55,10 @@ pub struct NewAllocation {
     pub check_out_date: Option<NaiveDate>,
     pub expected_checkout: NaiveDate,
     pub rate_agreed: String,
+    /// `"semester_1"`, `"semester_2"` or `"recess"`.
+    pub term: String,
+    /// Academic year label, e.g. `"2026/2027"`.
+    pub academic_year: String,
 }
 
 /// Data required to check a resident into a room in one atomic transaction.
@@ -78,6 +81,10 @@ pub struct NewCheckIn {
     pub check_out_date: Option<NaiveDate>,
     pub expected_checkout: NaiveDate,
     pub rate_agreed: String,
+    /// `"semester_1"`, `"semester_2"` or `"recess"`.
+    pub term: String,
+    /// Academic year label, e.g. `"2026/2027"`.
+    pub academic_year: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +124,10 @@ pub struct Allocation {
     pub status: String,
     /// Rate agreed for this stay, stored as a decimal string.
     pub rate_agreed: String,
+    /// `"semester_1"`, `"semester_2"` or `"recess"`.
+    pub term: String,
+    /// Academic year label, e.g. `"2026/2027"`.
+    pub academic_year: String,
     pub created_at: DateTime<Utc>,
 }
 
@@ -184,11 +195,10 @@ pub struct NewRoom {
     pub room_type: String,
     pub capacity: i32,
     pub floor: Option<i32>,
-    /// Nightly/period rate as a decimal string, e.g. `"50.00"`.
-    pub rate_per_period: String,
-    /// Billing period (`night`, `week`, `month`, `semester`).
-    /// `None` defaults to `"semester"` on insert.
-    pub billing_period: Option<String>,
+    /// Semester rate as a decimal string, e.g. `"500000.00"`.
+    pub semester_rate: String,
+    /// Recess/internship rate as a decimal string.
+    pub recess_rate: String,
 }
 
 /// Hostel profile augmented with derived onboarding state.
@@ -262,12 +272,12 @@ pub struct AllocationWithRoom {
     pub status: String,
     /// Rate agreed for this stay, stored as a decimal string.
     pub rate_agreed: String,
+    /// `"semester_1"`, `"semester_2"` or `"recess"`.
+    pub term: String,
+    /// Academic year label, e.g. `"2026/2027"`.
+    pub academic_year: String,
     pub created_at: DateTime<Utc>,
     pub room_number: String,
-    /// Billing period of the room (`night`, `week`, `month`, `semester`) used to
-    /// compute accrued balance. Included here so balance math can use the room's
-    /// period without an extra lookup.
-    pub billing_period: String,
 }
 
 /// Full resident record with stay and payment history.
@@ -313,6 +323,10 @@ pub struct ActiveAllocation {
     pub resident_name: String,
     pub room_number: String,
     pub rate_agreed: String,
+    /// `"semester_1"`, `"semester_2"` or `"recess"`.
+    pub term: String,
+    /// Academic year label, e.g. `"2026/2027"`.
+    pub academic_year: String,
     pub check_in_date: NaiveDate,
     pub expected_checkout: NaiveDate,
     /// Total paid so far, as a decimal string.

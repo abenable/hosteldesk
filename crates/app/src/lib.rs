@@ -305,8 +305,8 @@ mod tests {
                 room_type: "single".to_string(),
                 capacity: 1,
                 floor: None,
-                rate_per_period: "100.00".to_string(),
-                billing_period: None,
+                semester_rate: "100.00".to_string(),
+                recess_rate: "50.00".to_string(),
             })
             .await
             .expect("add room");
@@ -326,6 +326,8 @@ mod tests {
                 check_out_date: None,
                 expected_checkout: check_in + chrono::Duration::days(120),
                 rate_agreed: "100.00".to_string(),
+                term: "semester_1".to_string(),
+                academic_year: "2026/2027".to_string(),
             })
             .await
             .expect("check in");
@@ -547,8 +549,8 @@ mod tests {
                 room_type: "single".to_string(),
                 capacity: 1,
                 floor: None,
-                rate_per_period: "100.00".to_string(),
-                billing_period: None,
+                semester_rate: "100.00".to_string(),
+                recess_rate: "50.00".to_string(),
             })
             .await
             .expect("add room");
@@ -568,6 +570,8 @@ mod tests {
                 check_out_date: None,
                 expected_checkout: check_in + chrono::Duration::days(7),
                 rate_agreed: "100.00".to_string(),
+                term: "semester_1".to_string(),
+                academic_year: "2026/2027".to_string(),
             })
             .await
             .expect("check in");
