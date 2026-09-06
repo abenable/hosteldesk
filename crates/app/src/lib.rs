@@ -495,9 +495,16 @@ mod tests {
             pool.inner.close().await;
         }
 
-        // Copy the backup over the live base file, then delete WAL/SHM sidecars
-        // exactly as restore_backup does.
-        std::fs::copy(&backup_path, &live_path).expect("copy backup over live");
+        // Replace the live database exactly as replace_database_files does:
+        // stage a copy, then unlink the old live file before renaming the
+        // staged copy into place. Unlinking first breaks lingering file
+        // descriptors — on a loaded machine, sqlx's background close can
+        // finish after this point, and its final WAL checkpoint would
+        // otherwise resurrect stale pages into the restored file.
+        let staging_path = live_path.with_extension("db.restoring");
+        std::fs::copy(&backup_path, &staging_path).expect("stage backup over live");
+        std::fs::remove_file(&live_path).expect("remove live database");
+        std::fs::rename(&staging_path, &live_path).expect("install restored database");
         let _ = std::fs::remove_file(format!("{}-wal", live_path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", live_path.display()));
 
