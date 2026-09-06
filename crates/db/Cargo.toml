@@ -1,11 +1,15 @@
 [package]
 name = "db"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
 argon2 = "0.5"
+hosteldesk-core = { path = "../core" }
 password-hash = { version = "0.5", features = ["std", "getrandom"] }
 chrono = { workspace = true }
 rust_decimal = { workspace = true }

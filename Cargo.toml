@@ -2,6 +2,11 @@
 members = ["crates/app", "crates/core", "crates/db", "crates/license", "crates/pdf"]
 resolver = "2"
 
+[workspace.package]
+license-file = "LICENSE"
+repository = "https://github.com/abenable/hosteldesk"
+authors = ["Able Abenaitwe <ableabenaitwe@gmail.com>"]
+
 [workspace.dependencies]
 anyhow = "1"
 tokio = { version = "1", features = ["full"] }

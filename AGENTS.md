@@ -4,7 +4,7 @@
 
 This is a **Tauri v2** project with a **Rust backend** and a **React / TypeScript / Tailwind** frontend, organized as a **Cargo workspace** with the following members:
 
-- `core` — domain logic and shared business rules
+- `core` — currency parsing shared between `app` and `db` (see `hosteldesk-core`)
 - `db` — persistence layer (SQLite via `sqlx`)
 - `pdf` — PDF generation
 - `license` — licensing logic
@@ -55,7 +55,7 @@ Document **all public Rust structs, enums, and functions** with doc comments (`/
 
 Before completing any task, review the code against these security and quality practices:
 
-- **SQL injection prevention** — use `sqlx` query macros (`query!` / `query_as!`) with bound parameters. Never interpolate user input into SQL strings.
+- **SQL injection prevention** — use `sqlx::query`/`sqlx::query_as::<_, T>` with bound (`?N`) parameters, never string-interpolated SQL. Prefer the runtime `query_as::<_, T>` form over the `query!`/`query_as!` macros: the macros need a live `DATABASE_URL` (or a committed `.sqlx/` cache) to compile, which this project deliberately avoids so CI never needs a database just to build.
 - **Error handling** — use `Result<T, E>` and propagate errors explicitly. Avoid panics in normal control flow.
 - **No `.unwrap()` in production code** — use `?`, `.context(...)`, `unwrap_or`, `unwrap_or_else`, or explicit `match` instead. `.unwrap()` / `.expect()` are acceptable only in tests.
 
@@ -63,6 +63,7 @@ Before completing any task, review the code against these security and quality p
 
 Migrations live in `crates/db/migrations/` and are applied by `sqlx::migrate!`.
 
+- **`20260905000000_initial_schema.sql` is frozen as of the `v1.0.0` tag.** It was re-baselined into a single file immediately before release, which is only safe because nothing had shipped yet. Once `v1.0.0` is tagged, that precondition no longer holds — never edit this file again; fix forward with a new timestamped migration, per the append-only rule below.
 - Migrations are **append-only** once shipped or applied to any teammate's or user's database. Never edit a migration file that has ever run against a real DB; fix forward with a new timestamped file.
 - A broken development DB can be recovered by deleting `<app-data-dir>/hosteldesk.db*` (including `-wal` and `-shm` files) and relaunching the app.
 - Table-rewrite migrations must use explicit column lists: `INSERT INTO new (a, b) SELECT a, b FROM old`. Never use `SELECT *`, because column-order drift silently corrupts data.

@@ -1,7 +1,10 @@
 [package]
 name = "hosteldesk-core"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
 description = "Pure domain logic for Hostel Desk. Independent of UI, Tauri, and SQL."
 
 [dependencies]
