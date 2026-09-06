@@ -124,7 +124,7 @@ jobs:
         run: |
           checksum_file="${{ matrix.checksum_name }}"
           : > "$checksum_file"
-          echo "$ARTIFACT_PATHS" | jq -r '.[]' | while IFS= read -r path; do
+          echo "$ARTIFACT_PATHS" | tr -d '\r' | jq -r '.[]' | while IFS= read -r path; do
             sha256sum "$path" >> "$checksum_file"
           done
           gh release upload "$RELEASE_TAG" "$checksum_file" --clobber --repo "${{ github.repository }}"
