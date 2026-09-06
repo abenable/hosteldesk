@@ -124,7 +124,12 @@ jobs:
         run: |
           checksum_file="${{ matrix.checksum_name }}"
           : > "$checksum_file"
-          echo "$ARTIFACT_PATHS" | tr -d '\r' | jq -r '.[]' | while IFS= read -r path; do
+          # tr must run AFTER jq: the tauri-action writes artifactPaths with
+          # \r line endings, which land as a \r escape INSIDE the first JSON
+          # element; stripping the control char before jq leaves the two-char
+          # escape for jq's -r to materialize, so sha256sum sees a path with
+          # a trailing \r and fails (R8).
+          echo "$ARTIFACT_PATHS" | jq -r '.[]' | tr -d '\r' | while IFS= read -r path; do
             sha256sum "$path" >> "$checksum_file"
           done
           gh release upload "$RELEASE_TAG" "$checksum_file" --clobber --repo "${{ github.repository }}"
