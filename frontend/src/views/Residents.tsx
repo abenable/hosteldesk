@@ -15,7 +15,7 @@ import { CurrencyAmount } from '../components/ui/CurrencyAmount.tsx';
 import { CheckOutConfirm } from '../components/CheckOutConfirm.tsx';
 import { CheckInForm } from '../components/CheckInForm.tsx';
 import { useHostel } from '../hooks/use-hostel.ts';
-import { formatDecimal } from '../lib/decimal.ts';
+import { formatDecimal, owesMoney } from '../lib/decimal.ts';
 import { addToast } from '../lib/toasts.ts';
 import {
   listResidents,
@@ -189,7 +189,7 @@ export function Residents({ onNavigate }: Props) {
           <tbody>
             {filtered.map((r) => {
               const overdue = r.status === 'active' && r.expected_checkout && r.expected_checkout < today;
-              const owes = BigInt(r.balance.replace('.', '').replace(/[^0-9]/g, '') || '0') > 0n;
+              const owes = owesMoney(r.balance);
               return (
                 <Tr
                   key={r.id}
@@ -341,7 +341,7 @@ function ResidentDrawerContent({
   onEdit: () => void;
 }) {
   const active = detail.allocations.find((a) => a.status === 'active');
-  const owes = BigInt(detail.balance.replace('.', '').replace(/[^0-9]/g, '') || '0') > 0n;
+  const owes = owesMoney(detail.balance);
 
   return (
     <div className="flex flex-col gap-5 pt-8">

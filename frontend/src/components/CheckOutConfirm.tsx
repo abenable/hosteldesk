@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Modal } from './ui/Modal.tsx';
 import { Button } from './ui/Button.tsx';
-import { formatDecimal } from '../lib/decimal.ts';
+import { formatDecimal, owesMoney } from '../lib/decimal.ts';
 import { checkOut } from '../lib/tauri.ts';
 import { addToast } from '../lib/toasts.ts';
 
@@ -30,7 +30,7 @@ export function CheckOutConfirm({
 }: Props) {
   const [busy, setBusy] = useState(false);
   const today = new Date().toLocaleDateString('en-CA');
-  const owed = BigInt(balance.replace('.', '').replace(/[^0-9]/g, '') || '0') > 0n;
+  const owed = owesMoney(balance);
 
   async function handleConfirm() {
     setBusy(true);

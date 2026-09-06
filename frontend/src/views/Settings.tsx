@@ -21,6 +21,9 @@ export function Settings() {
   const { hostelId, refresh: refreshHostel } = useHostel();
   const [section, setSection] = useState<SectionId>('business');
   const currentUser = getCurrentUser();
+  // Staff listing is admin-only server-side; hide the tab for managers
+  // rather than let them land on a section that just errors.
+  const visibleSections = SECTIONS.filter((s) => s.id !== 'team' || currentUser?.role === 'admin');
 
   return (
     <div className="flex flex-col gap-6 md:flex-row md:gap-8">
@@ -28,7 +31,7 @@ export function Settings() {
         className="flex gap-1 overflow-x-auto md:w-56 md:flex-col"
         aria-label="Settings sections"
       >
-        {SECTIONS.map((s) => (
+        {visibleSections.map((s) => (
           <button
             key={s.id}
             onClick={() => setSection(s.id)}

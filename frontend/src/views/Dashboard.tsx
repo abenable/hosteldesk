@@ -9,7 +9,7 @@ import { CheckInForm } from '../components/CheckInForm.tsx';
 import { CheckOutConfirm } from '../components/CheckOutConfirm.tsx';
 import { CurrencyAmount } from '../components/ui/CurrencyAmount.tsx';
 import { useHostel } from '../hooks/use-hostel.ts';
-import { formatDecimal } from '../lib/decimal.ts';
+import { formatDecimal, owesMoney } from '../lib/decimal.ts';
 import {
   getDashboardStats,
   listRecentActivity,
@@ -77,7 +77,7 @@ export function Dashboard() {
     ? Math.round((stats.occupied / stats.total_rooms) * 100)
     : 0;
   const outstanding = stats?.outstanding_total ?? '0';
-  const owed = BigInt(outstanding.replace('.', '').replace(/[^0-9]/g, '') || '0') > 0n;
+  const owed = owesMoney(outstanding);
 
   return (
     <div className="flex flex-col gap-4 md:gap-6">
@@ -141,7 +141,7 @@ export function Dashboard() {
                         <span className="text-caption-sm text-muted">{a.room_number}</span>
                       </Td>
                       <Td className="text-right">
-                        <CurrencyAmount amount={a.balance} currency={currency} error={BigInt(a.balance.replace('.', '').replace(/[^0-9]/g, '') || '0') > 0n} muted />
+                        <CurrencyAmount amount={a.balance} currency={currency} error={owesMoney(a.balance)} muted />
                       </Td>
                       <Td className="text-right">
                         <Button variant="tertiary" size="sm" onClick={() => setCheckoutTarget(a)}>

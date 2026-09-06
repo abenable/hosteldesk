@@ -54,18 +54,6 @@ export const SettingsIcon = (p: IconProps) => (
   </svg>
 );
 
-export const PlusIcon = (p: IconProps) => (
-  <svg {...base(p)}>
-    <path d="M12 5v14M5 12h14" />
-  </svg>
-);
-
-export const MenuIcon = (p: IconProps) => (
-  <svg {...base(p)}>
-    <path d="M3 12h18M3 6h18M3 18h18" />
-  </svg>
-);
-
 export const CloseIcon = (p: IconProps) => (
   <svg {...base(p)}>
     <path d="M18 6 6 18M6 6l12 12" />

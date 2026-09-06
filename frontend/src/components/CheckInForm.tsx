@@ -15,6 +15,13 @@ import { Button } from './ui/Button.tsx';
 import { Card } from './ui/Card.tsx';
 import { SearchInput } from './ui/SearchInput.tsx';
 
+/// A room can be allocated when it isn't under maintenance and still has a
+/// free bed — capacity > 1 rooms stay `status: 'occupied'` after their first
+/// resident, so `status` alone can't gate room selection.
+function hasFreeBed(room: Room): boolean {
+  return room.status.toLowerCase() !== 'maintenance' && room.occupied_beds < room.capacity;
+}
+
 export function CheckInForm({ onSuccess }: { onSuccess?: () => void }) {
   const { hostelId } = useHostel();
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -40,7 +47,7 @@ export function CheckInForm({ onSuccess }: { onSuccess?: () => void }) {
   useEffect(() => {
     if (!hostelId) return;
     getRooms(hostelId)
-      .then((data) => setRooms(data.filter((r) => r.status.toLowerCase() === 'vacant')))
+      .then((data) => setRooms(data.filter(hasFreeBed)))
       .catch(() => setRooms([]));
     listResidents({ hostel_id: hostelId })
       .then(setResidents)
@@ -132,7 +139,7 @@ export function CheckInForm({ onSuccess }: { onSuccess?: () => void }) {
           academic_year: academicYear.trim(),
         });
 
-      await getRooms(hostelId).then((data) => setRooms(data.filter((r) => r.status.toLowerCase() === 'vacant')));
+      await getRooms(hostelId).then((data) => setRooms(data.filter(hasFreeBed)));
       addToast('Check-in created successfully', 'success');
       setRoomId('');
       setResidentMode('new');
@@ -169,10 +176,13 @@ export function CheckInForm({ onSuccess }: { onSuccess?: () => void }) {
               onChange={(e) => handleRoomChange(e.target.value)}
               required
             >
-              <option value="">Select a vacant room</option>
+              <option value="">Select an available room</option>
               {rooms.map((room) => (
                 <option key={room.id} value={room.id}>
                   {room.room_number} · {room.room_type}
+                  {room.capacity > 1
+                    ? ` · ${room.capacity - room.occupied_beds}/${room.capacity} beds free`
+                    : ''}
                 </option>
               ))}
             </Select>

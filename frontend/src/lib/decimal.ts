@@ -45,3 +45,16 @@ export function isPositiveDecimal(s: string): boolean {
   const trimmed = s.trim();
   return /^\d+(\.\d+)?$/.test(trimmed) && BigInt(trimmed.replace('.', '')) > 0n;
 }
+
+/**
+ * Whether a balance string represents money actually owed (a positive
+ * amount), as opposed to zero or a credit (negative amount). A leading `-`
+ * must be checked before stripping non-digit characters, or a credit balance
+ * reads as owed.
+ */
+export function owesMoney(balance: string): boolean {
+  const trimmed = (balance || '0').trim();
+  if (trimmed.startsWith('-')) return false;
+  const digits = trimmed.replace(/[^0-9]/g, '');
+  return BigInt(digits || '0') > 0n;
+}

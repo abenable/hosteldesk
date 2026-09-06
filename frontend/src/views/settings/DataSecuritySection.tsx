@@ -5,6 +5,7 @@ import { Modal } from '../../components/ui/Modal.tsx';
 import { addToast } from '../../lib/toasts.ts';
 import {
   backupDatabase,
+  getAppVersion,
   listBackups,
   restoreBackup,
 } from '../../lib/tauri.ts';
@@ -14,9 +15,11 @@ export function DataSecuritySection() {
   const [backups, setBackups] = useState<string[]>([]);
   const [loadingBackups, setLoadingBackups] = useState(true);
   const [selectedBackup, setSelectedBackup] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
 
   useEffect(() => {
     loadBackups();
+    getAppVersion().then(setAppVersion).catch(() => setAppVersion(null));
   }, []);
 
   async function loadBackups() {
@@ -102,6 +105,13 @@ export function DataSecuritySection() {
             })}
           </ul>
         )}
+      </Card>
+
+      <Card shadow className="p-6">
+        <h2 className="text-title-md text-ink">About</h2>
+        <p className="mt-2 text-body-sm text-muted">
+          HostelDesk {appVersion ? `v${appVersion}` : 'version unavailable'}
+        </p>
       </Card>
 
       <Modal

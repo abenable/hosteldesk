@@ -113,7 +113,3 @@ export function Select({
     </div>
   );
 }
-
-export function SelectOption({ value, children }: { value: string; children: ReactNode }) {
-  return <option value={value}>{children}</option>;
-}

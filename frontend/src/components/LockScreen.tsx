@@ -1,32 +1,23 @@
 import { useState } from 'react';
-import { activateLicense, type LicensePayload } from '../lib/tauri.ts';
+import { activateLicenseFromFile, type LicensePayload } from '../lib/tauri.ts';
 import logo from '../assets/logo.png';
 import { Button } from './ui/Button.tsx';
 import { Card } from './ui/Card.tsx';
-import { Input } from './ui/Input.tsx';
 
 type Props = {
   onActivated: (payload: LicensePayload) => void;
 };
 
 export function LockScreen({ onActivated }: Props) {
-  const [licenseKey, setLicenseKey] = useState('');
   const [status, setStatus] = useState<'idle' | 'submitting'>('idle');
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const handleChooseFile = async () => {
     setError(null);
-
-    if (!licenseKey.trim()) {
-      setError('Paste a license key to continue.');
-      return;
-    }
-
     setStatus('submitting');
 
     try {
-      const payload = await activateLicense(licenseKey.trim());
+      const payload = await activateLicenseFromFile();
       onActivated(payload);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -47,29 +38,20 @@ export function LockScreen({ onActivated }: Props) {
         />
         <h1 className="text-display-md text-ink">Activate HostelDesk</h1>
         <p className="mt-2 text-body-sm text-muted">
-          Paste the license key you received to unlock the app.
+          Select the license file you received to unlock the app.
         </p>
 
-        <form onSubmit={handleSubmit} className="mt-8 flex flex-col gap-4 text-left">
-          <Input
-            label="License key"
-            value={licenseKey}
-            onChange={(e) => {
-              setLicenseKey(e.target.value);
-              if (error) setError(null);
-            }}
-            placeholder="Paste your license key here"
-            error={error ?? undefined}
-            autoFocus
-          />
+        <div className="mt-8 flex flex-col gap-4">
           <Button
-            type="submit"
-            disabled={status === 'submitting' || !licenseKey.trim()}
+            type="button"
+            onClick={handleChooseFile}
+            disabled={status === 'submitting'}
             className="transition-transform active:scale-[0.96]"
           >
-            {status === 'submitting' ? 'Activating…' : 'Activate'}
+            {status === 'submitting' ? 'Activating…' : 'Choose license file…'}
           </Button>
-        </form>
+          {error && <p className="text-caption-sm text-error-text">{error}</p>}
+        </div>
       </Card>
     </div>
   );

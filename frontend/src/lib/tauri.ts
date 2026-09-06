@@ -22,6 +22,7 @@ export type Room = {
   recess_rate: string;
   status: 'vacant' | 'occupied' | 'maintenance' | string;
   created_at: string;
+  occupied_beds: number;
 };
 
 export type Term = 'semester_1' | 'semester_2' | 'recess';
@@ -95,6 +96,15 @@ function reportError(error: unknown) {
   addToast(toMessage(error), 'error');
 }
 
+export async function getAppVersion(): Promise<string> {
+  try {
+    return await invoke<string>('get_app_version');
+  } catch (error) {
+    reportError(error);
+    throw error;
+  }
+}
+
 export async function getRooms(hostelId: number): Promise<Room[]> {
   try {
     return await invoke<Room[]>('get_rooms', { hostel_id: hostelId });
@@ -146,8 +156,8 @@ export async function getLicenseStatus(): Promise<LicensePayload | null> {
   return invoke<LicensePayload | null>('get_license_status');
 }
 
-export async function activateLicense(license: string): Promise<LicensePayload> {
-  return invoke<LicensePayload>('activate_license', { license });
+export async function activateLicenseFromFile(): Promise<LicensePayload> {
+  return invoke<LicensePayload>('activate_license_from_file');
 }
 
 export async function createUser(input: UserInput): Promise<number> {

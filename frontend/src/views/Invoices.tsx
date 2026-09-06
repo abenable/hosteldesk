@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, memo } from 'react';
 import { Card } from '../components/ui/Card.tsx';
 import { Button } from '../components/ui/Button.tsx';
 import { Tabs } from '../components/ui/Tabs.tsx';
@@ -17,6 +17,7 @@ import {
   addDecimalStrings,
   formatDecimal,
   isPositiveDecimal,
+  owesMoney,
   subtractDecimalStrings,
 } from '../lib/decimal.ts';
 import {
@@ -120,10 +121,7 @@ export function Invoices({ onNavigate: _onNavigate }: Props) {
   }, [filteredPayments]);
 
   const outstanding = useMemo(() => {
-    return allocations.filter((a) => {
-      const bal = BigInt(a.balance.replace('.', '').replace(/[^0-9]/g, '') || '0');
-      return bal > 0n;
-    });
+    return allocations.filter((a) => owesMoney(a.balance));
   }, [allocations]);
 
   const filteredOutstanding = useMemo(() => {
@@ -162,6 +160,37 @@ export function Invoices({ onNavigate: _onNavigate }: Props) {
     a.click();
     URL.revokeObjectURL(url);
   }
+
+  const handleViewReceipt = useCallback(
+    async (p: PaymentRow) => {
+      try {
+        const detail = await getResidentDetail({
+          hostel_id: hostelId,
+          resident_id: p.resident_id,
+        });
+        await generateAndOpenReceipt({
+          hostel_id: hostelId,
+          hostel_name: hostel?.name || 'HostelDesk',
+          hostel_address: hostel?.address || null,
+          hostel_phone: hostel?.phone || null,
+          receipt_number: Number(p.receipt_number ?? 0),
+          resident_name: p.resident_name,
+          room_number: p.room_number,
+          amount: p.amount,
+          date: p.payment_date.slice(0, 10),
+          balance: detail.balance,
+          payment_method: p.payment_method,
+          notes: p.notes || null,
+          currency_code: currency,
+          footer_text: preferences?.receipt_footer || null,
+          logo_path: hostel?.branding_logo_path || null,
+        });
+      } catch {
+        // toast already surfaced
+      }
+    },
+    [hostelId, hostel, currency, preferences],
+  );
 
   return (
     <div className="flex flex-col gap-4">
@@ -231,28 +260,7 @@ export function Invoices({ onNavigate: _onNavigate }: Props) {
                 </thead>
                 <tbody>
                   {filteredPayments.map((p) => (
-                    <Tr key={p.id}>
-                      <Td>{new Date(p.payment_date).toLocaleDateString()}</Td>
-                      <Td>{p.receipt_number ?? '—'}</Td>
-                      <Td>{p.resident_name}</Td>
-                      <Td>{p.room_number}</Td>
-                      <Td className="capitalize">{p.payment_method}</Td>
-                      <Td className="text-right">
-                        <CurrencyAmount amount={p.amount} currency={currency} />
-                      </Td>
-                      <Td>
-                        <Dropdown
-                          trigger={
-                            <button className="rounded-full p-1.5 text-muted hover:bg-surface-soft hover:text-ink">⋯</button>
-                          }
-                        >
-                          <DropdownItem onSelect={() => handleViewReceipt(p)}>View receipt</DropdownItem>
-                          <DropdownItem onSelect={() => navigator.clipboard.writeText(p.receipt_number ?? '')}>
-                            Copy receipt #
-                          </DropdownItem>
-                        </Dropdown>
-                      </Td>
-                    </Tr>
+                    <PaymentTableRow key={p.id} payment={p} currency={currency} onView={handleViewReceipt} />
                   ))}
                 </tbody>
               </Table>
@@ -333,35 +341,45 @@ export function Invoices({ onNavigate: _onNavigate }: Props) {
       />
     </div>
   );
-
-  async function handleViewReceipt(p: PaymentRow) {
-    try {
-      const detail = await getResidentDetail({
-        hostel_id: hostelId,
-        resident_id: p.resident_id,
-      });
-      await generateAndOpenReceipt({
-        hostel_id: hostelId,
-        hostel_name: hostel?.name || 'HostelDesk',
-        hostel_address: hostel?.address || null,
-        hostel_phone: hostel?.phone || null,
-        receipt_number: Number(p.receipt_number ?? 0),
-        resident_name: p.resident_name,
-        room_number: p.room_number,
-        amount: p.amount,
-        date: p.payment_date.slice(0, 10),
-        balance: detail.balance,
-        payment_method: p.payment_method,
-        notes: p.notes || null,
-        currency_code: currency,
-        footer_text: preferences?.receipt_footer || null,
-        logo_path: hostel?.branding_logo_path || null,
-      });
-    } catch {
-      // toast already surfaced
-    }
-  }
 }
+
+// Isolates each ledger row so filtering/searching (which changes state on
+// the parent) doesn't re-render every row's Radix dropdown — previously the
+// only latency an operator actually felt on this screen.
+const PaymentTableRow = memo(function PaymentTableRow({
+  payment: p,
+  currency,
+  onView,
+}: {
+  payment: PaymentRow;
+  currency: string;
+  onView: (p: PaymentRow) => void;
+}) {
+  return (
+    <Tr>
+      <Td>{new Date(p.payment_date).toLocaleDateString()}</Td>
+      <Td>{p.receipt_number ?? '—'}</Td>
+      <Td>{p.resident_name}</Td>
+      <Td>{p.room_number}</Td>
+      <Td className="capitalize">{p.payment_method}</Td>
+      <Td className="text-right">
+        <CurrencyAmount amount={p.amount} currency={currency} />
+      </Td>
+      <Td>
+        <Dropdown
+          trigger={
+            <button className="rounded-full p-1.5 text-muted hover:bg-surface-soft hover:text-ink">⋯</button>
+          }
+        >
+          <DropdownItem onSelect={() => onView(p)}>View receipt</DropdownItem>
+          <DropdownItem onSelect={() => navigator.clipboard.writeText(p.receipt_number ?? '')}>
+            Copy receipt #
+          </DropdownItem>
+        </Dropdown>
+      </Td>
+    </Tr>
+  );
+});
 
 function RecordPaymentModal({
   open,
@@ -398,11 +416,10 @@ function RecordPaymentModal({
   const amountValid = isPositiveDecimal(amount);
 
   useEffect(() => {
-    if (selected) {
-      setAmount(selected.balance);
-    } else {
-      setAmount('');
-    }
+    // Only prefill when the resident actually owes money — prefilling a
+    // zero or negative (credit) balance produced an invalid amount that
+    // silently disabled the Record button.
+    setAmount(selected && owesMoney(selected.balance) ? selected.balance : '');
   }, [selected]);
 
   async function handleSubmit(e: React.FormEvent) {

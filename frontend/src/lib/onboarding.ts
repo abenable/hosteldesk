@@ -19,10 +19,6 @@ function write(state: OnboardingState) {
   localStorage.setItem(KEY, JSON.stringify(state));
 }
 
-export function isOnboardingComplete(): boolean {
-  return read().complete === true;
-}
-
 export function completeOnboarding(user?: User) {
   const state = read();
   write({ ...state, complete: true });
