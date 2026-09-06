@@ -46,6 +46,7 @@ pub struct NewResident {
     pub email: Option<String>,
     pub id_number: Option<String>,
     pub next_of_kin: Option<String>,
+    pub next_of_kin_phone: Option<String>,
     pub photo_path: Option<String>,
 }
 
@@ -59,6 +60,7 @@ pub struct UpdateResident {
     pub email: Option<String>,
     pub id_number: Option<String>,
     pub next_of_kin: Option<String>,
+    pub next_of_kin_phone: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,9 +69,6 @@ pub struct NewAllocation {
     pub hostel_id: i64,
     pub resident_id: i64,
     pub room_id: i64,
-    pub check_in_date: NaiveDate,
-    pub check_out_date: Option<NaiveDate>,
-    pub expected_checkout: NaiveDate,
     pub rate_agreed: String,
     /// `"semester_1"`, `"semester_2"` or `"recess"`.
     pub term: String,
@@ -92,10 +91,8 @@ pub struct NewCheckIn {
     pub email: Option<String>,
     pub id_number: Option<String>,
     pub next_of_kin: Option<String>,
+    pub next_of_kin_phone: Option<String>,
     pub photo_path: Option<String>,
-    pub check_in_date: NaiveDate,
-    pub check_out_date: Option<NaiveDate>,
-    pub expected_checkout: NaiveDate,
     pub rate_agreed: String,
     /// `"semester_1"`, `"semester_2"` or `"recess"`.
     pub term: String,
@@ -124,6 +121,7 @@ pub struct Resident {
     pub email: Option<String>,
     pub id_number: Option<String>,
     pub next_of_kin: Option<String>,
+    pub next_of_kin_phone: Option<String>,
     pub photo_path: Option<String>,
     pub created_at: DateTime<Utc>,
 }
@@ -134,9 +132,6 @@ pub struct Allocation {
     pub hostel_id: i64,
     pub resident_id: i64,
     pub room_id: i64,
-    pub check_in_date: NaiveDate,
-    pub check_out_date: Option<NaiveDate>,
-    pub expected_checkout: NaiveDate,
     pub status: String,
     /// Rate agreed for this stay, stored as a decimal string.
     pub rate_agreed: String,
@@ -145,6 +140,7 @@ pub struct Allocation {
     /// Academic year label, e.g. `"2026/2027"`.
     pub academic_year: String,
     pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -266,8 +262,6 @@ pub struct ResidentSummary {
     /// Current active allocation id, if any.
     pub allocation_id: Option<i64>,
     pub room_number: Option<String>,
-    pub check_in_date: Option<NaiveDate>,
-    pub expected_checkout: Option<NaiveDate>,
     /// `"active"`, `"checked_out"` or `"never_allocated"`.
     pub status: String,
     /// Owed minus paid for the active allocation, or `"0"`.
@@ -281,9 +275,6 @@ pub struct AllocationWithRoom {
     pub hostel_id: i64,
     pub resident_id: i64,
     pub room_id: i64,
-    pub check_in_date: NaiveDate,
-    pub check_out_date: Option<NaiveDate>,
-    pub expected_checkout: NaiveDate,
     /// `"active"` or `"checked_out"`.
     pub status: String,
     /// Rate agreed for this stay, stored as a decimal string.
@@ -343,8 +334,6 @@ pub struct ActiveAllocation {
     pub term: String,
     /// Academic year label, e.g. `"2026/2027"`.
     pub academic_year: String,
-    pub check_in_date: NaiveDate,
-    pub expected_checkout: NaiveDate,
     /// Total paid so far, as a decimal string.
     pub total_paid: String,
     /// Current outstanding balance, as a decimal string.
@@ -359,8 +348,6 @@ pub struct DashboardStats {
     pub vacant: i64,
     pub maintenance: i64,
     pub check_ins_today: i64,
-    pub departures_today: i64,
-    pub overdue_stays: i64,
     pub revenue_today: String,
     pub revenue_month: String,
     pub outstanding_total: String,
