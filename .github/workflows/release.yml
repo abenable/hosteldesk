@@ -5,38 +5,84 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release (e.g. v1.0.0)'
+        required: true
+
+# Prevent two runs for the same tag from racing to create duplicate releases.
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
-  release:
-    permissions:
-      contents: write
+  # Create one draft release up front. The matrix legs below only upload to
+  # it; nothing calls tauri-action's own create-or-get, so two concurrent
+  # matrix jobs can no longer produce two duplicate drafts for one tag.
+  create-release:
+    runs-on: ubuntu-22.04
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+    steps:
+      - name: Create draft release
+        id: create
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          id=$(gh api "repos/${{ github.repository }}/releases" \
+            -f tag_name="${RELEASE_TAG}" \
+            -f name="HostelDesk ${RELEASE_TAG}" \
+            -f body="Installers for HostelDesk. Download the bundle for your platform." \
+            -F draft=true \
+            -F prerelease=false \
+            --jq .id)
+          echo "release_id=$id" >> "$GITHUB_OUTPUT"
+
+  build-and-upload:
+    needs: create-release
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: ubuntu-22.04
             args: '--bundles deb'
+            checksum_name: checksums-linux.txt
           - platform: windows-latest
             args: '--bundles nsis msi'
+            checksum_name: checksums-windows.txt
 
     runs-on: ${{ matrix.platform }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        # Pinned to a commit on dtolnay/rust-toolchain's master branch; the
+        # actual Rust version installed is pinned separately below and by
+        # rust-toolchain.toml, so a new stable release on tag day can't
+        # change what this build compiles with.
+        uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
+        with:
+          toolchain: '1.94.0'
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install Linux system dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -45,7 +91,7 @@ jobs:
           sudo apt-get install -y \
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
+            libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
 
@@ -57,15 +103,41 @@ jobs:
         working-directory: ./frontend
         run: npm run build
 
-      - name: Build and release
-        uses: tauri-apps/tauri-action@v0
+      - name: Build and upload to the draft release
+        id: build
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: ./crates/app
           args: ${{ matrix.args }}
-          tagName: ${{ github.ref_name }}
-          releaseName: 'HostelDesk ${{ github.ref_name }}'
-          releaseBody: 'Installers for HostelDesk. Download the bundle for your platform.'
-          releaseDraft: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseDraft: true
           prerelease: false
+
+      - name: Publish checksums for this platform's bundles
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_PATHS: ${{ steps.build.outputs.artifactPaths }}
+        run: |
+          checksum_file="${{ matrix.checksum_name }}"
+          : > "$checksum_file"
+          echo "$ARTIFACT_PATHS" | jq -r '.[]' | while IFS= read -r path; do
+            sha256sum "$path" >> "$checksum_file"
+          done
+          gh release upload "$RELEASE_TAG" "$checksum_file" --clobber --repo "${{ github.repository }}"
+
+  # Only un-drafts the release once every matrix leg above has succeeded, so
+  # a failed Windows build can never leave a half-built release public (R7).
+  publish-release:
+    needs: [create-release, build-and-upload]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X PATCH "repos/${{ github.repository }}/releases/${{ needs.create-release.outputs.release_id }}" \
+            -F draft=false

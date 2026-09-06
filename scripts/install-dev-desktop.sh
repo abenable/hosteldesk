@@ -30,4 +30,7 @@ EOF
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$desktop_dir" || true
 
 echo "Installed $desktop_file"
+if [ ! -x "$bin_path" ]; then
+	echo "Note: $bin_path does not exist yet -- the launcher won't start until you build it."
+fi
 echo "Build the app once (cargo build -p app or cargo tauri dev), then relaunch it -- the taskbar/dock icon should show HostelDesk."
