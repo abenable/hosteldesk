@@ -1,7 +1,10 @@
 //! Currency parsing and validation.
 //!
-//! Hostel Desk never uses floating-point numbers for money. All monetary
-//! values are represented as [`Decimal`] and stored in SQLite as TEXT.
+//! Parses a monetary amount string into a [`Decimal`], rejecting anything
+//! that isn't a valid non-negative decimal. Callers on both sides of IPC
+//! (`crates/app`'s command layer and `crates/db`'s balance calculations) use
+//! this so a rate or payment amount can never be negative regardless of
+//! which layer happens to validate it first.
 
 use rust_decimal::Decimal;
 use std::str::FromStr;

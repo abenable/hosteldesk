@@ -33,6 +33,10 @@ pub struct Room {
     pub recess_rate: String,
     pub status: String,
     pub created_at: DateTime<Utc>,
+    /// Number of active allocations currently in this room. A room only has
+    /// free beds when this is less than `capacity`, regardless of `status`
+    /// (a multi-capacity room stays `occupied` after its first resident).
+    pub occupied_beds: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +47,18 @@ pub struct NewResident {
     pub id_number: Option<String>,
     pub next_of_kin: Option<String>,
     pub photo_path: Option<String>,
+}
+
+/// Data required to update a resident's contact details.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdateResident {
+    pub hostel_id: i64,
+    pub resident_id: i64,
+    pub full_name: String,
+    pub phone: Option<String>,
+    pub email: Option<String>,
+    pub id_number: Option<String>,
+    pub next_of_kin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

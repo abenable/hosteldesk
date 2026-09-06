@@ -1,8 +1,8 @@
-//! Pure domain logic for Hostel Desk.
+//! Currency parsing shared between the command layer and the database layer.
 //!
-//! This crate contains the hostel business model and validation rules. It has no
-//! dependencies on Tauri, SQL, or any frontend technology, so it can be unit
-//! tested in isolation and reused by future tools (CLI, web API, etc.).
+//! This crate is currently just [`currency`]: parsing and validating monetary
+//! amount strings. It has no dependency on Tauri or SQL, so both `crates/app`
+//! and `crates/db` can depend on it without a cycle.
 
 pub mod currency;
 pub use currency::*;

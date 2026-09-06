@@ -64,7 +64,7 @@ impl ReceiptPayload {
 /// preserving any fractional part (e.g. `150000` -> `150,000`, `1234.5` ->
 /// `1,234.5`).
 fn format_with_commas(amount: Decimal) -> String {
-    let s = amount.round_dp(2).normalize().to_string();
+    let s = format!("{amount:.2}");
     let (int_part, frac_part) = match s.split_once('.') {
         Some((i, f)) => (i, Some(f)),
         None => (s.as_str(), None),
@@ -151,6 +151,30 @@ fn number_to_words(mut n: u64) -> String {
     }
 
     parts.join(" ")
+}
+
+/// Spell out a monetary amount in words, e.g. `150000.75` ->
+/// `ONE HUNDRED FIFTY THOUSAND AND CENTS SEVENTY FIVE ONLY`.
+///
+/// Rounds with the same `round_dp(2)` as [`format_with_commas`] so the words
+/// line always agrees with the printed figures — the words are what a bank
+/// or auditor treats as authoritative on a receipt, so they cannot come from
+/// a different rounding than the number shown next to them.
+fn amount_in_words(amount: Decimal) -> String {
+    let rounded = format!("{amount:.2}");
+    let (whole_str, cents_str) = rounded.split_once('.').unwrap_or((rounded.as_str(), "00"));
+    let whole_amount: u64 = whole_str.trim_start_matches('-').parse().unwrap_or(0);
+    let cents: u64 = cents_str.parse().unwrap_or(0);
+
+    if cents > 0 {
+        format!(
+            "{} AND CENTS {} ONLY",
+            number_to_words(whole_amount),
+            number_to_words(cents)
+        )
+    } else {
+        format!("{} ONLY", number_to_words(whole_amount))
+    }
 }
 
 /// Generate a PDF receipt at `path` from `payload`.
@@ -248,12 +272,8 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
     );
     y -= line_gap;
 
-    let whole_amount: u64 = payload.amount.round().to_string().parse().unwrap_or(0);
     l.use_text(
-        format!(
-            "The Sum of Shillings: {} ONLY",
-            number_to_words(whole_amount)
-        ),
+        format!("The Sum of {}: {}", payload.currency_code, amount_in_words(payload.amount)),
         11.0,
         Mm(margin_x),
         Mm(y),
@@ -294,7 +314,7 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
             .with_mode(PaintMode::Stroke),
     );
     l.use_text(
-        format!("SHS. {}", payload.format_amount(payload.amount)),
+        payload.format_amount(payload.amount),
         13.0,
         Mm(margin_x + 4.0),
         Mm(box_bottom + 4.0),
@@ -398,9 +418,28 @@ mod tests {
 
     #[test]
     fn formats_amounts_with_thousands_separators() {
-        assert_eq!(format_with_commas(Decimal::from_str("150000").unwrap()), "150,000");
-        assert_eq!(format_with_commas(Decimal::from_str("49500.50").unwrap()), "49,500.5");
-        assert_eq!(format_with_commas(Decimal::from_str("500").unwrap()), "500");
+        // Always exactly 2 decimal places: a receipt figure that drops
+        // trailing zeros (49,500.5 instead of 49,500.50) reads as a typo.
+        assert_eq!(format_with_commas(Decimal::from_str("150000").unwrap()), "150,000.00");
+        assert_eq!(format_with_commas(Decimal::from_str("49500.50").unwrap()), "49,500.50");
+        assert_eq!(format_with_commas(Decimal::from_str("500").unwrap()), "500.00");
+    }
+
+    #[test]
+    fn amount_in_words_matches_the_same_rounding_as_figures() {
+        // C6: words must agree with figures on the exact same rounded value.
+        assert_eq!(
+            amount_in_words(Decimal::from_str("150000").unwrap()),
+            "ONE HUNDRED FIFTY THOUSAND ONLY"
+        );
+        assert_eq!(
+            amount_in_words(Decimal::from_str("150000.75").unwrap()),
+            "ONE HUNDRED FIFTY THOUSAND AND CENTS SEVENTY-FIVE ONLY"
+        );
+        assert_eq!(
+            amount_in_words(Decimal::from_str("49500.50").unwrap()),
+            "FORTY-NINE THOUSAND FIVE HUNDRED AND CENTS FIFTY ONLY"
+        );
     }
 
     #[test]

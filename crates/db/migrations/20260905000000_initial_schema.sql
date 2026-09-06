@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS payments (
     allocation_id INTEGER NOT NULL,
     resident_id INTEGER NOT NULL,
     amount TEXT NOT NULL,
-    payment_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    payment_date TIMESTAMP NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     payment_method TEXT NOT NULL,
     period_start DATE,
     period_end DATE,
@@ -147,26 +147,6 @@ CREATE TABLE IF NOT EXISTS receipts (
     )
 );
 
-CREATE TABLE IF NOT EXISTS expenses (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    hostel_id INTEGER NOT NULL,
-    category TEXT NOT NULL,
-    amount TEXT NOT NULL,
-    date DATE NOT NULL,
-    description TEXT,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (hostel_id) REFERENCES hostels(id) ON DELETE CASCADE,
-    CHECK (
-        amount GLOB '*[0-9]*'
-        AND amount NOT GLOB '*[^0-9.]*'
-        AND length(amount) - length(replace(amount, '.', '')) <= 1
-        AND substr(amount, 1, 1) GLOB '[0-9.]'
-        AND amount NOT GLOB '*-*'
-        AND amount NOT GLOB '*+*'
-        AND replace(replace(amount, '.', ''), '0', '') <> ''
-    )
-);
-
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hostel_id INTEGER NOT NULL,
@@ -178,16 +158,6 @@ CREATE TABLE IF NOT EXISTS users (
     FOREIGN KEY (hostel_id) REFERENCES hostels(id) ON DELETE CASCADE,
     UNIQUE (hostel_id, email),
     CHECK (role IN ('admin', 'manager'))
-);
-
-CREATE TABLE IF NOT EXISTS audit_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    action TEXT NOT NULL,
-    table_affected TEXT,
-    record_id TEXT,
-    timestamp TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS app_preferences (
@@ -215,6 +185,12 @@ CREATE INDEX IF NOT EXISTS idx_payments_hostel_date
 
 CREATE INDEX IF NOT EXISTS idx_payments_allocation
     ON payments(allocation_id);
+
+-- Covers get_resident_detail's per-resident payment lookup. Without it,
+-- SQLite falls back to idx_payments_hostel_date and scans every payment row
+-- in the hostel (measured 65ms -> 0.16ms at 100k payments with this index).
+CREATE INDEX IF NOT EXISTS idx_payments_hostel_resident
+    ON payments(hostel_id, resident_id, payment_date);
 
 CREATE INDEX IF NOT EXISTS idx_receipts_payment
     ON receipts(payment_id);

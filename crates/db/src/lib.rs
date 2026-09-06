@@ -1,6 +1,6 @@
 use argon2::password_hash::{rand_core::OsRng, SaltString};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
-use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Utc};
+use chrono::{Datelike, Local, NaiveDate, TimeZone, Utc};
 use rust_decimal::Decimal;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::Row;
@@ -78,7 +78,15 @@ impl DbPool {
     pub async fn get_rooms(&self, hostel_id: i64) -> anyhow::Result<Vec<Room>> {
         debug!(hostel_id, "fetching rooms");
         let rooms = sqlx::query_as::<_, Room>(
-            "SELECT id, hostel_id, room_number, room_type, capacity, floor, semester_rate, recess_rate, status, created_at FROM rooms WHERE hostel_id = ? ORDER BY room_number"
+            r#"
+            SELECT
+                id, hostel_id, room_number, room_type, capacity, floor,
+                semester_rate, recess_rate, status, created_at,
+                (SELECT COUNT(*) FROM allocations
+                  WHERE allocations.room_id = rooms.id AND allocations.status = 'active'
+                ) AS occupied_beds
+            FROM rooms WHERE hostel_id = ? ORDER BY room_number
+            "#,
         )
         .bind(hostel_id)
         .fetch_all(&self.inner)
@@ -482,24 +490,6 @@ impl DbPool {
         Ok(row)
     }
 
-    /// Fetch the role of a staff user by id.
-    ///
-    /// Returns `None` when no user with the supplied id exists.
-    #[instrument(skip(self))]
-    pub async fn get_user_role(&self, user_id: i64) -> anyhow::Result<Option<String>> {
-        debug!(user_id, "fetching user role");
-
-        let role: Option<String> = sqlx::query_scalar("SELECT role FROM users WHERE id = ?1")
-            .bind(user_id)
-            .fetch_optional(&self.inner)
-            .await
-            .inspect_err(
-                |e| error!(error = %e, user_id, "database error fetching user role"),
-            )?;
-
-        Ok(role)
-    }
-
     /// Delete a staff user, protecting against deletion of the last admin.
     ///
     /// Returns `Ok(())` if the user existed and was deleted, or an error if the
@@ -679,29 +669,6 @@ impl DbPool {
         Ok(id)
     }
 
-    /// Insert multiple rooms atomically, returning their ids in order.
-    ///
-    /// Validates each room the same way as [`DbPool::add_room`]; if any
-    /// fails, the whole batch is rolled back.
-    #[instrument(skip(self, rooms))]
-    pub async fn bulk_add_rooms(&self, rooms: Vec<NewRoom>) -> anyhow::Result<Vec<i64>> {
-        debug!(count = rooms.len(), "bulk adding rooms");
-        let mut tx = self
-            .inner
-            .begin()
-            .await
-            .inspect_err(|e| error!(error = %e, "database error starting transaction"))?;
-        let mut ids = Vec::with_capacity(rooms.len());
-        for room in &rooms {
-            ids.push(insert_room(&mut tx, room).await?);
-        }
-        tx.commit()
-            .await
-            .inspect_err(|e| error!(error = %e, "database error committing rooms"))?;
-        info!(count = ids.len(), "rooms inserted");
-        Ok(ids)
-    }
-
     /// Return the hostel profile with derived `room_count`, `admin_count`,
     /// and `onboarding_complete` flag, or `None` if the hostel doesn't exist.
     #[instrument(skip(self))]
@@ -808,7 +775,6 @@ impl DbPool {
                 a.check_out_date,
                 a.expected_checkout,
                 a.status AS allocation_status,
-                a.term,
                 a.rate_agreed,
                 GROUP_CONCAT(p.amount) AS payment_amounts
             FROM residents r
@@ -831,7 +797,6 @@ impl DbPool {
             let resident_id: i64 = row.try_get("resident_id")?;
             let allocation_status: Option<String> = row.try_get("allocation_status")?;
             let check_in: Option<NaiveDate> = row.try_get("check_in_date")?;
-            let term: Option<String> = row.try_get("term")?;
             let rate_agreed: Option<String> = row.try_get("rate_agreed")?;
             let check_out: Option<NaiveDate> = row.try_get("check_out_date")?;
             let payment_amounts: Option<String> = row.try_get("payment_amounts")?;
@@ -840,11 +805,11 @@ impl DbPool {
                 .unwrap_or("never_allocated")
                 .to_string();
 
-            let balance = match (check_in, term.as_deref(), rate_agreed.as_deref()) {
-                (Some(check_in), Some(term), Some(rate)) => {
+            let balance = match (check_in, rate_agreed.as_deref()) {
+                (Some(check_in), Some(rate)) => {
                     let paid = sum_decimal_amounts(payment_amounts.as_deref())?;
                     let reference = check_out.map_or(today, |d| if d < today { d } else { today });
-                    allocation_balance(rate, check_in, reference, term, paid)?
+                    allocation_balance(rate, check_in, reference, paid)?
                 }
                 _ => Decimal::ZERO,
             };
@@ -853,7 +818,7 @@ impl DbPool {
                 .iter_mut()
                 .find(|summary| summary.id == resident_id)
             {
-                let total = parse_decimal(&existing.balance)? + balance;
+                let total = parse_signed_decimal(&existing.balance)? + balance;
                 existing.balance = total.to_string();
 
                 let display = status == "active" || existing.status == "never_allocated";
@@ -945,7 +910,7 @@ impl DbPool {
             let paid: Decimal = payments
                 .iter()
                 .filter(|p| p.allocation_id == allocation.id)
-                .map(|p| parse_decimal(&p.amount))
+                .map(|p| hosteldesk_core::currency::parse_money(&p.amount))
                 .collect::<Result<Vec<_>, _>>()?
                 .iter()
                 .copied()
@@ -958,7 +923,6 @@ impl DbPool {
                 &allocation.rate_agreed,
                 allocation.check_in_date,
                 reference,
-                &allocation.term,
                 paid,
             )?;
         }
@@ -1073,8 +1037,8 @@ impl DbPool {
             JOIN rooms rm ON rm.id = a.room_id
             LEFT JOIN receipts rc ON rc.payment_id = p.id
             WHERE p.hostel_id = ?1
-              AND (?2 IS NULL OR p.payment_date >= ?2)
-              AND (?3 IS NULL OR p.payment_date < ?3)
+              AND p.payment_date >= COALESCE(?2, '0001-01-01T00:00:00Z')
+              AND p.payment_date < COALESCE(?3, '9999-12-31T23:59:59Z')
               AND (?4 IS NULL OR p.resident_id = ?4)
               AND (?5 IS NULL OR p.payment_method = ?5)
             ORDER BY p.payment_date DESC, p.id DESC
@@ -1084,7 +1048,6 @@ impl DbPool {
         .bind(filter.hostel_id)
         .bind(from)
         .bind(to)
-        .bind(filter.resident_id)
         .bind(filter.resident_id)
         .bind(filter.method)
         .fetch_all(&self.inner)
@@ -1141,13 +1104,7 @@ impl DbPool {
             let payment_amounts: Option<String> = row.try_get("payment_amounts")?;
 
             let total_paid = sum_decimal_amounts(payment_amounts.as_deref())?;
-            let balance = allocation_balance(
-                &rate_agreed,
-                check_in_date,
-                today,
-                &term,
-                total_paid,
-            )?;
+            let balance = allocation_balance(&rate_agreed, check_in_date, today, total_paid)?;
 
             results.push(ActiveAllocation {
                 allocation_id,
@@ -1350,16 +1307,16 @@ impl DbPool {
     ///
     /// Fails when the name is empty or the resident id does not exist.
     #[instrument(skip(self))]
-    pub async fn update_resident(
-        &self,
-        hostel_id: i64,
-        resident_id: i64,
-        full_name: String,
-        phone: Option<String>,
-        email: Option<String>,
-        id_number: Option<String>,
-        next_of_kin: Option<String>,
-    ) -> anyhow::Result<()> {
+    pub async fn update_resident(&self, update: UpdateResident) -> anyhow::Result<()> {
+        let UpdateResident {
+            hostel_id,
+            resident_id,
+            full_name,
+            phone,
+            email,
+            id_number,
+            next_of_kin,
+        } = update;
         debug!(hostel_id, resident_id, "updating resident");
         if full_name.trim().is_empty() {
             anyhow::bail!("full_name is required");
@@ -1444,7 +1401,7 @@ impl DbPool {
             month_start.with_month(month_start.month() + 1)
         }
         .ok_or_else(|| anyhow::anyhow!("invalid month end: {reference}"))?;
-        let (_, end) = local_day_bounds(next_month)?;
+        let (end, _) = local_day_bounds(next_month)?;
         let row = sqlx::query(
             "SELECT GROUP_CONCAT(amount) AS amounts FROM payments WHERE hostel_id = ?1 AND payment_date >= ?2 AND payment_date < ?3",
         )
@@ -1463,7 +1420,10 @@ impl DbPool {
         }
     }
 
-    /// Sum positive balances across all active allocations.
+    /// Sum positive balances across every allocation in the hostel, open or
+    /// closed, matching [`DbPool::get_resident_detail`] and
+    /// [`DbPool::list_residents`]: closing an allocation does not write off
+    /// what it still owes.
     async fn outstanding_balance_total(
         &self,
         hostel_id: i64,
@@ -1472,11 +1432,11 @@ impl DbPool {
         let rows = sqlx::query(
             r#"
             SELECT
-                a.check_in_date, a.rate_agreed, a.term,
+                a.check_in_date, a.rate_agreed,
                 GROUP_CONCAT(p.amount) AS payment_amounts
             FROM allocations a
             LEFT JOIN payments p ON p.allocation_id = a.id
-            WHERE a.hostel_id = ?1 AND a.status = 'active'
+            WHERE a.hostel_id = ?1
             GROUP BY a.id
             "#,
         )
@@ -1491,10 +1451,9 @@ impl DbPool {
         for row in rows {
             let check_in: NaiveDate = row.try_get("check_in_date")?;
             let rate_agreed: String = row.try_get("rate_agreed")?;
-            let term: String = row.try_get("term")?;
             let payment_amounts: Option<String> = row.try_get("payment_amounts")?;
             let paid = sum_decimal_amounts(payment_amounts.as_deref())?;
-            let balance = allocation_balance(&rate_agreed, check_in, today, &term, paid)?;
+            let balance = allocation_balance(&rate_agreed, check_in, today, paid)?;
             if balance > Decimal::ZERO {
                 total += balance;
             }
@@ -1509,7 +1468,11 @@ impl DbPool {
 /// hostel's local timezone. The exclusive upper bound lets SQLite use the
 /// `payments(hostel_id, payment_date)` index without wrapping the indexed column
 /// in `date()` or `strftime()`.
-fn local_day_bounds(date: NaiveDate) -> anyhow::Result<(DateTime<Utc>, DateTime<Utc>)> {
+///
+/// Bounds are formatted as `%Y-%m-%dT%H:%M:%SZ` to match `payments.payment_date`'s
+/// column default, so bytewise TEXT comparison in SQL agrees with chronological
+/// order (see migration `20260905000000_initial_schema.sql`).
+fn local_day_bounds(date: NaiveDate) -> anyhow::Result<(String, String)> {
     let start_naive = date
         .and_hms_opt(0, 0, 0)
         .ok_or_else(|| anyhow::anyhow!("invalid local date start: {date}"))?;
@@ -1524,77 +1487,80 @@ fn local_day_bounds(date: NaiveDate) -> anyhow::Result<(DateTime<Utc>, DateTime<
         .from_local_datetime(&end_naive)
         .earliest()
         .ok_or_else(|| anyhow::anyhow!("invalid local date end: {date}"))?;
-    Ok((start.with_timezone(&Utc), end.with_timezone(&Utc)))
+    const FMT: &str = "%Y-%m-%dT%H:%M:%SZ";
+    Ok((
+        start.with_timezone(&Utc).format(FMT).to_string(),
+        end.with_timezone(&Utc).format(FMT).to_string(),
+    ))
 }
 
-/// Parse a decimal monetary amount from a string.
-fn parse_decimal(amount: &str) -> anyhow::Result<Decimal> {
+/// Parse a running balance total, which is signed: a resident's net balance
+/// across all their allocations may legitimately be negative (they're in
+/// credit). Only for that accumulator — anything that should never be
+/// negative (a rate, a single payment amount) must use
+/// [`hosteldesk_core::currency::parse_money`] instead, which rejects a minus
+/// sign.
+fn parse_signed_decimal(amount: &str) -> anyhow::Result<Decimal> {
     Decimal::from_str(amount)
         .map_err(|e| anyhow::anyhow!("invalid decimal amount '{}': {}", amount, e))
 }
 
 /// Sum a comma-separated list of decimal amounts produced by SQLite's
 /// `GROUP_CONCAT`. Returns zero for `None` or an empty string.
+///
+/// Each amount is a stored `payments.amount` value, which the schema's CHECK
+/// constraint already guarantees is non-negative — `parse_money` here is
+/// defense-in-depth, not the only thing standing between a negative amount
+/// and a balance calculation.
 fn sum_decimal_amounts(amounts: Option<&str>) -> anyhow::Result<Decimal> {
     match amounts {
         None | Some("") => Ok(Decimal::ZERO),
         Some(s) => {
             let values: Vec<Decimal> = s
                 .split(',')
-                .map(|v| parse_decimal(v.trim()))
+                .map(|v| hosteldesk_core::currency::parse_money(v.trim()))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(values.iter().copied().fold(Decimal::ZERO, |acc, d| acc + d))
         }
     }
 }
 
-/// Map a billing term to its length in days for the rolled-up balance calc.
+/// Number of billing periods owed for an allocation.
 ///
-/// This is a deliberate simplification: semester ≡ 120 days, recess ≡ 60 days.
-fn term_days(term: &str) -> Option<i64> {
-    match term {
-        "semester_1" | "semester_2" => Some(120),
-        "recess" => Some(60),
-        _ => None,
-    }
-}
-
-/// Number of whole billing terms elapsed between check-in and the reference
-/// date, rounded up.
-fn periods_elapsed(check_in: NaiveDate, reference: NaiveDate, term: &str) -> i64 {
+/// Each allocation represents one agreed term (e.g. one academic semester
+/// with its own real `check_in_date`/`expected_checkout`), billed exactly
+/// once at `rate_agreed` regardless of how many days that term spans. A stay
+/// that runs long past `expected_checkout` is a front-desk problem (check the
+/// resident out, or open a new allocation for the next term), not something
+/// this formula extrapolates extra charges for.
+fn periods_elapsed(check_in: NaiveDate, reference: NaiveDate) -> i64 {
     if reference < check_in {
-        return 0;
-    }
-    if let Some(days) = term_days(term) {
-        let total_days = (reference - check_in).num_days() + 1;
-        (total_days + days - 1) / days
+        0
     } else {
-        // ponytail: unknown term falls back to one period (flat rate per stay)
         1
     }
 }
 
-/// Compute the outstanding balance for an allocation.
+/// Compute the outstanding balance for an allocation: `rate_agreed` owed once
+/// minus what has been paid.
 ///
-/// `reference` is the day to accumulate through, normally today or the actual
-/// check-out date, whichever is earlier.
+/// `reference` is the day to check whether the stay has started yet,
+/// normally today or the actual check-out date, whichever is earlier.
 fn allocation_balance(
     rate_agreed: &str,
     check_in: NaiveDate,
     reference: NaiveDate,
-    term: &str,
     total_paid: Decimal,
 ) -> anyhow::Result<Decimal> {
-    let rate = parse_decimal(rate_agreed)?;
-    let periods = periods_elapsed(check_in, reference, term);
+    let rate = hosteldesk_core::currency::parse_money(rate_agreed)?;
+    let periods = periods_elapsed(check_in, reference);
     let owed = rate * Decimal::from(periods);
     Ok(owed - total_paid)
 }
 
 /// Insert a room on the given transaction, validating capacity and room_type.
 ///
-/// Shared by [`DbPool::add_room`] and [`DbPool::bulk_add_rooms`] so both paths
-/// apply the same validation and SQL.
+/// Used by [`DbPool::add_room`].
 async fn insert_room(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     room: &NewRoom,
@@ -1776,6 +1742,89 @@ mod tests {
     use sqlx::Row;
     use std::str::FromStr;
 
+    /// Open an in-memory SQLite pool with migrations applied for tests.
+    async fn test_pool() -> DbPool {
+        DbPool::open("sqlite::memory:").await.expect("open test db")
+    }
+
+    fn today() -> NaiveDate {
+        Local::now().date_naive()
+    }
+
+    async fn seed_hostel(pool: &DbPool) -> Hostel {
+        pool.create_hostel(NewHostel {
+            name: "Test Hostel".to_string(),
+            address: None,
+            phone: None,
+            currency: None,
+            branding_logo_path: None,
+        })
+        .await
+        .expect("seed hostel")
+    }
+
+    async fn seed_room(pool: &DbPool, hostel_id: i64, room_number: &str, room_type: &str) -> i64 {
+        pool.add_room(NewRoom {
+            hostel_id,
+            room_number: room_number.to_string(),
+            room_type: room_type.to_string(),
+            capacity: 1,
+            floor: None,
+            semester_rate: "100".to_string(),
+            recess_rate: "50".to_string(),
+        })
+        .await
+        .expect("seed room")
+    }
+
+    async fn seed_resident(pool: &DbPool, name: &str) -> i64 {
+        let mut tx = pool.inner.begin().await.expect("begin seed resident tx");
+        let id = insert_resident(
+            &mut tx,
+            &NewResident {
+                full_name: name.to_string(),
+                phone: None,
+                email: None,
+                id_number: None,
+                next_of_kin: None,
+                photo_path: None,
+            },
+        )
+        .await
+        .expect("seed resident");
+        tx.commit().await.expect("commit seed resident tx");
+        id
+    }
+
+    async fn seed_active_allocation(
+        pool: &DbPool,
+        hostel_id: i64,
+        resident_id: i64,
+        room_id: i64,
+        check_in: NaiveDate,
+        expected_checkout: NaiveDate,
+    ) -> i64 {
+        let mut tx = pool.inner.begin().await.expect("begin seed allocation tx");
+        let id = insert_allocation(
+            &mut tx,
+            &NewAllocation {
+                hostel_id,
+                resident_id,
+                room_id,
+                check_in_date: check_in,
+                check_out_date: None,
+                expected_checkout,
+                rate_agreed: "100".to_string(),
+                term: "semester_1".to_string(),
+                academic_year: "2026/2027".to_string(),
+            },
+        )
+        .await
+        .expect("seed allocation");
+        tx.commit().await.expect("commit seed allocation tx");
+        id
+    }
+
     #[test]
     fn password_hash_and_verify_round_trip() {
         let password = "a_secure_password_123";
@@ -1849,7 +1898,7 @@ mod tests {
     /// A recess-term allocation accrues balance per 60-day period, not once
     /// for the whole stay.
     #[tokio::test]
-    async fn recess_term_accrues_per_period_balance() {
+    async fn allocation_bills_exactly_one_period_regardless_of_stay_length() {
         let pool = test_pool().await;
         let hostel = seed_hostel(&pool).await;
         let room_id = pool
@@ -1898,12 +1947,10 @@ mod tests {
             .expect("detail");
         assert_eq!(detail.allocations[0].term, "recess");
         assert_eq!(
-            detail.balance, "100.00",
-            "62 days into a 60-day recess period should be 2 periods at 50"
+            detail.balance, "50.00",
+            "one allocation bills its rate_agreed exactly once, no matter how many \
+             days have elapsed since check-in"
         );
-
-        // A single-period billing would have produced 50.00; ensure it did not.
-        assert_ne!(detail.balance, "50.00");
 
         // Also verify list_residents uses the same computation.
         let residents = pool
@@ -1914,7 +1961,78 @@ mod tests {
             .iter()
             .find(|r| r.id == resident_id)
             .expect("resident");
-        assert_eq!(intern.balance, "100.00");
+        assert_eq!(intern.balance, "50.00");
+    }
+
+    /// Regression test for the audit's own worked example (C1): a 131-day
+    /// stay against a 120-day semester must bill one period (1,000,000), not
+    /// two (2,000,000).
+    #[tokio::test]
+    async fn overlong_semester_stay_does_not_double_bill() {
+        let pool = test_pool().await;
+        let hostel = seed_hostel(&pool).await;
+        let room_id = seed_room(&pool, hostel.id, "101", "single").await;
+        let resident_id = seed_resident(&pool, "Overstay").await;
+        let check_in = NaiveDate::from_ymd_opt(2026, 1, 10).expect("date");
+        let check_out_date = NaiveDate::from_ymd_opt(2026, 5, 20).expect("date");
+        assert_eq!(
+            (check_out_date - check_in).num_days() + 1,
+            131,
+            "sanity check on the audit's own example"
+        );
+
+        pool.check_in(NewCheckIn {
+            hostel_id: hostel.id,
+            resident_id: Some(resident_id),
+            full_name: None,
+            phone: None,
+            email: None,
+            id_number: None,
+            next_of_kin: None,
+            photo_path: None,
+            room_id,
+            check_in_date: check_in,
+            check_out_date: None,
+            expected_checkout: check_out_date,
+            rate_agreed: "1000000".to_string(),
+            term: "semester_1".to_string(),
+            academic_year: "2025/2026".to_string(),
+        })
+        .await
+        .expect("check in");
+
+        let detail = pool
+            .get_resident_detail(hostel.id, resident_id)
+            .await
+            .expect("detail");
+        assert_eq!(detail.balance, "1000000");
+    }
+
+    /// C2: closing an allocation with an unpaid balance must not write off
+    /// that debt — it keeps counting toward the hostel's outstanding total.
+    #[tokio::test]
+    async fn closed_allocation_debt_still_counts_toward_outstanding_total() {
+        let pool = test_pool().await;
+        let hostel = seed_hostel(&pool).await;
+        let room_id = seed_room(&pool, hostel.id, "101", "single").await;
+        let resident_id = seed_resident(&pool, "Left Owing").await;
+        let check_in = today() - Duration::days(10);
+        let allocation_id =
+            seed_active_allocation(&pool, hostel.id, resident_id, room_id, check_in, today())
+                .await;
+
+        pool.check_out(hostel.id, allocation_id, today())
+            .await
+            .expect("check out");
+
+        let stats = pool
+            .get_dashboard_stats(hostel.id, today())
+            .await
+            .expect("stats");
+        assert_eq!(
+            stats.outstanding_total, "100",
+            "an unpaid, closed allocation must still be outstanding"
+        );
     }
 
     #[tokio::test]
@@ -1982,17 +2100,7 @@ mod tests {
             .await
             .expect("add room");
 
-        let resident_id = pool
-            .add_resident(NewResident {
-                full_name: "Resident".to_string(),
-                phone: None,
-                email: None,
-                id_number: None,
-                next_of_kin: None,
-                photo_path: None,
-            })
-            .await
-            .expect("add resident");
+        let resident_id = seed_resident(&pool, "Resident").await;
 
         let allocation_id = pool
             .check_in(NewCheckIn {
@@ -2160,11 +2268,19 @@ mod tests {
     #[tokio::test]
     async fn payments_query_plan_uses_hostel_date_index() {
         let pool = test_pool().await;
-        let rows = sqlx::query("EXPLAIN QUERY PLAN SELECT * FROM payments WHERE hostel_id = ?1")
-            .bind(1i64)
-            .fetch_all(&pool.inner)
-            .await
-            .expect("query plan");
+        // Matches list_payments's actual predicate shape (hostel_id + a date
+        // range), not a bare `WHERE hostel_id = ?` — both idx_payments_hostel_date
+        // and idx_payments_hostel_resident satisfy the latter equally, so it
+        // doesn't pin down which one SQLite should pick here.
+        let rows = sqlx::query(
+            "EXPLAIN QUERY PLAN SELECT * FROM payments WHERE hostel_id = ?1 AND payment_date >= ?2 AND payment_date < ?3",
+        )
+        .bind(1i64)
+        .bind("2026-01-01T00:00:00Z")
+        .bind("2026-02-01T00:00:00Z")
+        .fetch_all(&pool.inner)
+        .await
+        .expect("query plan");
 
         let details: Vec<String> = rows
             .iter()
@@ -2174,7 +2290,66 @@ mod tests {
             details
                 .iter()
                 .any(|d| d.contains("idx_payments_hostel_date")),
-            "payments lookup should use idx_payments_hostel_date, got: {details:?}"
+            "payments date-range lookup should use idx_payments_hostel_date, got: {details:?}"
+        );
+    }
+
+    /// P3: get_resident_detail's per-resident payment lookup must be a
+    /// covering index search, not a hostel-wide scan filtered row-by-row.
+    #[tokio::test]
+    async fn payments_query_plan_uses_hostel_resident_index() {
+        let pool = test_pool().await;
+        let rows = sqlx::query(
+            "EXPLAIN QUERY PLAN SELECT * FROM payments WHERE hostel_id = ?1 AND resident_id = ?2",
+        )
+        .bind(1i64)
+        .bind(1i64)
+        .fetch_all(&pool.inner)
+        .await
+        .expect("query plan");
+
+        let details: Vec<String> = rows
+            .iter()
+            .map(|r| r.try_get::<String, _>("detail").expect("detail column"))
+            .collect();
+        assert!(
+            details
+                .iter()
+                .any(|d| d.contains("idx_payments_hostel_resident")),
+            "resident-scoped payments lookup should use idx_payments_hostel_resident, got: {details:?}"
+        );
+    }
+
+    /// P4: list_payments must stay sargable when the date filters are absent
+    /// (the common case — Invoices.tsx doesn't wire a filter UI yet). The old
+    /// `(?N IS NULL OR ...)` wrapper defeated the index range scan.
+    #[tokio::test]
+    async fn payments_query_plan_stays_sargable_with_no_date_filter() {
+        let pool = test_pool().await;
+        let rows = sqlx::query(
+            r#"
+            EXPLAIN QUERY PLAN SELECT * FROM payments p
+            WHERE p.hostel_id = ?1
+              AND p.payment_date >= COALESCE(?2, '0001-01-01T00:00:00Z')
+              AND p.payment_date < COALESCE(?3, '9999-12-31T23:59:59Z')
+            "#,
+        )
+        .bind(1i64)
+        .bind(None::<String>)
+        .bind(None::<String>)
+        .fetch_all(&pool.inner)
+        .await
+        .expect("query plan");
+
+        let details: Vec<String> = rows
+            .iter()
+            .map(|r| r.try_get::<String, _>("detail").expect("detail column"))
+            .collect();
+        assert!(
+            details.iter().any(|d| {
+                d.contains("idx_payments_hostel_date") && d.contains("payment_date")
+            }),
+            "unfiltered list_payments should still range-scan on payment_date, got: {details:?}"
         );
     }
 
@@ -2268,16 +2443,16 @@ mod tests {
         .expect("create user b");
 
         let user_b = pool
-            .authenticate_user("manager", "password-b")
+            .authenticate_user("manager@example.com", "password-b")
             .await
             .expect("authenticate should not fail")
             .expect("should find user b");
         assert_eq!(user_b.hostel_id, hostel_b.id);
-        assert_eq!(user_b.name, "B Manager");
+        assert_eq!(user_b.full_name, "B Manager");
         assert_eq!(user_b.role, "manager");
 
         assert!(
-            pool.authenticate_user("manager", "wrong-password")
+            pool.authenticate_user("manager@example.com", "wrong-password")
                 .await
                 .expect("authenticate should not fail")
                 .is_none(),
@@ -2512,16 +2687,18 @@ mod tests {
     async fn update_resident_and_list_users_round_trip() {
         let pool = test_pool().await;
         let hostel = seed_hostel(&pool).await;
+        let room_id = seed_room(&pool, hostel.id, "101", "single").await;
         let resident_id = seed_resident(&pool, "Mia").await;
-        pool.update_resident(
-            hostel.id,
+        seed_active_allocation(&pool, hostel.id, resident_id, room_id, today(), today() + Duration::days(30)).await;
+        pool.update_resident(UpdateResident {
+            hostel_id: hostel.id,
             resident_id,
-            "Mia Updated".to_string(),
-            Some("+256".to_string()),
-            None,
-            None,
-            None,
-        )
+            full_name: "Mia Updated".to_string(),
+            phone: Some("+256".to_string()),
+            email: None,
+            id_number: None,
+            next_of_kin: None,
+        })
         .await
         .expect("update");
 
@@ -2544,7 +2721,7 @@ mod tests {
 
         let users = pool.list_users(hostel.id).await.expect("list staff");
         assert_eq!(users.len(), 1);
-        assert_eq!(users[0].name, "Admin");
+        assert_eq!(users[0].full_name, "Admin");
     }
 
     #[tokio::test]
@@ -2690,15 +2867,15 @@ mod tests {
         let hostel = seed_hostel(&pool).await;
         let resident_id = seed_resident(&pool, "Name").await;
         let err = pool
-            .update_resident(
-                hostel.id,
+            .update_resident(UpdateResident {
+                hostel_id: hostel.id,
                 resident_id,
-                "   ".to_string(),
-                None,
-                None,
-                None,
-                None,
-            )
+                full_name: "   ".to_string(),
+                phone: None,
+                email: None,
+                id_number: None,
+                next_of_kin: None,
+            })
             .await
             .expect_err("empty name");
         assert!(err.to_string().contains("full_name"));
@@ -2710,15 +2887,15 @@ mod tests {
         let pool = test_pool().await;
         let hostel = seed_hostel(&pool).await;
         let err = pool
-            .update_resident(
-                hostel.id,
-                99999,
-                "New Name".to_string(),
-                None,
-                None,
-                None,
-                None,
-            )
+            .update_resident(UpdateResident {
+                hostel_id: hostel.id,
+                resident_id: 99999,
+                full_name: "New Name".to_string(),
+                phone: None,
+                email: None,
+                id_number: None,
+                next_of_kin: None,
+            })
             .await
             .expect_err("unknown resident");
         assert!(err.to_string().contains("not found"));
@@ -2901,6 +3078,49 @@ mod tests {
         assert_eq!(stats.revenue_today, "0");
         assert_eq!(stats.revenue_month, "0");
         assert_eq!(stats.outstanding_total, "0");
+    }
+
+    /// A payment written through the normal insert path (using the
+    /// `payment_date` column default, not a hardcoded fixture) must be counted
+    /// in both today's and this month's revenue. This guards against the
+    /// `payment_date` default and `local_day_bounds`'s bind format silently
+    /// drifting apart again (see the C3 finding in the 2026-09-05 audit).
+    #[tokio::test]
+    async fn revenue_includes_payment_written_via_column_default() {
+        let pool = test_pool().await;
+        let hostel = seed_hostel(&pool).await;
+        let room_id = seed_room(&pool, hostel.id, "101", "single").await;
+        let resident_id = seed_resident(&pool, "Default").await;
+        let check_in = today();
+        let allocation_id = seed_active_allocation(
+            &pool,
+            hostel.id,
+            resident_id,
+            room_id,
+            check_in,
+            check_in + Duration::days(30),
+        )
+        .await;
+
+        pool.record_payment_and_receipt(NewPayment {
+            hostel_id: hostel.id,
+            allocation_id,
+            resident_id,
+            amount: "42.00".to_string(),
+            payment_method: "cash".to_string(),
+            period_start: None,
+            period_end: None,
+            notes: None,
+        })
+        .await
+        .expect("record payment");
+
+        let stats = pool
+            .get_dashboard_stats(hostel.id, today())
+            .await
+            .expect("stats");
+        assert_eq!(stats.revenue_today, "42.00");
+        assert_eq!(stats.revenue_month, "42.00");
     }
 
     /// Over-payments create a negative balance for a resident, but the
@@ -3109,15 +3329,15 @@ mod tests {
         assert!(detail_err.to_string().contains("resident not found"));
 
         let update_err = pool
-            .update_resident(
-                hostel_b.id,
+            .update_resident(UpdateResident {
+                hostel_id: hostel_b.id,
                 resident_id,
-                "Changed Name".to_string(),
-                None,
-                None,
-                None,
-                None,
-            )
+                full_name: "Changed Name".to_string(),
+                phone: None,
+                email: None,
+                id_number: None,
+                next_of_kin: None,
+            })
             .await
             .expect_err("resident update must be scoped to hostel B");
         assert!(update_err.to_string().contains("resident not found"));
