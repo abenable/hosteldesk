@@ -69,3 +69,16 @@ Migrations live in `crates/db/migrations/` and are applied by `sqlx::migrate!`.
 - Table-rewrite migrations must use explicit column lists: `INSERT INTO new (a, b) SELECT a, b FROM old`. Never use `SELECT *`, because column-order drift silently corrupts data.
 - A migration that drops indexes must re-create the equivalent indexes at the end of the same file.
 - Use `-- no-transaction` only for migrations that toggle `PRAGMA foreign_keys`; everything else runs inside sqlx's default transaction.
+
+## 9. Branching and Releases
+
+- Minor releases are developed on a **version branch** named after the upcoming release (e.g. `v1.0.1`). **All changes for that release go on the version branch** — not directly on `main`.
+- To cut a release: bump `version` in `crates/app/tauri.conf.json` (and `frontend/package.json` to match), merge the version branch into `main`, then tag:
+
+  ```sh
+  git tag v1.0.1
+  git push origin main v1.0.1
+  ```
+
+- The tag push triggers `.github/workflows/release.yml`, which builds the Ubuntu `.deb` (22.04) and Windows NSIS `.exe` + MSI, uploads platform checksum files, and publishes the GitHub release. CI (`.github/workflows/ci.yml`) runs clippy `-D warnings`, tests, lint, and the frontend build on every `main` push and PR.
+- Do not move or re-tag a version tag once its release run has started; if a release fails, fix forward on `main` and cut the next version tag.
