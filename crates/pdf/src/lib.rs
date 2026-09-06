@@ -1,8 +1,6 @@
 use chrono::NaiveDate;
 use printpdf::path::PaintMode;
-use printpdf::{
-    BuiltinFont, Color, Line, Mm, PdfDocument, Point, Rect, Rgb,
-};
+use printpdf::{BuiltinFont, Color, Line, Mm, PdfDocument, Point, Rect, Rgb};
 use rust_decimal::Decimal;
 use std::fs::File;
 use std::io::BufWriter;
@@ -94,9 +92,26 @@ fn format_with_commas(amount: Decimal) -> String {
 /// payment; larger values are truncated to the highest supported scale.
 fn number_to_words(mut n: u64) -> String {
     const ONES: [&str; 20] = [
-        "ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN",
-        "ELEVEN", "TWELVE", "THIRTEEN", "FOURTEEN", "FIFTEEN", "SIXTEEN", "SEVENTEEN",
-        "EIGHTEEN", "NINETEEN",
+        "ZERO",
+        "ONE",
+        "TWO",
+        "THREE",
+        "FOUR",
+        "FIVE",
+        "SIX",
+        "SEVEN",
+        "EIGHT",
+        "NINE",
+        "TEN",
+        "ELEVEN",
+        "TWELVE",
+        "THIRTEEN",
+        "FOURTEEN",
+        "FIFTEEN",
+        "SIXTEEN",
+        "SEVENTEEN",
+        "EIGHTEEN",
+        "NINETEEN",
     ];
     const TENS: [&str; 10] = [
         "", "", "TWENTY", "THIRTY", "FORTY", "FIFTY", "SIXTY", "SEVENTY", "EIGHTY", "NINETY",
@@ -208,12 +223,27 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
     let mut text_x = margin_x;
     let header_top = 277.0;
     if let Some(logo_path) = &payload.logo_path {
-        if draw_logo(&l, logo_path, margin_x, header_top - logo_box, logo_box, logo_box).is_ok() {
+        if draw_logo(
+            &l,
+            logo_path,
+            margin_x,
+            header_top - logo_box,
+            logo_box,
+            logo_box,
+        )
+        .is_ok()
+        {
             text_x = margin_x + logo_box + 6.0;
         }
     }
 
-    l.use_text(&payload.hostel_name, 16.0, Mm(text_x), Mm(header_top - 6.0), &bold);
+    l.use_text(
+        &payload.hostel_name,
+        16.0,
+        Mm(text_x),
+        Mm(header_top - 6.0),
+        &bold,
+    );
     let mut header_y = header_top - 12.0;
     if let Some(address) = &payload.hostel_address {
         if !address.trim().is_empty() {
@@ -223,7 +253,13 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
     }
     if let Some(phone) = &payload.hostel_phone {
         if !phone.trim().is_empty() {
-            l.use_text(format!("Tel: {phone}"), 9.0, Mm(text_x), Mm(header_y), &regular);
+            l.use_text(
+                format!("Tel: {phone}"),
+                9.0,
+                Mm(text_x),
+                Mm(header_y),
+                &regular,
+            );
         }
     }
 
@@ -244,7 +280,13 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
         )
         .with_mode(PaintMode::Stroke),
     );
-    l.use_text(title, 12.0, Mm(page_center - (title.len() as f32 * 1.55)), Mm(title_y), &bold);
+    l.use_text(
+        title,
+        12.0,
+        Mm(page_center - (title.len() as f32 * 1.55)),
+        Mm(title_y),
+        &bold,
+    );
     l.use_text(
         format!("No. {:06}", payload.receipt_number),
         11.0,
@@ -273,7 +315,11 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
     y -= line_gap;
 
     l.use_text(
-        format!("The Sum of {}: {}", payload.currency_code, amount_in_words(payload.amount)),
+        format!(
+            "The Sum of {}: {}",
+            payload.currency_code,
+            amount_in_words(payload.amount)
+        ),
         11.0,
         Mm(margin_x),
         Mm(y),
@@ -310,8 +356,13 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
     let box_top = y;
     let box_bottom = y - 12.0;
     l.add_rect(
-        Rect::new(Mm(margin_x), Mm(box_bottom), Mm(margin_x + 60.0), Mm(box_top))
-            .with_mode(PaintMode::Stroke),
+        Rect::new(
+            Mm(margin_x),
+            Mm(box_bottom),
+            Mm(margin_x + 60.0),
+            Mm(box_top),
+        )
+        .with_mode(PaintMode::Stroke),
     );
     l.use_text(
         payload.format_amount(payload.amount),
@@ -320,7 +371,13 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
         Mm(box_bottom + 4.0),
         &bold,
     );
-    l.use_text("With thanks.", 10.0, Mm(margin_x + 66.0), Mm(box_bottom + 4.0), &regular);
+    l.use_text(
+        "With thanks.",
+        10.0,
+        Mm(margin_x + 66.0),
+        Mm(box_bottom + 4.0),
+        &regular,
+    );
 
     // Footer note.
     let footer_y = box_bottom - 12.0;
@@ -420,9 +477,18 @@ mod tests {
     fn formats_amounts_with_thousands_separators() {
         // Always exactly 2 decimal places: a receipt figure that drops
         // trailing zeros (49,500.5 instead of 49,500.50) reads as a typo.
-        assert_eq!(format_with_commas(Decimal::from_str("150000").unwrap()), "150,000.00");
-        assert_eq!(format_with_commas(Decimal::from_str("49500.50").unwrap()), "49,500.50");
-        assert_eq!(format_with_commas(Decimal::from_str("500").unwrap()), "500.00");
+        assert_eq!(
+            format_with_commas(Decimal::from_str("150000").unwrap()),
+            "150,000.00"
+        );
+        assert_eq!(
+            format_with_commas(Decimal::from_str("49500.50").unwrap()),
+            "49,500.50"
+        );
+        assert_eq!(
+            format_with_commas(Decimal::from_str("500").unwrap()),
+            "500.00"
+        );
     }
 
     #[test]

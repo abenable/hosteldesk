@@ -24,10 +24,22 @@ struct Plan {
 
 fn plan_for(name: &str) -> Option<Plan> {
     match name {
-        "trial" => Some(Plan { tier: "trial", months: 6 }),
-        "1-year" => Some(Plan { tier: "1-year", months: 12 }),
-        "3-year" => Some(Plan { tier: "3-year", months: 36 }),
-        "5-year" => Some(Plan { tier: "5-year", months: 60 }),
+        "trial" => Some(Plan {
+            tier: "trial",
+            months: 6,
+        }),
+        "1-year" => Some(Plan {
+            tier: "1-year",
+            months: 12,
+        }),
+        "3-year" => Some(Plan {
+            tier: "3-year",
+            months: 36,
+        }),
+        "5-year" => Some(Plan {
+            tier: "5-year",
+            months: 60,
+        }),
         _ => None,
     }
 }
@@ -55,8 +67,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let hostel_name = hostel_name.ok_or("--hostel-name is required")?;
     let plan_name = plan_name.ok_or("--plan is required (trial | 1-year | 3-year | 5-year)")?;
     let key_file = key_file.ok_or("--key-file is required")?;
-    let plan = plan_for(&plan_name)
-        .ok_or_else(|| format!("unknown plan '{plan_name}', expected trial | 1-year | 3-year | 5-year"))?;
+    let plan = plan_for(&plan_name).ok_or_else(|| {
+        format!("unknown plan '{plan_name}', expected trial | 1-year | 3-year | 5-year")
+    })?;
 
     let key_b64 = std::fs::read_to_string(&key_file)
         .map_err(|e| format!("could not read key file {}: {e}", key_file.display()))?;
@@ -78,7 +91,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let json = serde_json::to_vec(&payload)?;
     let signature = signing_key.sign(&json);
-    let license = format!("{}:{}", STANDARD.encode(signature.to_bytes()), STANDARD.encode(&json));
+    let license = format!(
+        "{}:{}",
+        STANDARD.encode(signature.to_bytes()),
+        STANDARD.encode(&json)
+    );
 
     let out = out.unwrap_or_else(|| {
         let slug: String = hostel_name
@@ -90,7 +107,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     std::fs::write(&out, &license)?;
 
-    println!("Issued {} license for '{}', expires {}", plan.tier, hostel_name, expiry_date);
+    println!(
+        "Issued {} license for '{}', expires {}",
+        plan.tier, hostel_name, expiry_date
+    );
     println!("Wrote {}", out.display());
     Ok(())
 }
