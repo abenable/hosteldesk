@@ -91,16 +91,36 @@ HostelDesk is proprietary, closed-source software — see [`LICENSE`](LICENSE) f
 
 The app itself is license-gated. On startup it verifies an Ed25519-signed license and shows an activation screen when it is missing, invalid, or expired. Verification is fully offline.
 
-- The public key is baked into `crates/license/src/lib.rs`; the production signing key is kept outside the repository.
+- The public key is baked into `crates/license/src/lib.rs`; the matching production signing key lives at `~/.hosteldesk/signing_key.b64` (outside the repository, `chmod 600`) — back it up somewhere durable (a password manager), since losing it means no more licenses can ever be issued against the public key already baked into shipped builds.
 - The wire format is `base64(signature):base64(json_payload)`, where the payload is:
 
   ```json
   {
     "hostel_name": "Ocean View Hostel",
     "expiry_date": "2099-12-31",
-    "tier": "pro"
+    "tier": "1-year"
   }
   ```
+
+- **Plans** — `crates/license/examples/issue_license.rs` mints a license file for one of four fixed plans, each just a duration off the activation date (a semester = 6 months):
+
+  | Plan | Duration |
+  |---|---|
+  | `trial` | 1 semester (6 months) |
+  | `1-year` | 2 semesters (12 months) |
+  | `3-year` | 36 months |
+  | `5-year` | 60 months |
+
+  Issue one with:
+
+  ```sh
+  cargo run --example issue_license -p license -- \
+    --hostel-name "Ocean View Hostel" \
+    --plan 1-year \
+    --key-file ~/.hosteldesk/signing_key.b64
+  ```
+
+  This writes a `<slug>-<plan>.hdlicense` file — send that file to the customer; they pick it on the app's activation screen.
 
 - Builds with the `dev-license` Cargo feature additionally accept a development-only key, so contributors can generate local licenses without the production key: `cargo run --example generate_dev_license -p license > dev.hdlicense`, then run `cargo tauri dev --features dev-license` (or `cargo tauri build --debug --features dev-license` for a debug bundle) and pick `dev.hdlicense` on the activation screen. The feature is off by default — including for a plain `cargo tauri build --debug` — so a shippable build can never accept a dev-minted license.
 - Activation is file-based only: the app opens a native file picker and reads the selected `.hdlicense`/`.lic`/`.txt` file — there is no paste-a-key text field.

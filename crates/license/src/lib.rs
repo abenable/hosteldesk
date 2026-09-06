@@ -46,7 +46,7 @@ pub enum LicenseError {
 /// The matching production private key is kept outside this repository. The
 /// test-only signing key generated in unit tests is not valid for customer
 /// licenses.
-pub const PUBLIC_KEY_BASE64: &str = "tRnJ7rRm/x/rd9jQJp1MJaBxsNej8cqfNX6cd9up1tI=";
+pub const PUBLIC_KEY_BASE64: &str = "BA3xuwJ0e/4CPj2FIhK4Aah0U6Q2POZiOfjaAwB2Ut0=";
 
 /// Base64-encoded Ed25519 public key accepted only when built with the
 /// `dev-license` feature, so developers can activate the app locally with
