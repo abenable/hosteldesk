@@ -143,8 +143,13 @@ pub fn run() {
             app.manage(AuthState::new());
             info!("auth state initialized");
 
-            // Set the window/taskbar icon at runtime (Tauri v2 has no window
-            // config field for this; the embedded default is generic).
+            // Set the window/taskbar icon at runtime. Only needed on Linux:
+            // the bundler-embedded icon (tauri.conf.json's `bundle.icon`)
+            // already provides the correct window/taskbar/executable icon on
+            // Windows and macOS, and running this unconditionally makes
+            // every platform's launch depend on this decode succeeding for
+            // no benefit on those platforms.
+            #[cfg(target_os = "linux")]
             if let Some(window) = app.get_webview_window("main") {
                 let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
                     .map_err(|e| format!("invalid icon: {e}"))?;
@@ -195,6 +200,16 @@ pub fn run() {
 
     if let Err(e) = result {
         error!(error = %e, "error while running tauri application");
+        // Release builds run under windows_subsystem = "windows" (no
+        // console), so tracing output above is invisible — without this the
+        // app just appears to silently fail to start. rfd's message box
+        // needs no window/event loop, so it works even though setup failed
+        // before any window existed.
+        rfd::MessageDialog::new()
+            .set_title("HostelDesk failed to start")
+            .set_description(format!("{e}"))
+            .set_level(rfd::MessageLevel::Error)
+            .show();
         std::process::exit(1);
     }
 }
