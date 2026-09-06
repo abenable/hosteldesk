@@ -11,20 +11,6 @@ use sqlx::sqlite::SqliteConnectOptions;
 use tauri::{AppHandle, Manager, State};
 use tracing::{debug, error, info, instrument};
 
-/// Payload for creating a room allocation.
-#[derive(Debug, Deserialize)]
-pub struct CreateAllocationRequest {
-    pub hostel_id: i64,
-    pub resident_id: i64,
-    pub room_id: i64,
-    pub check_in_date: NaiveDate,
-    pub check_out_date: Option<NaiveDate>,
-    pub expected_checkout: NaiveDate,
-    pub rate_agreed: String,
-    pub term: String,
-    pub academic_year: String,
-}
-
 /// Payload for an atomic check-in.
 ///
 /// Provide `resident_id` to check in an existing resident, or `full_name` (and
@@ -249,6 +235,7 @@ pub async fn generate_and_open_receipt(
 
     let amount = parse_positive_money(&request.amount).map_err(|e| e.to_string())?;
     let balance = parse_money(&request.balance).map_err(|e| e.to_string())?;
+    let logo_path = validate_logo_path(&app, request.hostel_id, request.logo_path)?;
 
     let payload = pdf::ReceiptPayload {
         hostel_name: request.hostel_name,
@@ -264,7 +251,7 @@ pub async fn generate_and_open_receipt(
         notes: request.notes,
         currency_code: request.currency_code,
         footer_text: request.footer_text,
-        logo_path: request.logo_path,
+        logo_path,
     };
 
     let documents_dir = app
@@ -305,23 +292,42 @@ pub fn get_license_status(state: State<'_, crate::LicenseState>) -> Option<Licen
     state.get()
 }
 
-/// Validate the supplied license string, persist it, and unlock the app.
-#[tauri::command]
-#[instrument(skip(state, app))]
-pub fn activate_license(
-    license: String,
-    state: State<'_, crate::LicenseState>,
-    app: AppHandle,
+/// Validate a license string, persist it, and update in-memory state. Shared
+/// by [`activate_license`] and [`activate_license_from_file`].
+fn activate_license_string(
+    license: &str,
+    state: &State<'_, crate::LicenseState>,
+    app: &AppHandle,
 ) -> Result<LicensePayload, String> {
-    let payload = license::verify_license(&license)
+    let payload = license::verify_license(license)
         .map_err(|e| format!("License is invalid or expired: {e}"))?;
 
-    let path = crate::license_path(&app)?;
-    std::fs::write(&path, &license).map_err(|e| format!("could not save license: {e}"))?;
+    let path = crate::license_path(app)?;
+    std::fs::write(&path, license).map_err(|e| format!("could not save license: {e}"))?;
     info!(path = %path.display(), "license saved");
 
     state.set(payload.clone());
     Ok(payload)
+}
+
+/// Open a native "open file" dialog for a license file, then validate and
+/// persist it.
+#[tauri::command]
+#[instrument(skip(state, app))]
+pub fn activate_license_from_file(
+    state: State<'_, crate::LicenseState>,
+    app: AppHandle,
+) -> Result<LicensePayload, String> {
+    let path = rfd::FileDialog::new()
+        .set_title("Select your HostelDesk license file")
+        .add_filter("HostelDesk license", &["hdlicense", "lic", "txt"])
+        .pick_file()
+        .ok_or_else(|| "No file selected".to_string())?;
+
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|e| format!("could not read license file: {e}"))?;
+
+    activate_license_string(contents.trim(), &state, &app)
 }
 
 /// Payload for completing first-run onboarding.
@@ -335,6 +341,13 @@ pub struct CompleteOnboardingRequest {
     pub admin_name: String,
     pub email: String,
     pub password: String,
+}
+
+/// Return the running application version (`CARGO_PKG_VERSION`), shown in
+/// Settings so a user has something to quote in a bug report.
+#[tauri::command]
+pub fn get_app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
 }
 
 /// Return whether one hostel and at least one staff account exist.
@@ -447,6 +460,7 @@ pub async fn create_user(
     info!(hostel_id = request.hostel_id, email = %request.email, "create_user invoked");
     require_license(&license_state)?;
     require_admin(&auth_state, request.hostel_id)?;
+    validate_password(&request.password)?;
 
     let password_hash = db::hash_password(&request.password)
         .map_err(|e| format!("Could not hash password: {e}"))?;
@@ -494,6 +508,54 @@ pub async fn login(
 fn map_db_error(command: &str, error: anyhow::Error) -> String {
     error!(command, %error, "command failed");
     format!("Something went wrong while processing your request. {error}")
+}
+
+/// Confirm a caller-supplied logo path actually points inside this hostel's
+/// own upload directory (`<app_data_dir>/hostels/<hostel_id>/`) before it is
+/// handed to the PDF renderer to read from disk.
+///
+/// `logo_path` normally round-trips the value [`upload_hostel_logo`] already
+/// wrote, but it arrives over IPC as a plain string, so nothing stops a
+/// caller from pointing it at an arbitrary file elsewhere on disk. Mirrors
+/// `restore_backup`'s containment check: canonicalize both sides and fail
+/// closed rather than pass an unvalidated path through.
+fn validate_logo_path(
+    app: &tauri::AppHandle,
+    hostel_id: i64,
+    logo_path: Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(logo_path) = logo_path else {
+        return Ok(None);
+    };
+
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("could not resolve app data dir: {e}"))?;
+    let logo_dir = data_dir.join("hostels").join(hostel_id.to_string());
+
+    let candidate = std::path::Path::new(&logo_path)
+        .canonicalize()
+        .map_err(|_| "logo path could not be read".to_string())?;
+    let logo_dir = logo_dir
+        .canonicalize()
+        .map_err(|_| "logo path could not be read".to_string())?;
+
+    if !candidate.starts_with(&logo_dir) {
+        return Err("logo path is outside the hostel's logo directory".to_string());
+    }
+
+    Ok(Some(candidate.to_string_lossy().to_string()))
+}
+
+/// Enforce the password policy server-side. The 8-character minimum shown in
+/// `TeamSection.tsx` is a UX hint only — without this, `create_user` /
+/// `update_user` accept any password, since the backend never re-checks it.
+fn validate_password(password: &str) -> Result<(), String> {
+    if password.chars().count() < 8 {
+        return Err("Password must be at least 8 characters.".to_string());
+    }
+    Ok(())
 }
 
 /// Validate an academic year label like `"2026/2027"`: two 4-digit years
@@ -611,39 +673,6 @@ pub async fn add_room(
         .map_err(|e| map_db_error("add_room", e))
 }
 
-/// Atomically insert many rooms; the whole batch rolls back on any failure.
-#[tauri::command]
-#[instrument(
-    skip(state, requests, license_state),
-    fields(command = "bulk_add_rooms")
-)]
-pub async fn bulk_add_rooms(
-    requests: Vec<AddRoomRequest>,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-) -> Result<Vec<i64>, String> {
-    info!(count = requests.len(), "bulk_add_rooms invoked");
-    require_license(&license_state)?;
-
-    let mut rooms = Vec::with_capacity(requests.len());
-    for r in requests {
-        let semester_rate = parse_positive_money(&r.semester_rate).map_err(|e| e.to_string())?;
-        let recess_rate = parse_positive_money(&r.recess_rate).map_err(|e| e.to_string())?;
-        rooms.push(NewRoom {
-            hostel_id: r.hostel_id,
-            room_number: r.room_number,
-            room_type: r.room_type,
-            capacity: r.capacity,
-            floor: r.floor,
-            semester_rate: semester_rate.to_string(),
-            recess_rate: recess_rate.to_string(),
-        });
-    }
-    state
-        .bulk_add_rooms(rooms)
-        .await
-        .map_err(|e| map_db_error("bulk_add_rooms", e))
-}
 
 /// Return the hostel profile with derived onboarding state, or `None`.
 #[tauri::command(rename_all = "snake_case")]
@@ -945,15 +974,15 @@ pub async fn update_resident(
     require_license(&license_state)?;
     require_session(&auth_state, request.hostel_id)?;
     state
-        .update_resident(
-            request.hostel_id,
-            request.resident_id,
-            request.full_name,
-            request.phone,
-            request.email,
-            request.id_number,
-            request.next_of_kin,
-        )
+        .update_resident(db::UpdateResident {
+            hostel_id: request.hostel_id,
+            resident_id: request.resident_id,
+            full_name: request.full_name,
+            phone: request.phone,
+            email: request.email,
+            id_number: request.id_number,
+            next_of_kin: request.next_of_kin,
+        })
         .await
         .map_err(|e| map_db_error("update_resident", e))
 }
@@ -981,7 +1010,7 @@ pub async fn list_users(
 ) -> Result<Vec<User>, String> {
     info!(hostel_id = request.hostel_id, "list_users invoked");
     require_license(&license_state)?;
-    require_session(&auth_state, request.hostel_id)?;
+    require_admin(&auth_state, request.hostel_id)?;
     state
         .list_users(request.hostel_id)
         .await
@@ -1017,16 +1046,20 @@ pub async fn update_user(
         .await
         .map_err(|e| map_db_error("update_user", e))?
         .ok_or_else(|| "user not found".to_string())?;
-    let session = require_admin(&auth_state, target.hostel_id)?;
+    let session = require_session(&auth_state, target.hostel_id)?;
     let role_changed = target.role != request.role;
-    if request.user_id == session.user_id || role_changed {
-        if session.role != "admin" {
-            return Err("forbidden".to_string());
-        }
+    // Changing any role, or editing someone else's account, requires admin.
+    // A non-admin may still update their own name/email/password as long as
+    // their role stays the same — this is how a manager rotates their own
+    // password (AccountSection.tsx), which a blanket self-update admin gate
+    // used to block.
+    if session.role != "admin" && (role_changed || request.user_id != session.user_id) {
+        return Err("forbidden".to_string());
     }
 
     let password_hash = match request.password {
         Some(ref password) => {
+            validate_password(password)?;
             Some(db::hash_password(password).map_err(|e| format!("Could not hash password: {e}"))?)
         }
         None => None,
@@ -1228,7 +1261,19 @@ pub async fn restore_backup(
     if let Err(e) = replace_database_files(&db_path, &backup_path, &wal_path, &shm_path) {
         error!(error = %e, "database restore failed; recovering pre-restore snapshot");
         let _ = std::fs::remove_file(&db_path);
-        let _ = std::fs::copy(&pre_restore_path, &db_path);
+        if let Err(copy_err) = std::fs::copy(&pre_restore_path, &db_path) {
+            error!(
+                error = %copy_err,
+                "CRITICAL: could not recover pre-restore snapshot after failed restore"
+            );
+            return Err(format!(
+                "Restore failed ({e}) and the automatic recovery copy also failed \
+                 ({copy_err}). Your database from before the restore attempt is still \
+                 safe at {}. Do not restart HostelDesk yet; copy that file back \
+                 manually or contact support.",
+                pre_restore_path.display()
+            ));
+        }
         let _ = std::fs::remove_file(&wal_path);
         let _ = std::fs::remove_file(&shm_path);
 
@@ -1281,10 +1326,11 @@ fn replace_database_files(
     let pre_restore_path = db_path.with_extension("db.pre-restore");
     let staging_path = db_path.with_extension("db.restoring");
 
-    std::fs::remove_file(&staging_path)
-        .map_err(|e| format!("could not clear staging file: {e}"))?;
+    // The staging file is a leftover from a previous crashed restore attempt,
+    // if it exists at all; a fresh restore never has one yet.
+    let _ = std::fs::remove_file(&staging_path);
 
-    std::fs::copy(&backup_path, &staging_path)
+    std::fs::copy(backup_path, &staging_path)
         .map_err(|e| format!("could not stage backup for restore: {e}"))?;
 
     let _ = std::fs::remove_file(wal_path);
@@ -1463,6 +1509,57 @@ mod tests {
         assert!(
             err.contains("not a valid SQLite backup"),
             "unexpected validation error: {err}"
+        );
+    }
+
+    /// Regression test for R2: a fresh restore has no leftover `.db.restoring`
+    /// staging file, and `replace_database_files` must not fail just because
+    /// there is nothing to clear.
+    #[tokio::test]
+    async fn replace_database_files_succeeds_with_no_stale_staging_file() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("hosteldesk.db");
+        let backup_path = dir.path().join("backup.db");
+        let wal_path = dir.path().join("hosteldesk.db-wal");
+        let shm_path = dir.path().join("hosteldesk.db-shm");
+
+        std::fs::write(&db_path, b"live database contents").expect("write live db");
+        std::fs::write(&backup_path, b"backup database contents").expect("write backup");
+        std::fs::write(&wal_path, b"stale wal").expect("write wal");
+        std::fs::write(&shm_path, b"stale shm").expect("write shm");
+
+        replace_database_files(&db_path, &backup_path, &wal_path, &shm_path)
+            .expect("restore should succeed when no staging file is left over");
+
+        let restored = std::fs::read(&db_path).expect("read restored db");
+        assert_eq!(restored, b"backup database contents");
+        assert!(!wal_path.exists(), "stale wal sidecar should be removed");
+        assert!(!shm_path.exists(), "stale shm sidecar should be removed");
+    }
+
+    /// A failed restore (backup file missing) must leave the live database
+    /// file untouched and report an error instead of destroying live data.
+    #[tokio::test]
+    async fn replace_database_files_leaves_live_db_untouched_when_backup_unreadable() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("hosteldesk.db");
+        let missing_backup_path = dir.path().join("does-not-exist.db");
+        let wal_path = dir.path().join("hosteldesk.db-wal");
+        let shm_path = dir.path().join("hosteldesk.db-shm");
+
+        std::fs::write(&db_path, b"live database contents").expect("write live db");
+
+        let err = replace_database_files(&db_path, &missing_backup_path, &wal_path, &shm_path)
+            .expect_err("restore from a missing backup file must fail");
+        assert!(
+            err.contains("could not stage backup for restore"),
+            "unexpected error: {err}"
+        );
+
+        let live = std::fs::read(&db_path).expect("live db must still exist");
+        assert_eq!(
+            live, b"live database contents",
+            "live database must be untouched when staging the backup fails"
         );
     }
 }

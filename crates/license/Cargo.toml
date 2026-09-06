@@ -1,7 +1,17 @@
 [package]
 name = "license"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+license-file.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+# Accepts licenses signed by the dev key (crates/license/examples/generate_dev_license.rs)
+# in addition to the production key. Off by default so a debug build produced
+# by `cargo tauri build --debug` or RUSTFLAGS=-Cdebug-assertions=on cannot
+# accept dev-minted licenses without this feature being requested explicitly.
+dev-license = []
 
 [dependencies]
 anyhow = { workspace = true }

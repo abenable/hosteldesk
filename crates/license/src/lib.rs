@@ -48,10 +48,14 @@ pub enum LicenseError {
 /// licenses.
 pub const PUBLIC_KEY_BASE64: &str = "tRnJ7rRm/x/rd9jQJp1MJaBxsNej8cqfNX6cd9up1tI=";
 
-/// Base64-encoded Ed25519 public key accepted only in debug builds, so
-/// developers can activate the app locally with [`examples/generate_dev_license.rs`]
-/// without holding the production signing key. Never checked in release builds.
-#[cfg(debug_assertions)]
+/// Base64-encoded Ed25519 public key accepted only when built with the
+/// `dev-license` feature, so developers can activate the app locally with
+/// [`examples/generate_dev_license.rs`] without holding the production
+/// signing key. Never enabled in a shippable build: gating this on
+/// `debug_assertions` alone would let `cargo tauri build --debug` (or
+/// `RUSTFLAGS=-Cdebug-assertions=on`) produce a binary that accepts licenses
+/// anyone can mint from the repo.
+#[cfg(feature = "dev-license")]
 const DEV_PUBLIC_KEY_BASE64: &str = "mv6SftzK8LBfqpzFllzUXmi68B3esJNjHekmhGmfjeg=";
 
 /// Separator between the base64 signature and base64 payload.
@@ -72,7 +76,7 @@ pub fn verify_license_at(license: &str, today: NaiveDate) -> Result<LicensePaylo
     let verifying_key = load_public_key()?;
     let result = verify_license_with_key_at(license, today, &verifying_key);
 
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "dev-license")]
     let result = match result {
         Err(LicenseError::BadSignature) => {
             let dev_key = load_key(DEV_PUBLIC_KEY_BASE64)?;

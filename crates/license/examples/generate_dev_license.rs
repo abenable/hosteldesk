@@ -11,12 +11,11 @@ use license::LicensePayload;
 /// Matches the private half of `DEV_PUBLIC_KEY_BASE64` in src/lib.rs.
 const DEV_PRIVATE_KEY_BASE64: &str = "KLXBx9s0JhWFbQhtZX2IO34NajBXIy5Kor55yzOIp0E=";
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let key_bytes: [u8; 32] = STANDARD
-        .decode(DEV_PRIVATE_KEY_BASE64)
-        .expect("valid base64")
+        .decode(DEV_PRIVATE_KEY_BASE64)?
         .try_into()
-        .expect("32 bytes");
+        .map_err(|v: Vec<u8>| format!("dev private key must be 32 bytes, got {}", v.len()))?;
     let signing_key = SigningKey::from_bytes(&key_bytes);
 
     let payload = LicensePayload {
@@ -24,10 +23,10 @@ fn main() {
         expiry_date: Utc::now()
             .date_naive()
             .checked_add_days(Days::new(3650))
-            .expect("valid date"),
+            .ok_or("date overflow computing dev license expiry")?,
         tier: "pro".to_string(),
     };
-    let json = serde_json::to_vec(&payload).expect("payload serializes");
+    let json = serde_json::to_vec(&payload)?;
     let signature = signing_key.sign(&json);
 
     println!(
@@ -35,4 +34,5 @@ fn main() {
         STANDARD.encode(signature.to_bytes()),
         STANDARD.encode(&json)
     );
+    Ok(())
 }

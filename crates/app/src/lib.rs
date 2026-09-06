@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use db::DbPool;
 use license::LicensePayload;
@@ -6,6 +7,11 @@ use tauri::{generate_context, generate_handler, AppHandle, Manager};
 use tracing::{error, info, instrument};
 
 pub mod commands;
+
+/// A session with no activity for this long is treated as signed out. Every
+/// guarded command reads the session via [`AuthState::current_session`], so
+/// this is the single choke point that enforces it.
+const SESSION_IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// In-memory authorization session for the application's single window.
 ///
@@ -24,7 +30,7 @@ pub struct Session {
 
 /// Current session storage for the single-window desktop app.
 #[derive(Debug, Default)]
-pub struct AuthState(Mutex<Option<Session>>);
+pub struct AuthState(Mutex<Option<(Session, Instant)>>);
 
 impl AuthState {
     /// Create an empty authorization state.
@@ -35,19 +41,33 @@ impl AuthState {
     /// Store or replace the current session.
     pub fn set_current_session(&self, user_id: i64, hostel_id: i64, role: impl Into<String>) {
         if let Ok(mut guard) = self.0.lock() {
-            *guard = Some(Session {
-                user_id,
-                hostel_id,
-                role: role.into(),
-            });
+            *guard = Some((
+                Session {
+                    user_id,
+                    hostel_id,
+                    role: role.into(),
+                },
+                Instant::now(),
+            ));
         } else {
             error!("auth state mutex poisoned");
         }
     }
 
-    /// Return the current session, if any.
+    /// Return the current session, if any, and reset its idle clock.
+    ///
+    /// A session whose last activity is older than [`SESSION_IDLE_TIMEOUT`]
+    /// is cleared and treated as signed out.
     pub fn current_session(&self) -> Option<Session> {
-        self.0.lock().ok()?.clone()
+        let mut guard = self.0.lock().ok()?;
+        match guard.take() {
+            Some((session, last_active)) if !is_idle(last_active, SESSION_IDLE_TIMEOUT) => {
+                *guard = Some((session.clone(), Instant::now()));
+                Some(session)
+            }
+            Some(_) => None,
+            None => None,
+        }
     }
 
     /// Clear the current session.
@@ -56,6 +76,10 @@ impl AuthState {
             *guard = None;
         }
     }
+}
+
+fn is_idle(last_active: Instant, timeout: Duration) -> bool {
+    last_active.elapsed() > timeout
 }
 
 /// Runtime license state managed by Tauri.
@@ -132,12 +156,13 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(generate_handler![
+            commands::get_app_version,
             commands::get_rooms,
             commands::check_in,
             commands::record_payment_and_generate_receipt,
             commands::generate_and_open_receipt,
             commands::get_license_status,
-            commands::activate_license,
+            commands::activate_license_from_file,
             commands::create_user,
             commands::login,
             commands::complete_onboarding,
@@ -203,12 +228,22 @@ fn load_license_state(app: &AppHandle) -> Result<LicenseState, String> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{commands, AuthState, LicenseState};
+    use crate::{commands, is_idle, AuthState, LicenseState};
     use db::DbPool;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
     use tauri::Manager;
 
     static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn session_is_idle_after_timeout_elapses() {
+        let just_now = Instant::now();
+        assert!(!is_idle(just_now, Duration::from_secs(60)));
+
+        let long_ago = Instant::now() - Duration::from_secs(120);
+        assert!(is_idle(long_ago, Duration::from_secs(60)));
+    }
 
     fn temp_db_url() -> String {
         let index = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -775,7 +810,6 @@ mod tests {
         let app = tauri::test::mock_app();
         app.manage(pool);
         app.manage(license_state);
-        app.manage(AuthState::new());
         app.manage(auth_state);
 
         let result = commands::delete_user(
@@ -798,6 +832,49 @@ mod tests {
             .await
             .expect("count admin user");
         assert_eq!(count, 1, "admin should not have been deleted");
+    }
+
+    /// Staff listing exposes every user's email and role in the hostel; it
+    /// must be admin-gated like its create/update/delete siblings, not open
+    /// to any authenticated session.
+    #[tokio::test]
+    async fn manager_session_cannot_list_users() {
+        let url = temp_db_url();
+        let pool = DbPool::open(&url).await.expect("open database");
+
+        sqlx::query("INSERT INTO hostels (name, currency) VALUES (?1, ?2)")
+            .bind("Auth Test Hostel")
+            .bind("USD")
+            .execute(&pool.inner)
+            .await
+            .expect("insert hostel");
+
+        let (_admin_id, _admin_password) = setup_staff_user(&pool, "Admin", "admin", "admin").await;
+        let (manager_id, _manager_password) =
+            setup_staff_user(&pool, "Manager", "manager", "manager").await;
+
+        let license_state = setup_license_state();
+        let auth_state = AuthState::new();
+        auth_state.set_current_session(manager_id, 1, "manager");
+
+        let app = tauri::test::mock_app();
+        app.manage(pool);
+        app.manage(license_state);
+        app.manage(auth_state);
+
+        let result = commands::list_users(
+            commands::ListUsersRequest { hostel_id: 1 },
+            app.state::<DbPool>(),
+            app.state::<LicenseState>(),
+            app.state::<AuthState>(),
+        )
+        .await;
+
+        let err = result.expect_err("manager should not be able to list staff users");
+        assert!(
+            err.contains("forbidden") || err.contains("unauthorized"),
+            "expected authorization error, got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -823,7 +900,6 @@ mod tests {
         let app = tauri::test::mock_app();
         app.manage(pool);
         app.manage(license_state);
-        app.manage(AuthState::new());
         app.manage(auth_state);
 
         let result = commands::update_user(
@@ -860,5 +936,48 @@ mod tests {
             .await
             .expect("fetch admin role");
         assert_eq!(admin_role, "admin");
+    }
+
+    /// A manager must be able to rotate their own password (AccountSection.tsx)
+    /// without being an admin, as long as they aren't also changing their role.
+    #[tokio::test]
+    async fn manager_session_can_update_own_password() {
+        let url = temp_db_url();
+        let pool = DbPool::open(&url).await.expect("open database");
+
+        sqlx::query("INSERT INTO hostels (name, currency) VALUES (?1, ?2)")
+            .bind("Auth Test Hostel")
+            .bind("USD")
+            .execute(&pool.inner)
+            .await
+            .expect("insert hostel");
+
+        let (manager_id, _manager_password) =
+            setup_staff_user(&pool, "Manager", "manager@example.com", "manager").await;
+
+        let license_state = setup_license_state();
+        let auth_state = AuthState::new();
+        auth_state.set_current_session(manager_id, 1, "manager");
+
+        let app = tauri::test::mock_app();
+        app.manage(pool);
+        app.manage(license_state);
+        app.manage(auth_state);
+
+        let result = commands::update_user(
+            commands::UpdateUserRequest {
+                user_id: manager_id,
+                full_name: "Manager".to_string(),
+                email: "manager@example.com".to_string(),
+                role: "manager".to_string(),
+                password: Some("a-new-password".to_string()),
+            },
+            app.state::<DbPool>(),
+            app.state::<LicenseState>(),
+            app.state::<AuthState>(),
+        )
+        .await;
+
+        result.expect("manager should be able to change their own password");
     }
 }
