@@ -1,3 +1,5 @@
+<img src="src/assets/logo.png" alt="HostelDesk logo" width="96" />
+
 # HostelDesk frontend
 
 React + TypeScript + Tailwind UI for the HostelDesk desktop app, built with Vite and running inside the Tauri v2 webview. See the [repository root README](../README.md) for setup, running, and building the whole app.

@@ -1,3 +1,5 @@
+<img src="frontend/src/assets/logo.png" alt="HostelDesk logo" width="96" />
+
 # HostelDesk
 
 A local-first desktop application for hostel managers. Handles rooms, residents, check-ins, payments, and PDF receipts. Built with a Rust (Tauri v2) backend and a React + TypeScript + Tailwind frontend. Data stays in a local SQLite database; receipts are generated as offline PDFs.
