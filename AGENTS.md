@@ -72,7 +72,7 @@ Migrations live in `crates/db/migrations/` and are applied by `sqlx::migrate!`.
 
 ## 9. Branching and Releases
 
-- Every release — **major or minor** — is developed on a **version branch** named after the upcoming release (e.g. `v1.0.1`, `v2.0.0`). **All changes for that release go on the version branch** — not directly on `main`.
+- Every release — **major or minor** — is developed on a **version branch** named after the upcoming release (e.g. `v1.0.1`, `v1.1.0`, `v2.0.0`). **All changes for that release go on the version branch** — not directly on `main`.
 - To cut a release: bump `version` in `crates/app/tauri.conf.json` (and `frontend/package.json` to match), merge the version branch into `main`, then tag:
 
   ```sh
