@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Card } from '../components/ui/Card.tsx';
 import { Button } from '../components/ui/Button.tsx';
-import { Badge } from '../components/ui/Badge.tsx';
 import { StatCard } from '../components/ui/StatCard.tsx';
 import { Modal } from '../components/ui/Modal.tsx';
 import { Table, Td, Tr } from '../components/ui/Table.tsx';
@@ -72,7 +71,6 @@ export function Dashboard() {
     return () => { cancelled = true; };
   }, [hostelId, today, refreshKey]);
 
-  const departures = allocations.filter((a) => a.expected_checkout <= today);
   const pct = stats && stats.total_rooms > 0
     ? Math.round((stats.occupied / stats.total_rooms) * 100)
     : 0;
@@ -121,36 +119,30 @@ export function Dashboard() {
       <div className="grid gap-4 lg:grid-cols-2">
         <Card shadow className="p-5">
           <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-title-sm text-ink">Departures</h2>
-            <span className="text-caption text-muted">{departures.length} today</span>
+            <h2 className="text-title-sm text-ink">Active stays</h2>
+            <span className="text-caption text-muted">{allocations.length}</span>
           </div>
-          {departures.length === 0 ? (
-            <p className="text-body-sm text-muted">No departures today</p>
+          {allocations.length === 0 ? (
+            <p className="text-body-sm text-muted">No active stays</p>
           ) : (
             <Table>
               <tbody>
-                {departures.map((a) => {
-                  const overdue = a.expected_checkout < today;
-                  return (
-                    <Tr key={a.allocation_id}>
-                      <Td>
-                        <div className="flex items-center gap-2">
-                          <span className="text-body-sm text-ink">{a.resident_name}</span>
-                          {overdue && <Badge className="bg-error-text text-on-primary">Overdue</Badge>}
-                        </div>
-                        <span className="text-caption-sm text-muted">{a.room_number}</span>
-                      </Td>
-                      <Td className="text-right">
-                        <CurrencyAmount amount={a.balance} currency={currency} error={owesMoney(a.balance)} muted />
-                      </Td>
-                      <Td className="text-right">
-                        <Button variant="tertiary" size="sm" onClick={() => setCheckoutTarget(a)}>
-                          Check out
-                        </Button>
-                      </Td>
-                    </Tr>
-                  );
-                })}
+                {allocations.map((a) => (
+                  <Tr key={a.allocation_id}>
+                    <Td>
+                      <span className="text-body-sm text-ink">{a.resident_name}</span>
+                      <span className="ml-2 text-caption-sm text-muted">{a.room_number}</span>
+                    </Td>
+                    <Td className="text-right">
+                      <CurrencyAmount amount={a.balance} currency={currency} error={owesMoney(a.balance)} muted />
+                    </Td>
+                    <Td className="text-right">
+                      <Button variant="tertiary" size="sm" onClick={() => setCheckoutTarget(a)}>
+                        Check out
+                      </Button>
+                    </Td>
+                  </Tr>
+                ))}
               </tbody>
             </Table>
           )}

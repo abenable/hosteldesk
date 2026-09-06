@@ -293,7 +293,6 @@ export function Invoices({ onNavigate: _onNavigate }: Props) {
                 <tr>
                   <Th>Resident</Th>
                   <Th>Room</Th>
-                  <Th>Since</Th>
                   <Th>Rate</Th>
                   <Th>Paid</Th>
                   <Th>Balance</Th>
@@ -305,7 +304,6 @@ export function Invoices({ onNavigate: _onNavigate }: Props) {
                   <Tr key={a.allocation_id}>
                     <Td>{a.resident_name}</Td>
                     <Td>{a.room_number}</Td>
-                    <Td>{new Date(a.check_in_date).toLocaleDateString()}</Td>
                     <Td><CurrencyAmount amount={a.rate_agreed} currency={currency} muted /></Td>
                     <Td><CurrencyAmount amount={a.total_paid} currency={currency} muted /></Td>
                     <Td><CurrencyAmount amount={a.balance} currency={currency} error /></Td>

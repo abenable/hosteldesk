@@ -29,7 +29,6 @@ export function CheckOutConfirm({
   onDone,
 }: Props) {
   const [busy, setBusy] = useState(false);
-  const today = new Date().toLocaleDateString('en-CA');
   const owed = owesMoney(balance);
 
   async function handleConfirm() {
@@ -38,7 +37,6 @@ export function CheckOutConfirm({
       await checkOut({
         hostel_id: hostelId,
         allocation_id: allocationId,
-        check_out_date: today,
       });
       addToast(`Checked out ${residentName} from ${roomNumber}.`, 'success');
       onOpenChange(false);

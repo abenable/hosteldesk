@@ -58,7 +58,6 @@ export function Residents({ onNavigate }: Props) {
   const [editOpen, setEditOpen] = useState(false);
   const [checkoutTarget, setCheckoutTarget] = useState<ResidentSummary | null>(null);
 
-  const today = new Date().toLocaleDateString('en-CA');
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), []);
 
   useEffect(() => {
@@ -118,9 +117,6 @@ export function Residents({ onNavigate }: Props) {
 
   const current = residents.filter((r) => r.status === 'active').length;
   const past = residents.filter((r) => r.status === 'checked_out').length;
-  const overdue = residents.filter(
-    (r) => r.status === 'active' && r.expected_checkout && r.expected_checkout < today,
-  ).length;
 
   return (
     <div className="flex flex-col gap-4">
@@ -136,11 +132,10 @@ export function Residents({ onNavigate }: Props) {
         </Button>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-3">
         <StatCard label="Total residents" value={residents.length} />
         <StatCard label="Current" value={current} />
         <StatCard label="Past" value={past} />
-        <StatCard label="Overdue" value={overdue} error={overdue > 0} />
       </div>
 
       <div className="grid grid-cols-[1fr_20rem_1fr] items-center gap-4">
@@ -180,15 +175,12 @@ export function Residents({ onNavigate }: Props) {
             <tr>
               <Th>Resident</Th>
               <Th>Room</Th>
-              <Th>Checked in</Th>
-              <Th>Expected out</Th>
               <Th>Balance</Th>
               <Th className="w-8" />
             </tr>
           </thead>
           <tbody>
             {filtered.map((r) => {
-              const overdue = r.status === 'active' && r.expected_checkout && r.expected_checkout < today;
               const owes = owesMoney(r.balance);
               return (
                 <Tr
@@ -205,13 +197,6 @@ export function Residents({ onNavigate }: Props) {
                     </div>
                   </Td>
                   <Td>{r.room_number ?? '—'}</Td>
-                  <Td>{fmtDate(r.check_in_date)}</Td>
-                  <Td>
-                    <span className="flex items-center gap-2">
-                      {fmtDate(r.expected_checkout)}
-                      {overdue && <Badge className="bg-error-text text-on-primary">Overdue</Badge>}
-                    </span>
-                  </Td>
                   <Td>
                     <CurrencyAmount amount={r.balance} currency={currency} error={owes} />
                   </Td>
@@ -277,8 +262,6 @@ export function Residents({ onNavigate }: Props) {
                 email: detail.resident.email,
                 allocation_id: detail.allocations[0]?.id,
                 room_number: detail.allocations[0]?.room_number,
-                check_in_date: detail.allocations[0]?.check_in_date,
-                expected_checkout: detail.allocations[0]?.expected_checkout,
                 status: detail.allocations[0]?.status ?? 'active',
                 balance: detail.balance,
               });
@@ -359,15 +342,18 @@ function ResidentDrawerContent({
         {detail.resident.phone && <p>{detail.resident.phone}</p>}
         {detail.resident.email && <p>{detail.resident.email}</p>}
         {detail.resident.id_number && <p>ID: {detail.resident.id_number}</p>}
-        {detail.resident.next_of_kin && <p>Next of kin: {detail.resident.next_of_kin}</p>}
+        {detail.resident.next_of_kin && (
+          <p>
+            Next of kin: {detail.resident.next_of_kin}
+            {detail.resident.next_of_kin_phone && ` · ${detail.resident.next_of_kin_phone}`}
+          </p>
+        )}
       </div>
 
       {active && (
         <Card shadow className="p-4">
           <p className="text-caption text-muted">Current stay</p>
-          <p className="mt-1 text-body-sm text-ink">
-            {active.room_number} · {fmtDate(active.check_in_date)} → {fmtDate(active.expected_checkout)}
-          </p>
+          <p className="mt-1 text-body-sm text-ink">{active.room_number}</p>
           <p className="text-caption-sm text-muted">
             {TERM_LABEL[active.term] ?? active.term} · {active.academic_year}
           </p>
@@ -399,9 +385,6 @@ function ResidentDrawerContent({
                   <span className="ml-2 text-caption-sm text-muted">
                     {TERM_LABEL[a.term] ?? a.term} · {a.academic_year}
                   </span>
-                </span>
-                <span className="text-muted">
-                  {fmtDate(a.check_in_date)} → {a.check_out_date ? fmtDate(a.check_out_date) : '—'}
                 </span>
                 <Badge className="bg-surface-strong text-muted">{a.status}</Badge>
               </div>
@@ -454,6 +437,7 @@ function EditResidentModal({
   const [email, setEmail] = useState(detail.resident.email ?? '');
   const [idNumber, setIdNumber] = useState(detail.resident.id_number ?? '');
   const [nextOfKin, setNextOfKin] = useState(detail.resident.next_of_kin ?? '');
+  const [nextOfKinPhone, setNextOfKinPhone] = useState(detail.resident.next_of_kin_phone ?? '');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -462,6 +446,7 @@ function EditResidentModal({
     setEmail(detail.resident.email ?? '');
     setIdNumber(detail.resident.id_number ?? '');
     setNextOfKin(detail.resident.next_of_kin ?? '');
+    setNextOfKinPhone(detail.resident.next_of_kin_phone ?? '');
   }, [detail]);
 
   const nameValid = fullName.trim().length > 0;
@@ -479,6 +464,7 @@ function EditResidentModal({
         email: email.trim() || undefined,
         id_number: idNumber.trim() || undefined,
         next_of_kin: nextOfKin.trim() || undefined,
+        next_of_kin_phone: nextOfKinPhone.trim() || undefined,
       });
       addToast('Resident updated.', 'success');
       onDone();
@@ -508,6 +494,12 @@ function EditResidentModal({
         <Input label="Email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         <Input label="ID number" value={idNumber} onChange={(e) => setIdNumber(e.target.value)} />
         <Input label="Next of kin" value={nextOfKin} onChange={(e) => setNextOfKin(e.target.value)} />
+        <Input
+          label="Next of kin phone"
+          type="tel"
+          value={nextOfKinPhone}
+          onChange={(e) => setNextOfKinPhone(e.target.value)}
+        />
         <div className="flex justify-end">
           <Button type="submit" disabled={busy || !nameValid}>
             {busy ? 'Saving…' : 'Save'}
