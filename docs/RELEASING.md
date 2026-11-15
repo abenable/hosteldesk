@@ -5,7 +5,7 @@
 
    ```sh
    git tag v1.0.0
-   git push origin main v1.0.0
+   git push origin main refs/tags/v1.0.0   # refs/tags/: the version branch has the same name
    ```
 
 3. The release workflow (`.github/workflows/release.yml`) creates one draft release, builds both platforms in parallel against it, and only un-drafts the release once **both** legs succeed — a failed Windows build leaves nothing public instead of shipping a Linux-only release. It publishes:

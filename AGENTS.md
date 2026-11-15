@@ -79,8 +79,10 @@ Desk migrations live in `crates/db/migrations/` and are applied by `sqlx::migrat
 
   ```sh
   git tag v1.0.1
-  git push origin main v1.0.1
+  git push origin main refs/tags/v1.0.1
   ```
+
+  Use `refs/tags/…`: the version branch has the same name as the tag, so a bare `v1.0.1` is ambiguous and the push is refused.
 
 - The tag push triggers `.github/workflows/release.yml`, which builds the Ubuntu `.deb` (22.04) and the Windows NSIS `.exe`, uploads platform checksum files, and publishes the GitHub release. CI (`.github/workflows/ci.yml`) runs fmt, clippy `-D warnings` (native and wasm32), tests, and an installer-script compile on every `main` push and PR.
 - The sync Worker is deployed separately with `scripts/deploy-worker.sh` (Neon migrations, then `wrangler deploy`); see `docs/DEPLOY.md`. Deploy the Worker before releasing a desk build that depends on a new endpoint or migration.
