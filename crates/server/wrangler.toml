@@ -1,0 +1,21 @@
+# HostelDesk sync API on Cloudflare Workers (Rust → wasm via worker-build).
+#
+# Deploy:  scripts/deploy-worker.sh   (applies D1 migrations, then deploys)
+# Local:   cd crates/server && npx -y wrangler@4 dev   (local D1 in .wrangler/)
+# Secret:  npx -y wrangler@4 secret put HOSTELDESK_SIGNING_KEY   (license private key, base64)
+# Needs the Workers Paid plan: Argon2 sign-in exceeds the Free plan's 10 ms CPU limit.
+name = "hosteldesk-sync"
+main = "build/worker/shim.mjs"
+compatibility_date = "2026-11-15"
+
+[build]
+command = "cargo install -q worker-build --version ^0.9 && worker-build --release"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hosteldesk"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[observability]
+enabled = true

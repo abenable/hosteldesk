@@ -184,6 +184,7 @@ impl DbPool {
         if full_name.trim().is_empty() {
             anyhow::bail!("full_name is required");
         }
+        let mut tx = self.inner.begin().await?;
         let rows = sqlx::query(
             r#"
             UPDATE residents
@@ -201,13 +202,15 @@ impl DbPool {
         .bind(&next_of_kin_phone)
         .bind(resident_id)
         .bind(hostel_id)
-        .execute(&self.inner)
+        .execute(&mut *tx)
         .await
         .inspect_err(|e| error!(error = %e, resident_id, "database error updating resident"))?
         .rows_affected();
         if rows == 0 {
             anyhow::bail!("resident not found");
         }
+        crate::sync::enqueue_resident(&mut tx, hostel_id, resident_id).await?;
+        tx.commit().await?;
         Ok(())
     }
 }

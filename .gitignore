@@ -29,3 +29,8 @@ specs/
 
 # Archives
 *.zip
+
+# Cloudflare Worker (crates/server)
+.wrangler/
+.dev.vars
+crates/server/build/

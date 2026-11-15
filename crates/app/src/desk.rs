@@ -130,13 +130,7 @@ impl Desk {
         &self,
         request: commands::CompleteOnboardingRequest,
     ) -> Result<db::User, String> {
-        let user =
-            commands::complete_onboarding(request, &self.db, &self.license, &self.auth).await?;
-        self.db
-            .enqueue_hostel(user.hostel_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(user)
+        commands::complete_onboarding(request, &self.db, &self.license, &self.auth).await
     }
 
     /// Hostel profile plus room and admin counts.
@@ -157,13 +151,7 @@ impl Desk {
         &self,
         request: commands::UpdateHostelRequest,
     ) -> Result<db::Hostel, String> {
-        let hostel_id = request.hostel_id;
-        let hostel = commands::update_hostel(request, &self.db, &self.license, &self.auth).await?;
-        self.db
-            .enqueue_hostel(hostel_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(hostel)
+        commands::update_hostel(request, &self.db, &self.license, &self.auth).await
     }
 
     /// Store a logo image and return its path. Admin only.
@@ -181,37 +169,17 @@ impl Desk {
 
     /// Add one room.
     pub async fn add_room(&self, request: commands::AddRoomRequest) -> Result<i64, String> {
-        let hostel_id = request.hostel_id;
-        let room_id = commands::add_room(request, &self.db, &self.license, &self.auth).await?;
-        self.db
-            .enqueue_room(hostel_id, room_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(room_id)
+        commands::add_room(request, &self.db, &self.license, &self.auth).await
     }
 
     /// Check a resident in. Returns the new allocation id.
     pub async fn check_in(&self, request: commands::CheckInRequest) -> Result<i64, String> {
-        let hostel_id = request.hostel_id;
-        let allocation_id =
-            commands::check_in(request, &self.db, &self.license, &self.auth).await?;
-        self.db
-            .enqueue_check_in(hostel_id, allocation_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(allocation_id)
+        commands::check_in(request, &self.db, &self.license, &self.auth).await
     }
 
     /// Check an allocation out.
     pub async fn check_out(&self, request: commands::CheckOutRequest) -> Result<(), String> {
-        let hostel_id = request.hostel_id;
-        let allocation_id = request.allocation_id;
-        commands::check_out(request, &self.db, &self.license, &self.auth).await?;
-        self.db
-            .enqueue_check_out(hostel_id, allocation_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        commands::check_out(request, &self.db, &self.license, &self.auth).await
     }
 
     /// Active stays for the payment form.
@@ -227,19 +195,8 @@ impl Desk {
         &self,
         request: commands::RecordPaymentRequest,
     ) -> Result<(i64, String), String> {
-        let hostel_id = request.hostel_id;
-        let recorded = commands::record_payment_and_generate_receipt(
-            request,
-            &self.db,
-            &self.license,
-            &self.auth,
-        )
-        .await?;
-        self.db
-            .enqueue_payment(hostel_id, recorded.0)
+        commands::record_payment_and_generate_receipt(request, &self.db, &self.license, &self.auth)
             .await
-            .map_err(|e| e.to_string())?;
-        Ok(recorded)
     }
 
     /// Write a PDF receipt and open it.
@@ -302,14 +259,7 @@ impl Desk {
         &self,
         request: commands::UpdateResidentRequest,
     ) -> Result<(), String> {
-        let hostel_id = request.hostel_id;
-        let resident_id = request.resident_id;
-        commands::update_resident(request, &self.db, &self.license, &self.auth).await?;
-        self.db
-            .enqueue_resident(hostel_id, resident_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        commands::update_resident(request, &self.db, &self.license, &self.auth).await
     }
 
     /// Preferences for a hostel, or the defaults.
@@ -325,14 +275,7 @@ impl Desk {
         &self,
         request: commands::UpsertAppPreferencesRequest,
     ) -> Result<db::AppPreferences, String> {
-        let hostel_id = request.hostel_id;
-        let prefs =
-            commands::update_app_preferences(request, &self.db, &self.license, &self.auth).await?;
-        self.db
-            .enqueue_preferences(hostel_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(prefs)
+        commands::update_app_preferences(request, &self.db, &self.license, &self.auth).await
     }
 
     /// Write a consistent database backup and return its path.
@@ -346,10 +289,20 @@ impl Desk {
     }
 
     /// Replace the live database with a backup and restart the process.
+    ///
+    /// Refused while the desk syncs with the cloud: the cloud already holds
+    /// the data, and an old copy would reissue receipt numbers already printed.
     pub async fn restore_backup(
         &self,
         request: commands::RestoreBackupRequest,
     ) -> Result<(), String> {
+        if self.db.is_enrolled().await.map_err(|e| e.to_string())? {
+            return Err(
+                "This computer syncs with the cloud, so restoring a backup is turned off. \
+                 Your data is already kept in the cloud."
+                    .to_string(),
+            );
+        }
         commands::restore_backup(request, &self.paths, &self.db, &self.license, &self.auth).await
     }
 }

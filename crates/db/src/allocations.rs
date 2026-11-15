@@ -56,6 +56,7 @@ impl DbPool {
             },
         )
         .await?;
+        crate::sync::enqueue_check_in(&mut tx, check_in.hostel_id, allocation_id).await?;
 
         tx.commit().await.inspect_err(
             |e| error!(error = %e, allocation_id, "database error committing check-in"),
@@ -118,6 +119,7 @@ impl DbPool {
         .execute(&mut *tx)
         .await
         .inspect_err(|e| error!(error = %e, room_id, "database error updating room status"))?;
+        crate::sync::enqueue_check_out(&mut tx, hostel_id, allocation_id).await?;
 
         tx.commit().await.inspect_err(
             |e| error!(error = %e, allocation_id, "database error committing checkout"),

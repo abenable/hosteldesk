@@ -67,7 +67,7 @@ impl AppPaths {
         self.data_dir.join("cloud.json")
     }
 
-    /// Fallback location for the device refresh token when the OS keyring is unavailable.
+    /// Device refresh token for cloud sync (user-only file).
     pub fn device_token_path(&self) -> PathBuf {
         self.data_dir.join("device.token")
     }

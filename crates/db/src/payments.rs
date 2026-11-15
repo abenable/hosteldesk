@@ -86,6 +86,7 @@ impl DbPool {
         .execute(&mut *tx)
         .await
         .inspect_err(|e| error!(error = %e, payment_id, "database error inserting receipt"))?;
+        crate::sync::enqueue_payment(&mut tx, payment.hostel_id, payment_id).await?;
 
         tx.commit().await.inspect_err(
             |e| error!(error = %e, payment_id, "database error committing receipt transaction"),
@@ -260,11 +261,11 @@ mod tests {
 
         assert_ne!(id_a, id_b, "payment ids should differ");
         assert_ne!(number_a, number_b, "receipt numbers should differ");
-        assert!(
-            number_b.parse::<i64>().expect("numeric receipt")
-                > number_a.parse::<i64>().expect("numeric receipt"),
-            "receipt numbers should be sequential"
-        );
+        // Either payment may take the write lock first; the two numbers must
+        // still be consecutive.
+        let a = number_a.parse::<i64>().expect("numeric receipt");
+        let b = number_b.parse::<i64>().expect("numeric receipt");
+        assert_eq!(a.abs_diff(b), 1, "receipt numbers should be sequential");
     }
 
     #[tokio::test]

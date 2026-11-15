@@ -37,6 +37,7 @@ impl DbPool {
             .await
             .inspect_err(|e| error!(error = %e, "database error starting transaction"))?;
         let id = insert_room(&mut tx, &room).await?;
+        crate::sync::enqueue_room(&mut tx, room.hostel_id, id).await?;
         tx.commit()
             .await
             .inspect_err(|e| error!(error = %e, "database error committing room"))?;

@@ -1,19 +1,26 @@
 //! Push the local outbox and pull server rows back into SQLite.
 //!
-//! The refresh token lives in the OS keyring. A mode `0600` file under the
-//! app data directory is the fallback when the keyring is not available.
+//! The device refresh token is a file in the app data directory readable only
+//! by the signed-in user (mode `0600` on Unix; the per-user profile ACL on
+//! Windows), like an SSH key. It only authorizes sync for this one device and
+//! can be revoked on the server.
 
 use std::time::Duration;
 
-use db::DbPool;
-use protocol::{CommandEnvelope, Entity, SyncCommand};
+use protocol::{
+    AckStatus, AuthResponse, CommandEnvelope, EnrollRequest, EnrollResponse, PullRequest,
+    PullResponse, PushRequest, PushResponse, SignInRequest, SignUpRequest,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::paths::AppPaths;
 use crate::Desk;
 
-const KEYRING_SERVICE: &str = "com.hosteldesk.app";
-const KEYRING_USER: &str = "device-refresh";
+/// The hosted sync API (Cloudflare Worker). Overridable in Settings → Cloud.
+pub const DEFAULT_SERVER_URL: &str = "https://hosteldesk-sync.ableabenaitwe.workers.dev";
+
+/// Commands per push request; the server accepts at most `server::MAX_PUSH_COMMANDS`.
+const PUSH_CHUNK: usize = 200;
 
 /// What one sync pass changed.
 #[derive(Debug, Clone, Default)]
@@ -22,8 +29,8 @@ pub struct SyncReport {
     pub pushed: usize,
     /// Rows applied from the pull.
     pub applied: usize,
-    /// Commands the server rejected.
-    pub conflicts: usize,
+    /// Commands rejected or accepted with a warning.
+    pub issues: usize,
     /// Short text for the status bar. Empty when nothing happened.
     pub summary: String,
 }
@@ -39,8 +46,8 @@ pub struct CloudStatus {
     pub cursor: String,
     /// Commands still waiting to push.
     pub pending: i64,
-    /// Rejected commands, newest last.
-    pub conflicts: Vec<String>,
+    /// Rejected changes and warnings, newest first.
+    pub issues: Vec<db::SyncIssue>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,40 +59,15 @@ struct CloudConfig {
     hostel_public_ids: Vec<String>,
 }
 
-#[derive(Deserialize)]
-struct AuthBody {
-    access_token: String,
-}
-
-#[derive(Deserialize)]
-struct EnrollBody {
-    device_id: String,
-    device_prefix: String,
-    refresh_token: String,
-    #[serde(default)]
-    hostel_public_ids: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct PushBody {
-    results: Vec<PushAck>,
-}
-
-#[derive(Deserialize)]
-struct PushAck {
-    status: String,
-    message: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct PullBody {
-    cursor: i64,
-    changes: Vec<Entity>,
-    lease: Option<String>,
-}
-
 impl Desk {
     /// Create or sign in to an organization, enroll this computer, and store the token.
+    ///
+    /// The first desk of an organization uploads its existing hostel. A desk
+    /// joining an organization that already has a hostel must be a fresh
+    /// install; merging two different hostels is refused.
+    ///
+    /// Signing in never unlocks the desk by itself: only a verified license
+    /// or a lease the server signs for a licensed organization does.
     pub async fn connect_cloud(
         &self,
         server_url: &str,
@@ -94,39 +76,52 @@ impl Desk {
         create_account: bool,
         organization_name: &str,
     ) -> Result<(), String> {
-        let server_url = server_url.trim().trim_end_matches('/').to_string();
-        if server_url.is_empty() {
-            return Err("server address is required".to_string());
-        }
+        let server_url = normalize_server_url(server_url)?;
         let client = http_client()?;
-        let auth: AuthBody = if create_account {
-            post_json(
-                &client,
-                &format!("{server_url}/v1/sign-up"),
-                None,
-                &serde_json::json!({
-                    "organization_name": organization_name,
-                    "email": email,
-                    "password": password,
-                }),
-            )
-            .await?
+        let auth: AuthResponse = if create_account {
+            let body = SignUpRequest {
+                organization_name: organization_name.trim().to_string(),
+                email: email.trim().to_string(),
+                password: password.to_string(),
+            };
+            post_json(&client, &format!("{server_url}/v1/sign-up"), None, &body).await?
         } else {
-            post_json(
-                &client,
-                &format!("{server_url}/v1/sign-in"),
-                None,
-                &serde_json::json!({ "email": email, "password": password }),
-            )
-            .await?
+            let body = SignInRequest {
+                email: email.trim().to_string(),
+                password: password.to_string(),
+            };
+            post_json(&client, &format!("{server_url}/v1/sign-in"), None, &body).await?
         };
-        let enrolled: EnrollBody = post_json(
+        let enrolled: EnrollResponse = post_json(
             &client,
             &format!("{server_url}/v1/devices"),
             Some(&auth.access_token),
-            &serde_json::json!({ "device_name": "HostelDesk" }),
+            &EnrollRequest {
+                device_name: device_name(),
+            },
         )
         .await?;
+
+        let local = self.db.primary_hostel_id().await.map_err(err)?;
+        let mut snapshot = enrolled.hostel_public_ids.is_empty();
+        if let Some(hostel_id) = local {
+            let public_id = self.db.hostel_public_id(hostel_id).await.map_err(err)?;
+            let known = public_id
+                .as_ref()
+                .is_some_and(|id| enrolled.hostel_public_ids.contains(id));
+            if !snapshot && !known {
+                return Err(
+                    "This organization already has a hostel in the cloud, and this \
+                     computer holds a different one. To add this computer to that \
+                     organization, install HostelDesk fresh and sign in before setting \
+                     up a hostel. To put this hostel in the cloud, create a new \
+                     organization instead."
+                        .to_string(),
+                );
+            }
+            snapshot = snapshot && !known;
+        }
+
         store_token(&self.paths, &enrolled.refresh_token)?;
         write_config(
             &self.paths,
@@ -137,23 +132,18 @@ impl Desk {
                 hostel_public_ids: enrolled.hostel_public_ids,
             },
         )?;
-        if let Some(hostel_id) = self
-            .db
-            .primary_hostel_id()
-            .await
-            .map_err(|e| e.to_string())?
-        {
+        if let Some(hostel_id) = local {
             self.db
-                .save_device(
+                .link_device(
                     hostel_id,
                     &server_url,
                     &enrolled.device_id,
                     &enrolled.device_prefix,
+                    snapshot,
                 )
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(err)?;
         }
-        self.grant_online_access();
         Ok(())
     }
 
@@ -162,292 +152,250 @@ impl Desk {
         read_config(&self.paths).is_some() && read_token(&self.paths).is_some()
     }
 
-    /// Push pending commands, then pull and apply. No-ops when the desk is not enrolled.
+    /// Push pending commands, then pull every new page. No-op when not enrolled.
     pub async fn sync_once(&self) -> Result<SyncReport, String> {
-        let Some(config) = read_config(&self.paths) else {
-            return Ok(SyncReport::default());
-        };
-        let Some(token) = read_token(&self.paths) else {
+        let (Some(config), Some(token)) = (read_config(&self.paths), read_token(&self.paths))
+        else {
             return Ok(SyncReport::default());
         };
         let client = http_client()?;
-        let mut hostel_id = self
-            .db
-            .primary_hostel_id()
-            .await
-            .map_err(|e| e.to_string())?;
-        let mut cursor = if let Some(id) = hostel_id {
-            self.db
-                .save_device(
-                    id,
-                    &config.server_url,
-                    &config.device_id,
-                    &config.device_prefix,
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-            self.db
-                .sync_state(id)
-                .await
-                .map_err(|e| e.to_string())?
-                .and_then(|row| row.cursor.parse::<i64>().ok())
-                .unwrap_or(0)
-        } else {
-            0
-        };
         let mut report = SyncReport::default();
 
-        if hostel_id.is_none() && config.hostel_public_ids.is_empty() {
-            return Ok(report);
-        }
-        if hostel_id.is_none() || cursor == 0 {
-            cursor = pull_apply(self, &client, &config, &token, cursor, &mut report).await?;
-            hostel_id = self
-                .db
-                .primary_hostel_id()
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-        let Some(hostel_id) = hostel_id else {
-            return Ok(report);
-        };
-        self.db
-            .save_device(
-                hostel_id,
-                &config.server_url,
-                &config.device_id,
-                &config.device_prefix,
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-
-        let pending = self
-            .db
-            .pending_sync(hostel_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        if !pending.is_empty() {
-            let hostel_public_id = self
-                .db
-                .hostel_public_id(hostel_id)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "hostel has no public id".to_string())?;
-            let commands: Vec<CommandEnvelope> = pending
-                .iter()
-                .map(|row| CommandEnvelope {
-                    idempotency_key: row.idempotency_key.clone(),
-                    command: row.command.clone(),
-                })
-                .collect();
-            let pushed: PushBody = post_json(
-                &client,
-                &format!("{}/v1/push", config.server_url),
-                Some(&token),
-                &serde_json::json!({
-                    "hostel_public_id": hostel_public_id,
-                    "commands": commands,
-                }),
-            )
-            .await?;
-            if pushed.results.len() != pending.len() {
-                return Err("server ack count did not match the outbox".to_string());
+        match self.db.primary_hostel_id().await.map_err(err)? {
+            Some(hostel_id) => {
+                let public_id = self
+                    .db
+                    .hostel_public_id(hostel_id)
+                    .await
+                    .map_err(err)?
+                    .ok_or("hostel has no public id")?;
+                // Links a hostel created after enrolling (onboarding after
+                // cloud sign-in); a no-op once linked to this device.
+                let snapshot = !config.hostel_public_ids.contains(&public_id);
+                self.db
+                    .link_device(
+                        hostel_id,
+                        &config.server_url,
+                        &config.device_id,
+                        &config.device_prefix,
+                        snapshot,
+                    )
+                    .await
+                    .map_err(err)?;
+                self.push_pending(&client, &config, &token, hostel_id, &public_id, &mut report)
+                    .await?;
+                self.pull_all(&client, &config, &token, &public_id, &mut report)
+                    .await?;
             }
-            for (row, ack) in pending.iter().zip(pushed.results.iter()) {
-                if ack.status == "acked" {
-                    report.pushed += 1;
+            None => {
+                // A fresh desk joining an organization: download its hostel.
+                let Some(public_id) = config.hostel_public_ids.first() else {
+                    return Ok(report);
+                };
+                if let Some(hostel_id) = self
+                    .pull_all(&client, &config, &token, public_id, &mut report)
+                    .await?
+                {
                     self.db
-                        .set_outbox_status(row.id, "acked", None)
+                        .link_device(
+                            hostel_id,
+                            &config.server_url,
+                            &config.device_id,
+                            &config.device_prefix,
+                            false,
+                        )
                         .await
-                        .map_err(|e| e.to_string())?;
-                } else {
-                    report.conflicts += 1;
-                    self.db
-                        .set_outbox_status(row.id, "conflict", ack.message.as_deref())
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    rollback_conflict(&self.db, hostel_id, &row.command).await?;
+                        .map_err(err)?;
                 }
             }
         }
 
-        pull_apply(self, &client, &config, &token, cursor, &mut report).await?;
-        if report.pushed > 0 || report.applied > 0 || report.conflicts > 0 {
+        if report.pushed > 0 || report.applied > 0 || report.issues > 0 {
             report.summary = format!(
-                "Synced {} sent, {} received, {} conflicts",
-                report.pushed, report.applied, report.conflicts
+                "Synced: {} sent, {} received, {} need attention",
+                report.pushed, report.applied, report.issues
             );
         }
         Ok(report)
     }
 
-    /// Registration and outbox counts for Settings.
-    pub async fn cloud_status(&self) -> Result<CloudStatus, String> {
-        let config = read_config(&self.paths);
-        let Some(hostel_id) = self
-            .db
-            .primary_hostel_id()
-            .await
-            .map_err(|e| e.to_string())?
-        else {
-            return Ok(CloudStatus {
-                server_url: config.as_ref().map(|config| config.server_url.clone()),
-                device_prefix: config.as_ref().map(|config| config.device_prefix.clone()),
-                cursor: "0".to_string(),
-                pending: 0,
-                conflicts: Vec::new(),
-            });
+    async fn push_pending(
+        &self,
+        client: &reqwest::Client,
+        config: &CloudConfig,
+        token: &str,
+        hostel_id: i64,
+        hostel_public_id: &str,
+        report: &mut SyncReport,
+    ) -> Result<(), String> {
+        let pending = self.db.pending_sync(hostel_id).await.map_err(err)?;
+        for chunk in pending.chunks(PUSH_CHUNK) {
+            let request = PushRequest {
+                hostel_public_id: hostel_public_id.to_string(),
+                commands: chunk
+                    .iter()
+                    .map(|row| CommandEnvelope {
+                        idempotency_key: row.idempotency_key.clone(),
+                        command: row.command.clone(),
+                    })
+                    .collect(),
+            };
+            let pushed: PushResponse = post_json(
+                client,
+                &format!("{}/v1/push", config.server_url),
+                Some(token),
+                &request,
+            )
+            .await?;
+            if pushed.results.len() != chunk.len() {
+                return Err("server ack count did not match the outbox".to_string());
+            }
+            let acks: Vec<db::OutboxAck> = chunk
+                .iter()
+                .zip(pushed.results)
+                .map(|(row, ack)| (row.id, ack.status, ack.message))
+                .collect();
+            for (_, status, message) in &acks {
+                if *status == AckStatus::Acked {
+                    report.pushed += 1;
+                }
+                if message.is_some() {
+                    report.issues += 1;
+                }
+            }
+            self.db.record_acks(&acks).await.map_err(err)?;
+        }
+        Ok(())
+    }
+
+    /// Pull pages until the server has nothing more. Returns the local id of
+    /// the hostel once it exists on this desk.
+    async fn pull_all(
+        &self,
+        client: &reqwest::Client,
+        config: &CloudConfig,
+        token: &str,
+        hostel_public_id: &str,
+        report: &mut SyncReport,
+    ) -> Result<Option<i64>, String> {
+        let mut hostel_id = match self.db.primary_hostel_id().await.map_err(err)? {
+            Some(id)
+                if self.db.hostel_public_id(id).await.map_err(err)?.as_deref()
+                    == Some(hostel_public_id) =>
+            {
+                Some(id)
+            }
+            _ => None,
         };
-        let state = self
-            .db
-            .sync_state(hostel_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        let conflicts = self
-            .db
-            .sync_conflicts(hostel_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(CloudStatus {
-            server_url: state
-                .as_ref()
-                .and_then(|row| row.server_url.clone())
-                .or_else(|| config.as_ref().map(|config| config.server_url.clone())),
-            device_prefix: state
-                .as_ref()
-                .and_then(|row| row.device_prefix.clone())
-                .or_else(|| config.as_ref().map(|config| config.device_prefix.clone())),
-            cursor: state
-                .as_ref()
-                .map(|row| row.cursor.clone())
-                .unwrap_or_else(|| "0".to_string()),
-            pending: self
+        let mut cursor = match hostel_id {
+            Some(id) => self
                 .db
-                .pending_sync_count(hostel_id)
+                .sync_state(id)
                 .await
-                .map_err(|e| e.to_string())?,
-            conflicts: conflicts
-                .into_iter()
-                .map(|conflict| {
-                    if conflict.message.is_empty() {
-                        conflict.idempotency_key
-                    } else {
-                        conflict.message
-                    }
-                })
-                .collect(),
-        })
-    }
-
-    /// Let this process use the desk after an online sign-in, before a lease file exists.
-    fn grant_online_access(&self) {
-        let expiry = chrono::Utc::now().date_naive() + chrono::Duration::days(1);
-        self.license.set(license::LicensePayload {
-            hostel_name: "HostelDesk".to_string(),
-            expiry_date: expiry,
-            tier: "sync".to_string(),
-        });
-    }
-}
-
-async fn pull_apply(
-    desk: &Desk,
-    client: &reqwest::Client,
-    config: &CloudConfig,
-    token: &str,
-    cursor: i64,
-    report: &mut SyncReport,
-) -> Result<i64, String> {
-    let local_id = desk
-        .db
-        .primary_hostel_id()
-        .await
-        .map_err(|e| e.to_string())?;
-    let local_public_id = match local_id {
-        Some(id) => desk
-            .db
-            .hostel_public_id(id)
-            .await
-            .map_err(|e| e.to_string())?,
-        None => None,
-    };
-    let hostel_public_id = config
-        .hostel_public_ids
-        .first()
-        .cloned()
-        .or(local_public_id)
-        .ok_or_else(|| "no hostel to pull".to_string())?;
-    let pulled: PullBody = post_json(
-        client,
-        &format!("{}/v1/pull", config.server_url),
-        Some(token),
-        &serde_json::json!({
-            "hostel_public_id": hostel_public_id,
-            "cursor": cursor,
-        }),
-    )
-    .await?;
-    if !pulled.changes.is_empty() {
-        desk.db
-            .apply_remote_entities(&pulled.changes)
-            .await
-            .map_err(|e| e.to_string())?;
-        report.applied += pulled.changes.len();
-    }
-    if let Some(hostel_id) = desk
-        .db
-        .primary_hostel_id()
-        .await
-        .map_err(|e| e.to_string())?
-    {
-        desk.db
-            .save_sync_cursor(hostel_id, pulled.cursor)
-            .await
-            .map_err(|e| e.to_string())?;
-        if let Some(lease) = pulled.lease.as_deref() {
-            desk.db
-                .save_lease(hostel_id, lease)
+                .map_err(err)?
+                .and_then(|state| state.cursor.parse::<i64>().ok())
+                .unwrap_or(0),
+            None => 0,
+        };
+        loop {
+            let pulled: PullResponse = post_json(
+                client,
+                &format!("{}/v1/pull", config.server_url),
+                Some(token),
+                &PullRequest {
+                    hostel_public_id: hostel_public_id.to_string(),
+                    cursor,
+                },
+            )
+            .await?;
+            hostel_id = self
+                .db
+                .apply_remote_page(hostel_public_id, &pulled.changes, pulled.cursor)
                 .await
-                .map_err(|e| e.to_string())?;
-            if license::verify_license(lease).is_ok() {
-                let _ = desk.activate_license_text(lease);
+                .map_err(err)?
+                .or(hostel_id);
+            report.applied += pulled.changes.len();
+            if let (Some(lease), Some(id)) = (pulled.lease.as_deref(), hostel_id) {
+                self.db.save_lease(id, lease).await.map_err(err)?;
+                self.adopt_lease(lease);
+            }
+            cursor = pulled.cursor;
+            if !pulled.has_more {
+                return Ok(hostel_id);
             }
         }
     }
-    Ok(pulled.cursor)
+
+    /// Use a server lease when it verifies and outlasts the license in force,
+    /// so a short lease never replaces a longer license file.
+    fn adopt_lease(&self, lease: &str) {
+        let Ok(payload) = license::verify_license(lease) else {
+            return;
+        };
+        let current = self.license.get();
+        if current.is_none_or(|current| current.expiry_date < payload.expiry_date) {
+            if let Err(error) = self.activate_license_text(lease) {
+                tracing::warn!(%error, "could not store cloud lease");
+            }
+        }
+    }
+
+    /// Registration, outbox count, and issues for Settings.
+    pub async fn cloud_status(&self) -> Result<CloudStatus, String> {
+        let config = read_config(&self.paths);
+        let mut status = CloudStatus {
+            server_url: config.as_ref().map(|config| config.server_url.clone()),
+            device_prefix: config.as_ref().map(|config| config.device_prefix.clone()),
+            cursor: "0".to_string(),
+            ..CloudStatus::default()
+        };
+        let Some(hostel_id) = self.db.primary_hostel_id().await.map_err(err)? else {
+            return Ok(status);
+        };
+        if let Some(state) = self.db.sync_state(hostel_id).await.map_err(err)? {
+            status.cursor = state.cursor;
+            status.server_url = state.server_url.or(status.server_url);
+            status.device_prefix = state.device_prefix.or(status.device_prefix);
+        }
+        status.pending = self.db.pending_sync_count(hostel_id).await.map_err(err)?;
+        status.issues = self.db.sync_issues(hostel_id).await.map_err(err)?;
+        Ok(status)
+    }
 }
 
-async fn rollback_conflict(
-    pool: &DbPool,
-    hostel_id: i64,
-    command: &SyncCommand,
-) -> Result<(), String> {
-    let SyncCommand::CheckIn {
-        allocation_public_id,
-        ..
-    } = command
-    else {
-        return Ok(());
+fn err(error: impl std::fmt::Display) -> String {
+    error.to_string()
+}
+
+/// Trim the address, fall back to [`DEFAULT_SERVER_URL`], and require HTTPS
+/// (plain HTTP only to this machine in debug builds, for tests).
+fn normalize_server_url(server_url: &str) -> Result<String, String> {
+    let url = server_url.trim().trim_end_matches('/');
+    let url = if url.is_empty() {
+        DEFAULT_SERVER_URL
+    } else {
+        url
     };
-    let Some(allocation_id) = pool
-        .allocation_id_by_public_id(hostel_id, allocation_public_id)
-        .await
-        .map_err(|e| e.to_string())?
-    else {
-        return Ok(());
-    };
-    match pool.check_out(hostel_id, allocation_id).await {
-        Ok(()) => Ok(()),
-        Err(error) if error.to_string().contains("not active") => Ok(()),
-        Err(error) => Err(error.to_string()),
+    let local_http = cfg!(debug_assertions)
+        && (url.starts_with("http://127.0.0.1") || url.starts_with("http://localhost"));
+    if url.starts_with("https://") || local_http {
+        Ok(url.to_string())
+    } else {
+        Err("The sync server address must start with https://".to_string())
     }
+}
+
+fn device_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "HostelDesk".to_string())
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
-        .map_err(|e| e.to_string())
+        .map_err(err)
 }
 
 async fn post_json<T: for<'de> Deserialize<'de>>(
@@ -460,19 +408,19 @@ async fn post_json<T: for<'de> Deserialize<'de>>(
     if let Some(token) = bearer {
         request = request.bearer_auth(token);
     }
-    let response = request.send().await.map_err(|e| e.to_string())?;
+    let response = request.send().await.map_err(err)?;
     let status = response.status();
     if !status.is_success() {
         let text = response.text().await.unwrap_or_default();
         return Err(format!("server returned {status}: {text}"));
     }
-    response.json().await.map_err(|e| e.to_string())
+    response.json().await.map_err(err)
 }
 
 fn write_config(paths: &AppPaths, config: &CloudConfig) -> Result<(), String> {
-    std::fs::create_dir_all(&paths.data_dir).map_err(|e| e.to_string())?;
-    let text = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
-    std::fs::write(paths.cloud_config_path(), text).map_err(|e| e.to_string())
+    std::fs::create_dir_all(&paths.data_dir).map_err(err)?;
+    let text = serde_json::to_string_pretty(config).map_err(err)?;
+    std::fs::write(paths.cloud_config_path(), text).map_err(err)
 }
 
 fn read_config(paths: &AppPaths) -> Option<CloudConfig> {
@@ -481,22 +429,10 @@ fn read_config(paths: &AppPaths) -> Option<CloudConfig> {
 }
 
 fn store_token(paths: &AppPaths, token: &str) -> Result<(), String> {
-    std::fs::create_dir_all(&paths.data_dir).map_err(|e| e.to_string())?;
-    write_token_file(paths, token)?;
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
-        let _ = entry.set_password(token);
-    }
-    Ok(())
+    write_token_file(paths, token)
 }
 
 fn read_token(paths: &AppPaths) -> Option<String> {
-    if let Ok(entry) = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER) {
-        if let Ok(token) = entry.get_password() {
-            if !token.is_empty() {
-                return Some(token);
-            }
-        }
-    }
     std::fs::read_to_string(paths.device_token_path())
         .ok()
         .map(|token| token.trim().to_string())
@@ -505,6 +441,8 @@ fn read_token(paths: &AppPaths) -> Option<String> {
 
 fn write_token_file(paths: &AppPaths, token: &str) -> Result<(), String> {
     use std::io::Write;
+    std::fs::create_dir_all(&paths.data_dir).map_err(err)?;
+    let path = paths.device_token_path();
     let mut options = std::fs::OpenOptions::new();
     options.create(true).write(true).truncate(true);
     #[cfg(unix)]
@@ -512,20 +450,22 @@ fn write_token_file(paths: &AppPaths, token: &str) -> Result<(), String> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options
-        .open(paths.device_token_path())
-        .map_err(|e| e.to_string())?;
-    file.write_all(token.as_bytes())
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    let mut file = options.open(&path).map_err(err)?;
+    // `mode` applies only on create; tighten a file that already existed.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).map_err(err)?;
+    }
+    file.write_all(token.as_bytes()).map_err(err)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::{AuthState, LicenseState};
-    use crate::Desk;
-    use db::{DbPool, NewCheckIn, NewHostel, NewRoom};
+    use db::{DbPool, NewCheckIn, NewHostel, NewPayment, NewRoom};
+    use std::sync::Arc;
 
     async fn memory_server() -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -533,7 +473,7 @@ mod tests {
             .expect("bind");
         let addr = listener.local_addr().expect("addr");
         tokio::spawn(async move {
-            let _ = server::serve_memory(listener).await;
+            let _ = server::serve_memory(listener, Arc::new(server::MemoryStore::new())).await;
         });
         format!("http://{addr}")
     }
@@ -545,15 +485,39 @@ mod tests {
         Desk::from_parts(db, AuthState::new(), LicenseState::default(), paths)
     }
 
-    #[tokio::test]
-    async fn second_desk_pulls_a_room_and_a_rejected_check_in_is_rolled_back() {
-        let url = memory_server().await;
-        let root_a = tempfile::tempdir().expect("temp");
-        let desk_a = desk_at(root_a.path()).await;
-        desk_a
-            .connect_cloud(&url, "a@b.co", "secret-pass", true, "North")
+    fn stay(hostel_id: i64, room_id: i64, name: &str) -> NewCheckIn {
+        NewCheckIn {
+            hostel_id,
+            room_id,
+            resident_id: None,
+            full_name: Some(name.into()),
+            phone: None,
+            email: None,
+            id_number: None,
+            next_of_kin: None,
+            next_of_kin_phone: None,
+            photo_path: None,
+            rate_agreed: "100".into(),
+            term: "semester_1".into(),
+            academic_year: "2026/2027".into(),
+        }
+    }
+
+    async fn scalar(desk: &Desk, sql: &str) -> String {
+        sqlx::query_scalar(sql)
+            .fetch_one(&desk.db.inner)
             .await
-            .expect("sign up");
+            .expect(sql)
+    }
+
+    /// The upgrade path end to end: a desk with v1-style history enrolls and
+    /// uploads it, a fresh desk joins and receives it with original dates and
+    /// receipt numbers, and an overbooked bed is flagged instead of undone.
+    #[tokio::test]
+    async fn existing_hostel_uploads_fresh_desk_joins_and_overbooking_is_flagged() {
+        let url = memory_server().await;
+        let root_a = tempfile::tempdir().expect("temp a");
+        let desk_a = desk_at(root_a.path()).await;
         let hostel = desk_a
             .db
             .create_hostel(NewHostel {
@@ -565,11 +529,6 @@ mod tests {
             })
             .await
             .expect("hostel");
-        desk_a
-            .db
-            .enqueue_hostel(hostel.id)
-            .await
-            .expect("queue hostel");
         let room_id = desk_a
             .db
             .add_room(NewRoom {
@@ -583,113 +542,137 @@ mod tests {
             })
             .await
             .expect("room");
+        let first_stay = desk_a
+            .db
+            .check_in(stay(hostel.id, room_id, "Ada"))
+            .await
+            .expect("check in");
+        let resident_id: i64 = sqlx::query_scalar("SELECT resident_id FROM allocations")
+            .fetch_one(&desk_a.db.inner)
+            .await
+            .expect("resident");
         desk_a
             .db
-            .enqueue_room(hostel.id, room_id)
+            .record_payment_and_receipt(NewPayment {
+                hostel_id: hostel.id,
+                allocation_id: first_stay,
+                resident_id,
+                amount: "60".into(),
+                payment_method: "cash".into(),
+                period_start: None,
+                period_end: None,
+                notes: None,
+            })
             .await
-            .expect("queue room");
+            .expect("pay");
+        sqlx::query("UPDATE payments SET payment_date = '2026-09-01T08:00:00Z'")
+            .execute(&desk_a.db.inner)
+            .await
+            .expect("backdate");
+        desk_a
+            .db
+            .check_out(hostel.id, first_stay)
+            .await
+            .expect("out");
+        assert_eq!(
+            desk_a.db.pending_sync_count(hostel.id).await.unwrap(),
+            0,
+            "nothing queues before the desk enrolls"
+        );
+
+        desk_a
+            .connect_cloud(&url, "a@b.co", "secret-pass", true, "North")
+            .await
+            .expect("sign up");
         let report = desk_a.sync_once().await.expect("sync a");
-        assert_eq!(report.conflicts, 0);
-        assert!(report.pushed >= 2);
+        assert_eq!(report.issues, 0, "{report:?}");
+        assert!(report.pushed >= 5, "{report:?}");
+        assert_eq!(desk_a.db.pending_sync_count(hostel.id).await.unwrap(), 0);
+        assert!(
+            desk_a.license_status().is_none(),
+            "signing in to an unlicensed organization must not unlock the desk"
+        );
+
+        // A desk that already has its own hostel may not join this organization.
+        let root_c = tempfile::tempdir().expect("temp c");
+        let desk_c = desk_at(root_c.path()).await;
+        desk_c
+            .db
+            .create_hostel(NewHostel {
+                name: "Other".into(),
+                address: None,
+                phone: None,
+                currency: None,
+                branding_logo_path: None,
+            })
+            .await
+            .expect("other hostel");
+        let refused = desk_c
+            .connect_cloud(&url, "a@b.co", "secret-pass", false, "")
+            .await
+            .expect_err("different hostel must be refused");
+        assert!(refused.contains("fresh"), "{refused}");
 
         let root_b = tempfile::tempdir().expect("temp b");
         let desk_b = desk_at(root_b.path()).await;
         desk_b
-            .connect_cloud(&url, "a@b.co", "secret-pass", false, "North")
+            .connect_cloud(&url, "a@b.co", "secret-pass", false, "")
             .await
             .expect("sign in");
-        let pulled = desk_b.sync_once().await.expect("sync b");
-        assert!(
-            pulled.applied >= 2,
-            "second desk should receive hostel and room"
+        desk_b.sync_once().await.expect("sync b");
+        assert_eq!(scalar(&desk_b, "SELECT name FROM hostels").await, "North");
+        assert_eq!(
+            scalar(&desk_b, "SELECT payment_date FROM payments").await,
+            "2026-09-01T08:00:00Z"
         );
-        let rooms = desk_b
-            .db
-            .get_rooms(
-                desk_b
-                    .db
-                    .primary_hostel_id()
-                    .await
-                    .expect("id")
-                    .expect("hostel"),
-            )
-            .await
-            .expect("rooms");
-        assert_eq!(rooms.len(), 1);
-        assert_eq!(rooms[0].room_number, "1");
+        assert_eq!(
+            scalar(&desk_b, "SELECT receipt_number FROM receipts").await,
+            scalar(&desk_a, "SELECT receipt_number FROM receipts").await
+        );
+        assert_eq!(
+            scalar(&desk_b, "SELECT status FROM allocations").await,
+            "checked_out"
+        );
 
-        let hostel_a = desk_a
-            .db
-            .primary_hostel_id()
-            .await
-            .expect("id")
-            .expect("hostel");
-        let hostel_b = desk_b
-            .db
-            .primary_hostel_id()
-            .await
-            .expect("id")
-            .expect("hostel");
-        let room_a = desk_a.db.get_rooms(hostel_a).await.expect("rooms")[0].id;
-        let room_b = rooms[0].id;
-        let stay_a = desk_a
-            .db
-            .check_in(NewCheckIn {
-                hostel_id: hostel_a,
-                room_id: room_a,
-                resident_id: None,
-                full_name: Some("Ada".into()),
-                phone: None,
-                email: None,
-                id_number: None,
-                next_of_kin: None,
-                next_of_kin_phone: None,
-                photo_path: None,
-                rate_agreed: "100".into(),
-                term: "semester_1".into(),
-                academic_year: "2026/2027".into(),
-            })
-            .await
-            .expect("check in a");
+        // Both desks check someone into the one free bed while offline.
+        let hostel_b = desk_b.db.primary_hostel_id().await.unwrap().unwrap();
+        let room_b = desk_b.db.get_rooms(hostel_b).await.unwrap()[0].id;
         desk_a
             .db
-            .enqueue_check_in(hostel_a, stay_a)
+            .check_in(stay(hostel.id, room_id, "Grace"))
             .await
-            .expect("queue a");
-        let stay_b = desk_b
-            .db
-            .check_in(NewCheckIn {
-                hostel_id: hostel_b,
-                room_id: room_b,
-                resident_id: None,
-                full_name: Some("Grace".into()),
-                phone: None,
-                email: None,
-                id_number: None,
-                next_of_kin: None,
-                next_of_kin_phone: None,
-                photo_path: None,
-                rate_agreed: "100".into(),
-                term: "semester_1".into(),
-                academic_year: "2026/2027".into(),
-            })
-            .await
-            .expect("check in b");
+            .expect("a books");
         desk_b
             .db
-            .enqueue_check_in(hostel_b, stay_b)
+            .check_in(stay(hostel_b, room_b, "Linus"))
             .await
-            .expect("queue b");
+            .expect("b books");
+        assert_eq!(desk_a.sync_once().await.expect("a").issues, 0);
+        let second = desk_b.sync_once().await.expect("b");
+        assert_eq!(second.issues, 1, "{second:?}");
+        let issues = desk_b.cloud_status().await.unwrap().issues;
+        assert!(!issues[0].rejected && issues[0].message.contains("over capacity"));
+        desk_a.sync_once().await.expect("a catches up");
+        for desk in [&desk_a, &desk_b] {
+            assert_eq!(
+                scalar(
+                    desk,
+                    "SELECT CAST(COUNT(*) AS TEXT) FROM allocations WHERE status = 'active'"
+                )
+                .await,
+                "2",
+                "neither stay is rolled back"
+            );
+        }
+    }
 
-        let synced_a = desk_a.sync_once().await.expect("push a stay");
-        assert_eq!(synced_a.conflicts, 0);
-        let synced_b = desk_b.sync_once().await.expect("push b stay");
-        assert_eq!(synced_b.conflicts, 1);
-        let status: String = sqlx::query_scalar("SELECT status FROM allocations WHERE id = ?1")
-            .bind(stay_b)
-            .fetch_one(&desk_b.db.inner)
-            .await
-            .expect("status");
-        assert_eq!(status, "checked_out");
+    #[test]
+    fn server_address_must_be_https() {
+        assert!(normalize_server_url("http://sync.example.com").is_err());
+        assert_eq!(
+            normalize_server_url(" https://sync.example.com/ ").unwrap(),
+            "https://sync.example.com"
+        );
+        assert_eq!(normalize_server_url("").unwrap(), DEFAULT_SERVER_URL);
     }
 }

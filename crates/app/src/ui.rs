@@ -309,7 +309,18 @@ impl HostelApp {
                 ),
                 None => "This computer is not enrolled.".to_string(),
             };
-            self.cloud_conflicts = cloud.conflicts;
+            self.cloud_conflicts = cloud
+                .issues
+                .into_iter()
+                .map(|issue| {
+                    let kind = if issue.rejected {
+                        "Rejected"
+                    } else {
+                        "Warning"
+                    };
+                    format!("{kind} · {} · {}", issue.command_type, issue.message)
+                })
+                .collect();
         }
         self.loaded = true;
     }
@@ -907,7 +918,7 @@ fn cloud(app: &mut HostelApp, ui: &mut egui::Ui) {
     }
     if !app.cloud_conflicts.is_empty() {
         ui.separator();
-        ui.label("Conflicts");
+        ui.label("Needs attention");
         for conflict in &app.cloud_conflicts {
             ui.label(conflict);
         }
