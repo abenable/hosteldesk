@@ -17,18 +17,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
 
-      - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: frontend/package-lock.json
-
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
           toolchain: '1.94.0'
-          components: clippy
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
 
       - name: Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -38,25 +32,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf
+            libxkbcommon-dev \
+            libxcb1-dev \
+            libx11-dev \
+            libwayland-dev \
+            libssl-dev
+
+      - name: cargo fmt
+        run: cargo fmt --all --check
 
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: cargo clippy (sync Worker, wasm32)
+        run: cargo clippy -p server --target wasm32-unknown-unknown -- -D warnings
+
       - name: cargo test
         run: cargo test --workspace
 
-      - name: Install frontend dependencies
-        working-directory: ./frontend
-        run: npm ci
-
-      - name: Lint frontend
-        working-directory: ./frontend
-        run: npm run lint
-
-      - name: Build frontend
-        working-directory: ./frontend
-        run: npm run build
+      - name: Windows installer script compiles
+        run: |
+          sudo apt-get install -y nsis
+          mkdir -p target/release && : > target/release/hosteldesk.exe
+          makensis -NOCD -DVERSION=0.0.0 -DOUTFILE="$RUNNER_TEMP/installer-check.exe" packaging/windows/hosteldesk.nsi

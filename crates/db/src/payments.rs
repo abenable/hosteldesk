@@ -24,15 +24,38 @@ impl DbPool {
                 |e| error!(error = %e, "database error beginning receipt transaction"),
             )?;
 
-        let next_number: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(CAST(receipt_number AS INTEGER)), 0) + 1 FROM receipts WHERE hostel_id = ?1"
+        let prefixed: Option<(String, i64)> = sqlx::query_as(
+            r#"
+            SELECT device_prefix, next_receipt
+            FROM sync_state
+            WHERE hostel_id = ?1
+              AND device_prefix IS NOT NULL
+              AND device_prefix <> ''
+            "#,
         )
         .bind(payment.hostel_id)
-        .fetch_one(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await
-        .inspect_err(|e| error!(error = %e, hostel_id = payment.hostel_id, "database error allocating receipt number"))?;
+        .inspect_err(|e| error!(error = %e, hostel_id = payment.hostel_id, "database error reading receipt prefix"))?;
 
-        let receipt_number = next_number.to_string();
+        let receipt_number = if let Some((prefix, next_receipt)) = prefixed {
+            sqlx::query("UPDATE sync_state SET next_receipt = ?1, updated_at = CURRENT_TIMESTAMP WHERE hostel_id = ?2")
+                .bind(next_receipt + 1)
+                .bind(payment.hostel_id)
+                .execute(&mut *tx)
+                .await
+                .inspect_err(|e| error!(error = %e, hostel_id = payment.hostel_id, "database error advancing receipt sequence"))?;
+            format!("{prefix}-{next_receipt:04}")
+        } else {
+            let next_number: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(CAST(receipt_number AS INTEGER)), 0) + 1 FROM receipts WHERE hostel_id = ?1",
+            )
+            .bind(payment.hostel_id)
+            .fetch_one(&mut *tx)
+            .await
+            .inspect_err(|e| error!(error = %e, hostel_id = payment.hostel_id, "database error allocating receipt number"))?;
+            next_number.to_string()
+        };
 
         let payment_id = sqlx::query(
             r#"
@@ -63,6 +86,7 @@ impl DbPool {
         .execute(&mut *tx)
         .await
         .inspect_err(|e| error!(error = %e, payment_id, "database error inserting receipt"))?;
+        crate::sync::enqueue_payment(&mut tx, payment.hostel_id, payment_id).await?;
 
         tx.commit().await.inspect_err(
             |e| error!(error = %e, payment_id, "database error committing receipt transaction"),
@@ -128,7 +152,7 @@ impl DbPool {
             SELECT
                 p.id, p.resident_id, r.full_name AS resident_name,
                 p.allocation_id, rm.room_number, p.amount, p.payment_method,
-                p.payment_date, rc.receipt_number, p.notes
+                p.payment_date, rc.receipt_number, p.notes, rc.pdf_path
             FROM payments p
             JOIN residents r ON r.id = p.resident_id
             JOIN allocations a ON a.id = p.allocation_id
@@ -237,11 +261,11 @@ mod tests {
 
         assert_ne!(id_a, id_b, "payment ids should differ");
         assert_ne!(number_a, number_b, "receipt numbers should differ");
-        assert!(
-            number_b.parse::<i64>().expect("numeric receipt")
-                > number_a.parse::<i64>().expect("numeric receipt"),
-            "receipt numbers should be sequential"
-        );
+        // Either payment may take the write lock first; the two numbers must
+        // still be consecutive.
+        let a = number_a.parse::<i64>().expect("numeric receipt");
+        let b = number_b.parse::<i64>().expect("numeric receipt");
+        assert_eq!(a.abs_diff(b), 1, "receipt numbers should be sequential");
     }
 
     #[tokio::test]

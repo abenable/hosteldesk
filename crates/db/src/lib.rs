@@ -38,6 +38,7 @@ pub fn verify_password(password: &str, password_hash: &str) -> anyhow::Result<bo
 
 pub mod model;
 pub use model::*;
+pub use sync::{OutboxAck, PendingSync, SyncIssue, SyncState};
 
 mod allocations;
 mod dashboard;
@@ -47,6 +48,7 @@ mod preferences;
 mod residents;
 mod rooms;
 mod support;
+mod sync;
 mod users;
 
 #[cfg(test)]
@@ -162,5 +164,51 @@ mod tests {
             first_count, second_count,
             "second open should apply zero new migrations"
         );
+    }
+
+    /// A v1.1 database (every migration before sync) must keep its residents
+    /// visible after upgrading. `20261115000000` added `residents.hostel_id`
+    /// as `NOT NULL DEFAULT 0` and then backfilled only `IS NULL` rows.
+    #[tokio::test]
+    async fn v1_residents_keep_their_hostel_after_upgrade() {
+        use sqlx::migrate::Migrate;
+        let options = SqliteConnectOptions::from_str("sqlite::memory:")
+            .expect("url")
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .expect("pool");
+        let migrator = sqlx::migrate!("./migrations");
+        {
+            let mut conn = pool.acquire().await.expect("conn");
+            conn.ensure_migrations_table().await.expect("table");
+            for migration in migrator.iter().filter(|m| m.version < 20261115000000) {
+                conn.apply(migration).await.expect("v1 migration");
+            }
+            sqlx::raw_sql(
+                "INSERT INTO hostels (name) VALUES ('North');
+                 INSERT INTO rooms (hostel_id, room_number, semester_rate, recess_rate)
+                     VALUES (1, 'A01', '100', '50');
+                 INSERT INTO residents (full_name) VALUES ('Ada'), ('Never Stayed');
+                 INSERT INTO allocations (hostel_id, resident_id, room_id, rate_agreed, term, academic_year)
+                     VALUES (1, 1, 1, '100', 'semester_1', '2026/2027');",
+            )
+            .execute(&mut *conn)
+            .await
+            .expect("v1 data");
+        }
+        migrator.run(&pool).await.expect("upgrade");
+        let db = DbPool { inner: pool };
+        let mut names: Vec<String> = db
+            .list_residents(1)
+            .await
+            .expect("list")
+            .into_iter()
+            .map(|r| r.full_name)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["Ada", "Never Stayed"]);
     }
 }

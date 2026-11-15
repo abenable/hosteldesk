@@ -2,50 +2,61 @@
 
 ## Prerequisites
 
-- Rust (stable) with the MSVC toolchain on Windows — see `rust-toolchain.toml` for the exact version this repo builds with
-- Node.js `^20.19.0 || >=22.12.0` and npm (vite 8 and oxlint both require this range; Node 20.0–20.18 and 21.x will not work)
-- `cargo install tauri-cli --version "^2"`, so the `cargo tauri` subcommand used below exists
-- Linux only: WebKitGTK and related system packages:
+- Rust (stable) with the MSVC toolchain on Windows — see `rust-toolchain.toml` for the exact version and the `wasm32-unknown-unknown` target this repo builds with
+- For the sync Worker only: Node.js (for `npx wrangler`), `psql`, and Docker (a local Postgres)
+- Linux only: GTK and the X11/Wayland libraries eframe links against:
 
   ```sh
   sudo apt update
-  sudo apt install libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev \
-    build-essential curl wget libssl-dev libgtk-3-dev libayatana-appindicator3-dev \
-    librsvg2-dev patchelf
+  sudo apt install libgtk-3-dev libxkbcommon-dev libxcb1-dev libx11-dev libwayland-dev libssl-dev
   ```
 
 ## Run and build
 
 ```sh
-cd frontend && npm install && cd ..   # install frontend dependencies
-cargo tauri dev                        # run in development mode (hot reload)
-cargo tauri build                      # build a release bundle for the current platform
+cargo run -p app                       # debug window
+cargo run -p app --features dev-license  # accept a dev license (cargo run -p license --example generate_dev_license)
+cargo build --release -p app          # release binary at target/release/hosteldesk
 ```
 
-On Linux, `scripts/install-dev-desktop.sh` installs a `.desktop` entry so the taskbar icon resolves during development.
+### Sync Worker locally
+
+```sh
+docker run -d --name hd-sync-pg -e POSTGRES_PASSWORD=devpass -e POSTGRES_DB=hosteldesk -p 55432:5432 postgres:17
+SYNC_DATABASE_URL=postgres://postgres:devpass@127.0.0.1:55432/hosteldesk scripts/migrate-sync-db.sh
+cd crates/server
+CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgres://postgres:devpass@127.0.0.1:55432/hosteldesk?sslmode=disable" \
+  npx -y wrangler@4 dev --port 8787                       # builds with worker-build, serves the Worker
+../../scripts/smoke-worker.sh http://127.0.0.1:8787       # end-to-end check against real Postgres
+```
+
+Point a debug build of the desk at it by entering `http://127.0.0.1:8787` as the cloud server (plain HTTP is only accepted for localhost, and only in debug builds).
+
+On Linux, `scripts/install-dev-desktop.sh` installs a `.desktop` entry so the taskbar icon resolves during development. The window app id is `com.hosteldesk.app`, the same identifier the previous Tauri build used for its data directory.
 
 ## Cargo workspace
 
 | Crate | Purpose |
 |---|---|
-| `crates/app` | Tauri application shell, sessions, and command layer |
+| `crates/app` | egui shell, `Desk` service, and desktop sync client |
 | `crates/core` (`hosteldesk-core`) | Currency parsing and pure domain helpers |
 | `crates/db` | SQLite schema, migrations, and repositories (sqlx) |
 | `crates/pdf` | PDF receipt generation (printpdf) |
-| `crates/license` | Ed25519 offline license verification |
+| `crates/license` | Ed25519 offline license and lease verification |
+| `crates/protocol` | Sync wire types and ledger rules shared by the desk and the Worker |
+| `crates/server` | Sync API: Cloudflare Worker on Neon Postgres via Hyperdrive (wasm32), in-memory store for native tests |
 
 ## Conventions
 
-- **Currency** — monetary values are `rust_decimal::Decimal` for in-Rust arithmetic, but cross a language or process boundary (SQLite storage, Tauri IPC, the frontend) as a decimal string, matched by BigInt-based helpers in the frontend. Floating-point types are forbidden for money anywhere. SQLite stores money as TEXT with GLOB CHECK constraints.
-- **Migrations** — live in `crates/db/migrations/` and are applied by `sqlx::migrate!`. Append-only once applied to any real database; fix forward with new timestamped files. See `AGENTS.md` for the full policy.
-- **Verification** — before pushing, run `cargo check`, `cargo clippy`, `cargo test`, and `npm run lint` (from `frontend/`).
+- **Currency** — monetary values are `rust_decimal::Decimal` for in-Rust arithmetic. SQLite (desk) and Postgres (Worker, inside JSONB rows) store them as decimal strings; the desk enforces them with GLOB CHECK constraints and the sync protocol with `protocol::validate_money`. Floating-point types are forbidden for money anywhere.
+- **Migrations** — desk: `crates/db/migrations/` via `sqlx::migrate!`; Worker: `crates/server/migrations/` via `scripts/migrate-sync-db.sh`. Append-only once applied to any real database; fix forward with new timestamped files. See `AGENTS.md` for the full policy.
+- **Verification** — before pushing, run `cargo check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo clippy -p server --target wasm32-unknown-unknown -- -D warnings`, and `cargo test --workspace`.
 
 ## Project structure
 
 ```
-crates/          Rust workspace (app, core, db, pdf, license)
-frontend/        React + TypeScript + Tailwind frontend (Vite)
-scripts/         install.ps1 (Windows one-liner), install-dev-desktop.sh
-.github/         Release workflow (tag-triggered)
-specs/           Design specs and planning documents (gitignored — local only, not in a fresh clone)
+crates/          Rust workspace (app, core, db, pdf, license, protocol, server)
+packaging/       Linux .deb script and Windows NSIS script
+scripts/         install.ps1, install-dev-desktop.sh, deploy-worker.sh, migrate-sync-db.sh, smoke-worker.sh
+.github/         CI and release workflows
 ```

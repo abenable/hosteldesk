@@ -1,7 +1,6 @@
 use super::support::*;
 use db::{DbPool, NewUser, User};
 use serde::Deserialize;
-use tauri::State;
 use tracing::{info, instrument};
 
 /// Payload for creating a staff login account.
@@ -22,11 +21,10 @@ pub struct LoginRequest {
 }
 
 /// Return the staff user represented by the current backend session.
-#[tauri::command]
 #[instrument(skip(state, auth_state), fields(command = "get_session"))]
 pub async fn get_session(
-    state: State<'_, DbPool>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    auth_state: &crate::AuthState,
 ) -> Result<Option<User>, String> {
     info!("get_session invoked");
     let Some(session) = auth_state.current_session() else {
@@ -44,28 +42,26 @@ pub async fn get_session(
 }
 
 /// Clear the current backend session.
-#[tauri::command]
 #[instrument(skip(auth_state), fields(command = "logout"))]
-pub fn logout(auth_state: State<'_, crate::AuthState>) {
+pub fn logout(auth_state: &crate::AuthState) {
     info!("logout invoked");
     auth_state.clear_current_session();
 }
 
 /// Create a new staff user and return the generated user id.
-#[tauri::command]
 #[instrument(
     skip(state, request, license_state, auth_state),
     fields(command = "create_user")
 )]
 pub async fn create_user(
     request: CreateUserRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<i64, String> {
     info!(hostel_id = request.hostel_id, email = %request.email, "create_user invoked");
-    require_license(&license_state)?;
-    require_admin(&auth_state, request.hostel_id)?;
+    require_license(license_state)?;
+    require_admin(auth_state, request.hostel_id)?;
     validate_password(&request.password)?;
 
     let password_hash = db::hash_password(&request.password)
@@ -89,16 +85,15 @@ pub async fn create_user(
 ///
 /// On success, mints the authoritative in-memory session and returns the user
 /// record for display. The returned role is never used for authorization.
-#[tauri::command]
 #[instrument(skip(state, auth_state, request), fields(command = "login"))]
 pub async fn login(
     request: LoginRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<User, String> {
     info!(email = %request.email, "login invoked");
-    require_license(&license_state)?;
+    require_license(license_state)?;
 
     let user = state
         .authenticate_user(&request.email, &request.password)
@@ -133,17 +128,16 @@ pub struct ListUsersRequest {
 }
 
 /// List staff users for a hostel.
-#[tauri::command]
 #[instrument(skip(state, license_state), fields(command = "list_users"))]
 pub async fn list_users(
     request: ListUsersRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<Vec<User>, String> {
     info!(hostel_id = request.hostel_id, "list_users invoked");
-    require_license(&license_state)?;
-    require_admin(&auth_state, request.hostel_id)?;
+    require_license(license_state)?;
+    require_admin(auth_state, request.hostel_id)?;
     state
         .list_users(request.hostel_id)
         .await
@@ -158,28 +152,29 @@ pub struct UpdateUserRequest {
     pub email: String,
     pub role: String,
     pub password: Option<String>,
+    /// Required when `password` changes the signed-in user's own password.
+    pub current_password: Option<String>,
 }
 
 /// Update a staff user's profile and optionally their password.
-#[tauri::command]
 #[instrument(
     skip(state, request, license_state, auth_state),
     fields(command = "update_user")
 )]
 pub async fn update_user(
     request: UpdateUserRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<User, String> {
     info!(user_id = request.user_id, "update_user invoked");
-    require_license(&license_state)?;
+    require_license(license_state)?;
     let target = state
         .get_user_by_id(request.user_id)
         .await
         .map_err(|e| map_db_error("update_user", e))?
         .ok_or_else(|| "user not found".to_string())?;
-    let session = require_session(&auth_state, target.hostel_id)?;
+    let session = require_session(auth_state, target.hostel_id)?;
     let role_changed = target.role != request.role;
     // Changing any role, or editing someone else's account, requires admin.
     // A non-admin may still update their own name/email/password as long as
@@ -193,6 +188,19 @@ pub async fn update_user(
     let password_hash = match request.password {
         Some(ref password) => {
             validate_password(password)?;
+            // Changing your own password proves you know the current one, so
+            // anyone at an unlocked desk cannot take the account over. An
+            // admin resetting someone else's password does not need theirs.
+            if request.user_id == session.user_id {
+                let current = request.current_password.as_deref().unwrap_or_default();
+                let verified = state
+                    .authenticate_user(&target.email, current)
+                    .await
+                    .map_err(|e| map_db_error("update_user", e))?;
+                if verified.is_none() {
+                    return Err("Current password is incorrect.".to_string());
+                }
+            }
             Some(db::hash_password(password).map_err(|e| format!("Could not hash password: {e}"))?)
         }
         None => None,
@@ -211,25 +219,24 @@ pub async fn update_user(
 }
 
 /// Delete a staff user, refusing to remove the last admin of a hostel.
-#[tauri::command]
 #[instrument(
     skip(state, request, license_state, auth_state),
     fields(command = "delete_user")
 )]
 pub async fn delete_user(
     request: DeleteUserRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<(), String> {
     info!(user_id = request.user_id, "delete_user invoked");
-    require_license(&license_state)?;
+    require_license(license_state)?;
     let target = state
         .get_user_by_id(request.user_id)
         .await
         .map_err(|e| map_db_error("delete_user", e))?
         .ok_or_else(|| "user not found".to_string())?;
-    require_admin(&auth_state, target.hostel_id)?;
+    require_admin(auth_state, target.hostel_id)?;
     state
         .delete_user(request.user_id)
         .await
@@ -239,9 +246,23 @@ pub async fn delete_user(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::test_support::{setup_license_state, temp_db_url};
-    use crate::{commands, AuthState, LicenseState};
-    use tauri::Manager;
+    use crate::commands;
+    use crate::commands::test_support::{setup_license_state, temp_db_url, COUNTER};
+    use crate::AuthState;
+    use std::sync::atomic::Ordering;
+
+    fn test_desk(pool: DbPool, auth: AuthState, license: crate::LicenseState) -> crate::Desk {
+        let index = COUNTER.fetch_add(1, Ordering::Relaxed);
+        crate::Desk::from_parts(
+            pool,
+            auth,
+            license,
+            crate::paths::AppPaths::for_test(
+                std::env::temp_dir()
+                    .join(format!("hosteldesk_desk_{}_{index}", std::process::id())),
+            ),
+        )
+    }
 
     async fn setup_staff_user(
         pool: &DbPool,
@@ -339,18 +360,10 @@ mod tests {
         let auth_state = AuthState::new();
         auth_state.set_current_session(manager_id, 1, "manager");
 
-        let app = tauri::test::mock_app();
-        app.manage(pool);
-        app.manage(license_state);
-        app.manage(auth_state);
-
-        let result = commands::delete_user(
-            commands::DeleteUserRequest { user_id: admin_id },
-            app.state::<DbPool>(),
-            app.state::<LicenseState>(),
-            app.state::<AuthState>(),
-        )
-        .await;
+        let desk = test_desk(pool, auth_state, license_state);
+        let result = desk
+            .delete_user(commands::DeleteUserRequest { user_id: admin_id })
+            .await;
 
         let err = result.expect_err("manager should not be able to delete staff users");
         assert!(
@@ -360,7 +373,7 @@ mod tests {
 
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = ?1")
             .bind(admin_id)
-            .fetch_one(&app.state::<DbPool>().inner)
+            .fetch_one(&desk.db.inner)
             .await
             .expect("count admin user");
         assert_eq!(count, 1, "admin should not have been deleted");
@@ -389,18 +402,10 @@ mod tests {
         let auth_state = AuthState::new();
         auth_state.set_current_session(manager_id, 1, "manager");
 
-        let app = tauri::test::mock_app();
-        app.manage(pool);
-        app.manage(license_state);
-        app.manage(auth_state);
-
-        let result = commands::list_users(
-            commands::ListUsersRequest { hostel_id: 1 },
-            app.state::<DbPool>(),
-            app.state::<LicenseState>(),
-            app.state::<AuthState>(),
-        )
-        .await;
+        let desk = test_desk(pool, auth_state, license_state);
+        let result = desk
+            .list_users(commands::ListUsersRequest { hostel_id: 1 })
+            .await;
 
         let err = result.expect_err("manager should not be able to list staff users");
         assert!(
@@ -429,24 +434,17 @@ mod tests {
         let auth_state = AuthState::new();
         auth_state.set_current_session(manager_id, 1, "manager");
 
-        let app = tauri::test::mock_app();
-        app.manage(pool);
-        app.manage(license_state);
-        app.manage(auth_state);
-
-        let result = commands::update_user(
-            commands::UpdateUserRequest {
+        let desk = test_desk(pool, auth_state, license_state);
+        let result = desk
+            .update_user(commands::UpdateUserRequest {
                 user_id: manager_id,
                 full_name: "Manager".to_string(),
                 email: "manager".to_string(),
                 role: "admin".to_string(),
                 password: None,
-            },
-            app.state::<DbPool>(),
-            app.state::<LicenseState>(),
-            app.state::<AuthState>(),
-        )
-        .await;
+                current_password: None,
+            })
+            .await;
 
         let err = result.expect_err("manager should not be able to escalate their role");
         assert!(
@@ -456,7 +454,7 @@ mod tests {
 
         let role: String = sqlx::query_scalar("SELECT role FROM users WHERE id = ?1")
             .bind(manager_id)
-            .fetch_one(&app.state::<DbPool>().inner)
+            .fetch_one(&desk.db.inner)
             .await
             .expect("fetch manager role");
         assert_eq!(role, "manager", "manager role should remain unchanged");
@@ -464,7 +462,7 @@ mod tests {
         // Ensure the change did not inadvertently land on the admin.
         let admin_role: String = sqlx::query_scalar("SELECT role FROM users WHERE id = ?1")
             .bind(admin_id)
-            .fetch_one(&app.state::<DbPool>().inner)
+            .fetch_one(&desk.db.inner)
             .await
             .expect("fetch admin role");
         assert_eq!(admin_role, "admin");
@@ -484,32 +482,32 @@ mod tests {
             .await
             .expect("insert hostel");
 
-        let (manager_id, _manager_password) =
+        let (manager_id, manager_password) =
             setup_staff_user(&pool, "Manager", "manager@example.com", "manager").await;
 
         let license_state = setup_license_state();
         let auth_state = AuthState::new();
         auth_state.set_current_session(manager_id, 1, "manager");
 
-        let app = tauri::test::mock_app();
-        app.manage(pool);
-        app.manage(license_state);
-        app.manage(auth_state);
+        let desk = test_desk(pool, auth_state, license_state);
+        let change = |current: Option<&str>| commands::UpdateUserRequest {
+            user_id: manager_id,
+            full_name: "Manager".to_string(),
+            email: "manager@example.com".to_string(),
+            role: "manager".to_string(),
+            password: Some("a-new-password".to_string()),
+            current_password: current.map(str::to_string),
+        };
 
-        let result = commands::update_user(
-            commands::UpdateUserRequest {
-                user_id: manager_id,
-                full_name: "Manager".to_string(),
-                email: "manager@example.com".to_string(),
-                role: "manager".to_string(),
-                password: Some("a-new-password".to_string()),
-            },
-            app.state::<DbPool>(),
-            app.state::<LicenseState>(),
-            app.state::<AuthState>(),
-        )
-        .await;
-
-        result.expect("manager should be able to change their own password");
+        // Someone at an unlocked desk must not be able to take over the account.
+        desk.update_user(change(None))
+            .await
+            .expect_err("own password change needs the current password");
+        desk.update_user(change(Some("not-my-password")))
+            .await
+            .expect_err("wrong current password is refused");
+        desk.update_user(change(Some(&manager_password)))
+            .await
+            .expect("manager should be able to change their own password");
     }
 }

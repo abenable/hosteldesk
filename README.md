@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="frontend/src/assets/logo.png" alt="HostelDesk" width="160" />
+  <img src="crates/app/icons/icon.png" alt="HostelDesk" width="160" />
 </p>
 
 <h1 align="center">HostelDesk</h1>
@@ -14,7 +14,7 @@
   <img alt="Platforms" src="https://img.shields.io/badge/platform-windows%20%7C%20linux-lightgrey.svg">
 </p>
 
-HostelDesk is built with a Rust ([Tauri](https://tauri.app)) backend and a React + TypeScript frontend. Everything runs locally — data lives in a SQLite database on the machine, and receipts are generated as offline PDFs — no server, no internet connection required.
+HostelDesk is a native Rust desktop app (egui). The ledger lives in a SQLite database on the machine and receipts are offline PDFs. HostelDesk Cloud, a Rust sync service on Cloudflare Workers, keeps that cache in step across a customer's computers when the network is up; the desk keeps working when it is not.
 
 ## Install
 

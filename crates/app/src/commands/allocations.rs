@@ -2,7 +2,6 @@ use super::support::*;
 use db::{ActiveAllocation, DbPool, NewCheckIn};
 use hosteldesk_core::currency::parse_positive_money;
 use serde::Deserialize;
-use tauri::State;
 use tracing::{error, info, instrument};
 
 /// Payload for an atomic check-in.
@@ -33,21 +32,20 @@ pub struct CheckInRequest {
 ///
 /// `rate_agreed` is validated as a positive monetary amount. Either an
 /// existing `resident_id` or `full_name` for a new resident must be supplied.
-#[tauri::command]
 #[instrument(skip(state, license_state), fields(command = "check_in"))]
 pub async fn check_in(
     request: CheckInRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<i64, String> {
     info!(
         hostel_id = request.hostel_id,
         room_id = request.room_id,
         "check_in invoked"
     );
-    require_license(&license_state)?;
-    require_session(&auth_state, request.hostel_id)?;
+    require_license(license_state)?;
+    require_session(auth_state, request.hostel_id)?;
 
     let rate_agreed = parse_positive_money(&request.rate_agreed).map_err(|e| e.to_string())?;
 
@@ -108,21 +106,20 @@ pub struct CheckOutRequest {
 }
 
 /// Check out an allocation and free its room when no other active stays remain.
-#[tauri::command]
 #[instrument(skip(state, license_state), fields(command = "check_out"))]
 pub async fn check_out(
     request: CheckOutRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<(), String> {
     info!(
         hostel_id = request.hostel_id,
         allocation_id = request.allocation_id,
         "check_out invoked"
     );
-    require_license(&license_state)?;
-    require_session(&auth_state, request.hostel_id)?;
+    require_license(license_state)?;
+    require_session(auth_state, request.hostel_id)?;
     state
         .check_out(request.hostel_id, request.allocation_id)
         .await
@@ -136,23 +133,22 @@ pub struct ListActiveAllocationsRequest {
 }
 
 /// Return active allocations with rolled-up paid/balance for the payment picker.
-#[tauri::command]
 #[instrument(
     skip(state, license_state),
     fields(command = "list_active_allocations")
 )]
 pub async fn list_active_allocations(
     request: ListActiveAllocationsRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<Vec<ActiveAllocation>, String> {
     info!(
         hostel_id = request.hostel_id,
         "list_active_allocations invoked"
     );
-    require_license(&license_state)?;
-    require_session(&auth_state, request.hostel_id)?;
+    require_license(license_state)?;
+    require_session(auth_state, request.hostel_id)?;
     state
         .list_active_allocations(request.hostel_id)
         .await

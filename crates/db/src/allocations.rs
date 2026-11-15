@@ -30,6 +30,7 @@ impl DbPool {
                 insert_resident(
                     &mut tx,
                     &NewResident {
+                        hostel_id: check_in.hostel_id,
                         full_name: name.to_string(),
                         phone: check_in.phone.clone(),
                         email: check_in.email.clone(),
@@ -55,6 +56,7 @@ impl DbPool {
             },
         )
         .await?;
+        crate::sync::enqueue_check_in(&mut tx, check_in.hostel_id, allocation_id).await?;
 
         tx.commit().await.inspect_err(
             |e| error!(error = %e, allocation_id, "database error committing check-in"),
@@ -117,6 +119,7 @@ impl DbPool {
         .execute(&mut *tx)
         .await
         .inspect_err(|e| error!(error = %e, room_id, "database error updating room status"))?;
+        crate::sync::enqueue_check_out(&mut tx, hostel_id, allocation_id).await?;
 
         tx.commit().await.inspect_err(
             |e| error!(error = %e, allocation_id, "database error committing checkout"),

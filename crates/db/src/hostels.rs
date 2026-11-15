@@ -11,9 +11,6 @@ impl DbPool {
     /// rolls back automatically if the future is cancelled.
     #[instrument(skip(self, input))]
     pub async fn complete_onboarding(&self, input: CompleteOnboarding) -> anyhow::Result<User> {
-        if input.hostel.name.trim().is_empty() {
-            anyhow::bail!("hostel name is required");
-        }
         if input.admin_name.trim().is_empty() {
             anyhow::bail!("admin name is required");
         }
@@ -25,12 +22,29 @@ impl DbPool {
             |e| error!(error = %e, "database error starting onboarding transaction"),
         )?;
 
-        let hostel_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM hostels")
-            .fetch_one(&mut *tx)
-            .await
-            .inspect_err(|e| error!(error = %e, "database error counting hostels"))?;
+        let (hostel_count, staff_count): (i64, i64) =
+            sqlx::query_as("SELECT (SELECT COUNT(*) FROM hostels), (SELECT COUNT(*) FROM users)")
+                .fetch_one(&mut *tx)
+                .await
+                .inspect_err(|e| error!(error = %e, "database error counting hostels"))?;
+        if hostel_count == 1 && staff_count == 0 {
+            // The hostel was pulled from the cloud onto a fresh desk; only the
+            // first local administrator is missing.
+            let hostel_id: i64 = sqlx::query_scalar("SELECT id FROM hostels")
+                .fetch_one(&mut *tx)
+                .await?;
+            return insert_first_admin(
+                tx,
+                hostel_id,
+                (input.admin_name, input.email, input.password_hash),
+            )
+            .await;
+        }
         if hostel_count != 0 {
             anyhow::bail!("onboarding is already complete");
+        }
+        if input.hostel.name.trim().is_empty() {
+            anyhow::bail!("hostel name is required");
         }
 
         let hostel_id = sqlx::query(
@@ -48,36 +62,12 @@ impl DbPool {
         .await
         .inspect_err(|e| error!(error = %e, "database error inserting onboarding hostel"))?
         .last_insert_rowid();
-
-        let user_id = sqlx::query(
-            r#"
-            INSERT INTO users (hostel_id, full_name, email, password_hash, role)
-            VALUES (?1, ?2, ?3, ?4, 'admin')
-            "#,
+        insert_first_admin(
+            tx,
+            hostel_id,
+            (input.admin_name, input.email, input.password_hash),
         )
-        .bind(hostel_id)
-        .bind(input.admin_name.trim())
-        .bind(input.email.trim())
-        .bind(input.password_hash)
-        .execute(&mut *tx)
         .await
-        .inspect_err(|e| error!(error = %e, "database error inserting onboarding admin"))?
-        .last_insert_rowid();
-
-        let user = sqlx::query_as::<_, User>(
-            "SELECT id, hostel_id, full_name, email, role, created_at FROM users WHERE id = ?1",
-        )
-        .bind(user_id)
-        .fetch_one(&mut *tx)
-        .await
-        .inspect_err(|e| error!(error = %e, user_id, "database error fetching onboarding admin"))?;
-
-        tx.commit()
-            .await
-            .inspect_err(|e| error!(error = %e, "database error committing onboarding"))?;
-
-        info!(hostel_id, user_id, "onboarding completed");
-        Ok(user)
     }
 
     /// Insert a new hostel and return the full row (id, created_at, currency).
@@ -211,10 +201,12 @@ impl DbPool {
         if currency.len() != 3 || !currency.chars().all(|c| c.is_ascii_uppercase()) {
             anyhow::bail!("currency must be a 3-letter uppercase code");
         }
+        let mut tx = self.inner.begin().await?;
         let row = sqlx::query_as::<_, Hostel>(
             r#"
             UPDATE hostels
-            SET name = ?1, address = ?2, phone = ?3, currency = ?4, branding_logo_path = ?5
+            SET name = ?1, address = ?2, phone = ?3, currency = ?4, branding_logo_path = ?5,
+                revision = revision + 1
             WHERE id = ?6
             RETURNING id, name, address, phone, currency, branding_logo_path, created_at
             "#,
@@ -225,11 +217,51 @@ impl DbPool {
         .bind(&currency)
         .bind(&branding_logo_path)
         .bind(hostel_id)
-        .fetch_one(&self.inner)
+        .fetch_one(&mut *tx)
         .await
         .inspect_err(|e| error!(error = %e, hostel_id, "database error updating hostel"))?;
+        crate::sync::enqueue_hostel(&mut tx, hostel_id).await?;
+        tx.commit().await?;
         Ok(row)
     }
+}
+
+/// Insert the first administrator for `hostel_id` and commit `tx`.
+async fn insert_first_admin(
+    mut tx: sqlx::Transaction<'_, sqlx::Sqlite>,
+    hostel_id: i64,
+    admin: (String, String, String),
+) -> anyhow::Result<User> {
+    let (admin_name, email, password_hash) = admin;
+    let user_id = sqlx::query(
+        r#"
+        INSERT INTO users (hostel_id, full_name, email, password_hash, role)
+        VALUES (?1, ?2, ?3, ?4, 'admin')
+        "#,
+    )
+    .bind(hostel_id)
+    .bind(admin_name.trim())
+    .bind(email.trim())
+    .bind(password_hash)
+    .execute(&mut *tx)
+    .await
+    .inspect_err(|e| error!(error = %e, "database error inserting onboarding admin"))?
+    .last_insert_rowid();
+
+    let user = sqlx::query_as::<_, User>(
+        "SELECT id, hostel_id, full_name, email, role, created_at FROM users WHERE id = ?1",
+    )
+    .bind(user_id)
+    .fetch_one(&mut *tx)
+    .await
+    .inspect_err(|e| error!(error = %e, user_id, "database error fetching onboarding admin"))?;
+
+    tx.commit()
+        .await
+        .inspect_err(|e| error!(error = %e, "database error committing onboarding"))?;
+
+    info!(hostel_id, user_id, "onboarding completed");
+    Ok(user)
 }
 
 #[cfg(test)]
@@ -292,6 +324,31 @@ mod tests {
         assert_eq!(profile.room_count, 1);
         assert_eq!(profile.admin_count, 1);
         assert!(profile.onboarding_complete);
+    }
+
+    /// A desk that joined a cloud organization pulled its hostel but has no
+    /// local staff yet; onboarding then only creates the first admin.
+    #[tokio::test]
+    async fn onboarding_on_a_pulled_hostel_only_adds_the_admin() {
+        let pool = test_pool().await;
+        let pulled = seed_hostel(&pool).await;
+        let user = pool
+            .complete_onboarding(CompleteOnboarding {
+                hostel: NewHostel {
+                    name: String::new(),
+                    address: None,
+                    phone: None,
+                    currency: None,
+                    branding_logo_path: None,
+                },
+                admin_name: "Desk Two Admin".to_string(),
+                email: "two@example.com".to_string(),
+                password_hash: hash_password("password123").expect("hash"),
+            })
+            .await
+            .expect("admin for pulled hostel");
+        assert_eq!(user.hostel_id, pulled.id);
+        assert_eq!(pool.list_hostels().await.expect("hostels").len(), 1);
     }
 
     #[tokio::test]

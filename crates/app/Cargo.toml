@@ -1,40 +1,43 @@
 [package]
 name = "app"
-version = "1.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
 
 [features]
 # Forwarded to license/dev-license. Pass --features dev-license to
-# `cargo tauri dev` / `cargo build` to activate with a license minted by
+# `cargo run -p app --features dev-license` to activate with a license minted by
 # license/examples/generate_dev_license.rs. Off by default, including for
-# `cargo tauri build --debug`, so a shippable build can never accept one.
+# `cargo build -p app`, so a shippable build can never accept one.
 dev-license = ["license/dev-license"]
 
 [dependencies]
 anyhow = { workspace = true }
 chrono = { workspace = true }
 db = { path = "../db" }
+directories = "6"
+eframe = "0.35.0"
 hosteldesk-core = { path = "../core" }
 license = { path = "../license" }
 open = "5"
 pdf = { path = "../pdf" }
+protocol = { path = "../protocol" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
+serde_json = "1"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
-tauri = { version = "2", features = ["image-png", "test"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-glib = "0.18"
-
 [dev-dependencies]
+server = { path = "../server" }
 tempfile = "3"
 
-[build-dependencies]
-tauri-build = { version = "2", features = [] }
+[[bin]]
+name = "hosteldesk"
+path = "src/main.rs"

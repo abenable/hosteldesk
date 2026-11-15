@@ -78,7 +78,7 @@ fn is_idle(last_active: Instant, timeout: Duration) -> bool {
     last_active.elapsed() > timeout
 }
 
-/// Runtime license state managed by Tauri.
+/// Runtime license state for the desktop process.
 ///
 /// `None` means the app is locked because no license was supplied or the
 /// stored license is invalid/expired. Data/mutating commands check this state

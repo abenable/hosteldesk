@@ -67,6 +67,7 @@ impl DbPool {
             anyhow::bail!("language must be 'en'");
         }
 
+        let mut tx = self.inner.begin().await?;
         let row = sqlx::query_as::<_, AppPreferences>(
             r#"
             INSERT INTO app_preferences (hostel_id, date_format, language, receipt_footer, updated_at)
@@ -75,7 +76,8 @@ impl DbPool {
                 date_format = excluded.date_format,
                 language = excluded.language,
                 receipt_footer = excluded.receipt_footer,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                revision = revision + 1
             RETURNING hostel_id, date_format, language, receipt_footer, updated_at
             "#,
         )
@@ -84,9 +86,11 @@ impl DbPool {
         .bind(prefs.language)
         .bind(prefs.receipt_footer)
         .bind(Utc::now())
-        .fetch_one(&self.inner)
+        .fetch_one(&mut *tx)
         .await
         .inspect_err(|e| error!(error = %e, hostel_id = prefs.hostel_id, "database error upserting app preferences"))?;
+        crate::sync::enqueue_preferences(&mut tx, row.hostel_id).await?;
+        tx.commit().await?;
 
         Ok(row)
     }
