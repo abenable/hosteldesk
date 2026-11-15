@@ -218,7 +218,7 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
 [[package]]
 name = "app"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1028,7 +1028,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "db"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2013,7 +2013,7 @@ dependencies = [
 
 [[package]]
 name = "hosteldesk-core"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "chrono",
  "rust_decimal",
@@ -3248,7 +3248,7 @@ dependencies = [
 
 [[package]]
 name = "pdf"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3576,7 +3576,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "protocol"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "chrono",
  "hosteldesk-core",
@@ -4235,7 +4235,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "argon2",
  "chrono",

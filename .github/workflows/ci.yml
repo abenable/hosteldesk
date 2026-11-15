@@ -50,8 +50,20 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
-      - name: Windows installer script compiles
+  # The release builds the Windows installer only on a tag; this runs the same
+  # script on a real Windows runner for every PR (with a placeholder exe).
+  windows-installer:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
+
+      - name: Install NSIS
+        run: choco install nsis -y
+
+      - name: Build installer
+        shell: bash
         run: |
-          sudo apt-get install -y nsis
-          mkdir -p target/release && : > target/release/hosteldesk.exe
-          makensis -NOCD -DVERSION=0.0.0 -DOUTFILE="$RUNNER_TEMP/installer-check.exe" packaging/windows/hosteldesk.nsi
+          mkdir -p target/release && printf 'placeholder' > target/release/hosteldesk.exe
+          packaging/windows/build-installer.sh 0.0.0 "$RUNNER_TEMP/installer-check.exe"
+          test -s "$RUNNER_TEMP/installer-check.exe"
