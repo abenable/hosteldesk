@@ -1,0 +1,28 @@
+// Cloudflare Workers configuration.
+//
+// Deploy with `npm run deploy` (runs `npx wrangler deploy`). Wrangler only
+// runs under Node/npm — it explicitly does not support Bun.
+//
+// Secrets (never committed, not in this file):
+//   DATABASE_URL       — Neon pooled connection string  (npx wrangler secret put DATABASE_URL)
+//   BETTER_AUTH_SECRET — better-auth signing secret      (npx wrangler secret put BETTER_AUTH_SECRET)
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hosteldesk-backend",
+  "main": "src/index.ts",
+  // Today's date for new Workers; keep current per workers-best-practices.
+  "compatibility_date": "2026-11-15",
+  // better-auth and @neondatabase/serverless pull in a few node: builtins.
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    }
+  },
+  "vars": {
+    // Comma-separated exact-origin CORS allowlist. Only these origins get
+    // Access-Control-Allow-Origin + credentials. Adjust for production hosts.
+    "ALLOWED_ORIGINS": "http://localhost:1420,tauri://localhost,http://tauri.localhost"
+  }
+}

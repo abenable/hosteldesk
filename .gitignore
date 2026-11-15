@@ -6,6 +6,12 @@ node_modules/
 frontend/dist/
 *.log
 
+# Cloudflare Workers
+.wrangler/
+.dev.vars
+worker-configuration.d.ts
+backend/dist/
+
 # Environment
 .env
 .env.local
