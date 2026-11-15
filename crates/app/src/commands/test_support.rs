@@ -15,11 +15,12 @@ pub(crate) fn temp_db_url() -> String {
 
 pub(crate) fn setup_license_state() -> LicenseState {
     let state = LicenseState::default();
-    state.set(license::LicensePayload {
-        hostel_name: "Money Test Hostel".to_string(),
-        expiry_date: chrono::Utc::now().date_naive() + chrono::Duration::days(30),
-        tier: "trial".to_string(),
-        account_expiry: None,
+    let today = chrono::Utc::now().date_naive();
+    state.set(crate::state::AccountLicense {
+        account_name: "Money Test Hostel".to_string(),
+        plan: "trial".to_string(),
+        expires_on: today + chrono::Duration::days(30),
+        checked_on: today,
     });
     state
 }

@@ -7,7 +7,6 @@ This is an all-**Rust** project: an **egui** desktop app plus a sync API that ru
 - `core` — currency parsing shared between `app` and `db` (see `hosteldesk-core`)
 - `db` — local SQLite ledger (sqlx), including the offline sync cache
 - `pdf` — PDF generation
-- `license` — Ed25519 license and offline-lease verification
 - `protocol` — sync wire types and the ledger rules, shared by the desktop and the server
 - `app` — egui shell and the `Desk` application service
 - `server` — the sync API. Built for `wasm32` it is the Cloudflare Worker (workers-rs, Neon Postgres through Hyperdrive, `crates/server/wrangler.toml`); built natively it serves an in-memory store for tests. **No web framework** (no axum/tower/hyper): routing is a `match` on method and path.

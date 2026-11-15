@@ -687,7 +687,7 @@ impl HostelApp {
                     }
                     Err(error) => app.fail(format!("Sync failed, will retry: {error}")),
                 }
-                // A renewed lease unlocks a locked desk without a restart.
+                // A renewed license unlocks a locked desk without a restart.
                 if matches!(app.gate, Gate::Lock) && app.desk.license_status().is_some() {
                     app.boot();
                 }
@@ -852,7 +852,7 @@ impl HostelApp {
 
 /// HostelDesk is licensed per account: this computer unlocks by signing in.
 /// A computer that already signed in only needs to reach the server again
-/// to renew its lease, which it retries on its own.
+/// to confirm the license, which it retries on its own.
 fn lock_screen(app: &mut HostelApp, ui: &mut egui::Ui) {
     let enrolled = app.desk.cloud_enrolled();
     if enrolled {
@@ -1110,10 +1110,8 @@ fn license_badge(app: &HostelApp, ui: &mut egui::Ui) {
         return;
     };
     let today = chrono::Local::now().date_naive();
-    // An account lease renews while online, so what matters is the account's end date.
-    let ends = license.account_expiry.unwrap_or(license.expiry_date);
-    let days = (ends - today).num_days();
-    let plan = match license.tier.as_str() {
+    let days = (license.expires_on - today).num_days();
+    let plan = match license.plan.as_str() {
         "trial" => "Free trial",
         "semester" => "Semester plan",
         "1-year" => "1-year plan",

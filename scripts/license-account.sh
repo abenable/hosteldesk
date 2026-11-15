@@ -7,8 +7,8 @@
 #
 # Plans: semester (6 months), 1-year, 3-year, 5-year. A sold plan starts from
 # today, or from the current end date if that is still ahead (so renewing early
-# never loses days). Desks pick the change up on their next sync; an ended
-# license locks them once their current lease runs out (at most 14 days).
+# never loses days). Desks pick the change up on their next sync (every 30
+# seconds while online); an offline desk at most 14 days later.
 #
 # Uses ~/.hosteldesk/neon_url, or SYNC_DATABASE_URL when set.
 set -euo pipefail

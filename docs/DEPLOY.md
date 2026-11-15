@@ -5,7 +5,7 @@ The sync API (`crates/server`) is a Rust Cloudflare Worker named `hosteldesk-syn
 - **Connection:** the Worker reaches Neon through **Cloudflare Hyperdrive**, which keeps a warm connection pool near the database.
 - **Address:** desks connect to `https://hosteldesk-sync.ableabenaitwe.workers.dev`, the `DEFAULT_SERVER_URL` in `crates/app/src/sync.rs`.
 
-The Neon connection string lives only in `~/.hosteldesk/neon_url` (mode 0600), next to the license signing key. Never commit it.
+The Neon connection string lives only in `~/.hosteldesk/neon_url` (mode 0600). Never commit it. Licensing needs no keys: the Worker answers `POST /v1/license` from the database (see `LICENSING.md`).
 
 ## One-time setup
 
@@ -22,12 +22,6 @@ The Neon connection string lives only in `~/.hosteldesk/neon_url` (mode 0600), n
    cd crates/server
    env -u CLOUDFLARE_API_TOKEN npx -y wrangler@4 hyperdrive create hosteldesk \
      --connection-string="$(sed 's/?.*//' ~/.hosteldesk/neon_url)"
-   ```
-
-4. **Signing key secret (required).** Licenses live on accounts, and the Worker signs each desk's lease with the production license key. Without this secret no desk can unlock. Pipe it in so it never shows on screen or in shell history:
-
-   ```sh
-   env -u CLOUDFLARE_API_TOKEN npx -y wrangler@4 secret put HOSTELDESK_SIGNING_KEY < ~/.hosteldesk/signing_key.b64
    ```
 
 ## Every deploy

@@ -14,14 +14,14 @@
 //! after the other against current data.
 
 use crate::{
-    account_lease, apply_batch, dev_signing_key, dump_from, entity_key, hash_password,
-    normalize_email, random_device_prefix, random_id, route, signing_key_from_base64, token_hash,
-    verify_password, ApiError, BatchOutcome, SyncStore, DUMMY_HASH, TRIAL_DAYS,
+    apply_batch, dump_from, entity_key, hash_password, normalize_email, random_device_prefix,
+    random_id, route, token_hash, verify_password, ApiError, BatchOutcome, SyncStore, DUMMY_HASH,
+    TRIAL_DAYS,
 };
-use ed25519_dalek::SigningKey;
 use protocol::{
-    AuthResponse, BatchRefs, EnrollRequest, EnrollResponse, Entity, Ledger, PullRequest,
-    PullResponse, PushRequest, PushResponse, SignInRequest, SignUpRequest, PULL_PAGE_SIZE,
+    AuthResponse, BatchRefs, EnrollRequest, EnrollResponse, Entity, Ledger, LicenseStatus,
+    PullRequest, PullResponse, PushRequest, PushResponse, SignInRequest, SignUpRequest,
+    PULL_PAGE_SIZE,
 };
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -46,11 +46,6 @@ async fn fetch(mut request: Request, env: Env, _ctx: Context) -> worker::Result<
     }
     let authorization = request.headers().get("authorization")?;
     let body = request.bytes().await?;
-    let signing_key = env
-        .secret("HOSTELDESK_SIGNING_KEY")
-        .ok()
-        .and_then(|secret| signing_key_from_base64(&secret.to_string()))
-        .or_else(dev_signing_key);
     let client = match connect(&env).await {
         Ok(client) => client,
         Err(error) => {
@@ -58,10 +53,7 @@ async fn fetch(mut request: Request, env: Env, _ctx: Context) -> worker::Result<
             return text_response(503, "database unavailable, try again".into());
         }
     };
-    let store = PgStore {
-        client,
-        signing_key,
-    };
+    let store = PgStore { client };
     let reply = route(&store, &method, &path, authorization.as_deref(), &body).await;
     let mut response = text_response(reply.status, reply.body)?;
     if reply.status == 200 {
@@ -104,7 +96,6 @@ async fn connect(env: &Env) -> Result<Client, String> {
 
 struct PgStore {
     client: Client,
-    signing_key: Option<SigningKey>,
 }
 
 fn db(error: tokio_postgres::Error) -> ApiError {
@@ -164,34 +155,6 @@ impl PgStore {
         .await?
         .map(|row| row.get(0))
         .ok_or(ApiError::Unauthorized)
-    }
-
-    /// A fresh lease for `org_id`, or `None` when its license has ended (or
-    /// no signing key is configured). "Today" is the database's date.
-    async fn lease(&self, org_id: &str) -> Result<Option<String>, ApiError> {
-        let Some(key) = &self.signing_key else {
-            return Ok(None);
-        };
-        let row = self
-            .row(
-                "SELECT name, license_plan, to_char(license_expires_on, 'YYYY-MM-DD'), \
-                 to_char(current_date, 'YYYY-MM-DD') FROM organizations WHERE id = $1",
-                &[(&org_id, Type::TEXT)],
-            )
-            .await?;
-        let (name, plan, expires_on, today): (String, String, String, String) =
-            (row.get(0), row.get(1), row.get(2), row.get(3));
-        let date = |text: &str| {
-            chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
-                .map_err(|e| ApiError::Storage(e.to_string()))
-        };
-        Ok(account_lease(
-            &name,
-            &plan,
-            date(&expires_on)?,
-            date(&today)?,
-            key,
-        ))
     }
 
     async fn new_session(&self, org_id: &str) -> Result<String, ApiError> {
@@ -505,7 +468,6 @@ impl SyncStore for PgStore {
             device_prefix,
             refresh_token,
             hostel_public_ids,
-            lease: self.lease(&org_id).await?,
         })
     }
 
@@ -572,7 +534,6 @@ impl SyncStore for PgStore {
                     cursor: request.cursor,
                     changes: Vec::new(),
                     has_more: false,
-                    lease: None,
                 })
             }
             Some(owner) if owner != org_id => return Err(ApiError::Unauthorized),
@@ -599,12 +560,28 @@ impl SyncStore for PgStore {
                     .map_err(|e| ApiError::Storage(e.to_string()))?,
             );
         }
-        let lease = self.lease(&org_id).await?;
         Ok(PullResponse {
             cursor,
             changes,
             has_more,
-            lease,
+        })
+    }
+
+    async fn license(&self, refresh_token: &str) -> Result<LicenseStatus, ApiError> {
+        let org_id = self.device_org(refresh_token).await?;
+        let row = self
+            .row(
+                "SELECT name, license_plan, to_char(license_expires_on, 'YYYY-MM-DD') \
+                 FROM organizations WHERE id = $1",
+                &[(&org_id, Type::TEXT)],
+            )
+            .await?;
+        let expires_on: String = row.get(2);
+        Ok(LicenseStatus {
+            account_name: row.get(0),
+            plan: row.get(1),
+            expires_on: chrono::NaiveDate::parse_from_str(&expires_on, "%Y-%m-%d")
+                .map_err(|e| ApiError::Storage(e.to_string()))?,
         })
     }
 }

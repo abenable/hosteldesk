@@ -84,9 +84,13 @@ out="$(post /v1/pull "$refresh2" "{\"hostel_public_id\":\"$hostel\",\"cursor\":0
 expect 200 "$out" "pull"
 body="${out#* }"
 jq -e '.has_more == false' <<<"$body" >/dev/null || fail "pull flags: $body"
-# New accounts start on a trial, so a lease comes back whenever the Worker has
-# a signing key (production); without one (local dev) there is none.
-echo "trial lease issued: $(jq -r 'if .lease then "yes" else "no (no signing key)" end' <<<"$body")"
+
+# The account is the license: a new account is on a trial that the server reports.
+out="$(post /v1/license "$refresh" '{}')"
+expect 200 "$out" "license"
+jq -e '.plan == "trial" and .expires_on > (now | strftime("%Y-%m-%d"))' <<<"${out#* }" >/dev/null \
+  || fail "trial license: ${out#* }"
+expect 401 "$(post /v1/license "not-a-token" '{}')" "license with a bad token"
 rooms="$(jq -r '[.changes[] | select(.entity == "room") | .room_number] | unique | join(",")' <<<"$body")"
 [[ "$rooms" == "101,103,104" ]] || fail "pulled rooms: $rooms"
 jq -e '[.changes[] | select(.entity == "payment")] | length == 1 and .[0].payment_date == "2026-11-15T09:30:00Z"' <<<"$body" >/dev/null || fail "pulled payment"

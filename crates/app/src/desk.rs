@@ -15,14 +15,14 @@ pub struct Desk {
     pub(crate) db: DbPool,
     /// In-memory staff session.
     pub(crate) auth: AuthState,
-    /// Verified license or offline lease currently in force.
+    /// What the server last said about the account's license.
     pub(crate) license: LicenseState,
     /// Data and documents directories.
     pub(crate) paths: AppPaths,
 }
 
 impl Desk {
-    /// Open the database in `paths` and load a stored license when it verifies.
+    /// Open the database in `paths` and load the cached account license.
     pub async fn open(paths: AppPaths) -> Result<Self, String> {
         std::fs::create_dir_all(&paths.data_dir)
             .map_err(|e| format!("could not create app data dir: {e}"))?;
@@ -30,10 +30,8 @@ impl Desk {
             .await
             .map_err(|e| format!("could not open database: {e}"))?;
         let license = LicenseState::default();
-        if let Ok(text) = std::fs::read_to_string(paths.license_path()) {
-            if let Ok(payload) = license::verify_license(text.trim()) {
-                license.set(payload);
-            }
+        if let Some(cached) = commands::load_license(&paths) {
+            license.set(cached);
         }
         Ok(Self {
             db,
@@ -60,16 +58,16 @@ impl Desk {
     }
 
     /// Currently loaded license, if activation succeeded and the file verified.
-    pub fn license_status(&self) -> Option<license::LicensePayload> {
+    pub fn license_status(&self) -> Option<crate::state::AccountLicense> {
         commands::get_license_status(&self.license)
     }
 
-    /// Verify a lease from the server, store it beside the database, and unlock the desk.
-    pub(crate) fn activate_license_text(
+    /// Cache the server's answer about this account's license.
+    pub(crate) fn store_license(
         &self,
-        license: &str,
-    ) -> Result<license::LicensePayload, String> {
-        commands::activate_license_text(license, &self.license, &self.paths)
+        license: crate::state::AccountLicense,
+    ) -> Result<(), String> {
+        commands::store_license(license, &self.license, &self.paths)
     }
 
     /// `CARGO_PKG_VERSION` of the running binary.

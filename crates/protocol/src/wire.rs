@@ -59,9 +59,21 @@ pub struct EnrollResponse {
     /// Hostels this organization already has on the server. Empty for the first desk.
     #[serde(default)]
     pub hostel_public_ids: Vec<String>,
-    /// Signed lease that activates this desk, while the account's license runs.
-    #[serde(default)]
-    pub lease: Option<String>,
+}
+
+/// Body of `POST /v1/license`: the account's license, as the server holds it.
+///
+/// The server is the only authority. A desk is usable while `expires_on` has
+/// not passed and it heard this from the server recently (see the desk's
+/// offline grace period).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LicenseStatus {
+    /// Organization name, shown on the desk.
+    pub account_name: String,
+    /// `trial`, `semester`, `1-year`, `3-year`, or `5-year`.
+    pub plan: String,
+    /// Last day the license is valid.
+    pub expires_on: chrono::NaiveDate,
 }
 
 /// Body of `POST /v1/push`.
@@ -120,6 +132,4 @@ pub struct PullResponse {
     /// More changes exist after `cursor`; pull again.
     #[serde(default)]
     pub has_more: bool,
-    /// Fresh signed lease, while the account's license runs.
-    pub lease: Option<String>,
 }

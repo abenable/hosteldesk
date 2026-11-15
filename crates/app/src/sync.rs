@@ -8,8 +8,8 @@
 use std::time::Duration;
 
 use protocol::{
-    AckStatus, AuthResponse, CommandEnvelope, EnrollRequest, EnrollResponse, PullRequest,
-    PullResponse, PushRequest, PushResponse, SignInRequest, SignUpRequest,
+    AckStatus, AuthResponse, CommandEnvelope, EnrollRequest, EnrollResponse, LicenseStatus,
+    PullRequest, PullResponse, PushRequest, PushResponse, SignInRequest, SignUpRequest,
 };
 use serde::{Deserialize, Serialize};
 
@@ -66,10 +66,9 @@ impl Desk {
     /// joining an organization that already has a hostel must be a fresh
     /// install; merging two different hostels is refused.
     ///
-    /// The account is the license: the server returns a signed lease while
-    /// the account's plan runs, and that lease unlocks this computer. Signing
-    /// in to an account whose license has ended, or to any server whose lease
-    /// does not verify, leaves the desk locked.
+    /// The account is the license, and the server is the only judge of it:
+    /// after enrolling, the desk asks `/v1/license` and unlocks while the
+    /// account's plan runs.
     pub async fn connect_cloud(
         &self,
         server_url: &str,
@@ -125,9 +124,7 @@ impl Desk {
         }
 
         store_token(&self.paths, &enrolled.refresh_token)?;
-        if let Some(lease) = &enrolled.lease {
-            self.adopt_lease(lease);
-        }
+
         write_config(
             &self.paths,
             &CloudConfig {
@@ -149,7 +146,42 @@ impl Desk {
                 .await
                 .map_err(err)?;
         }
-        Ok(())
+        self.refresh_license(&client, &server_url, &enrolled.refresh_token)
+            .await
+    }
+
+    /// Ask the server for this account's license and cache the answer.
+    ///
+    /// A network failure keeps the cached answer (the desk keeps working for
+    /// up to [`crate::OFFLINE_GRACE_DAYS`]); a rejected device token clears it.
+    async fn refresh_license(
+        &self,
+        client: &reqwest::Client,
+        server_url: &str,
+        token: &str,
+    ) -> Result<(), String> {
+        let response = client
+            .post(format!("{server_url}/v1/license"))
+            .bearer_auth(token)
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .map_err(err)?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            self.license.clear();
+            let _ = std::fs::remove_file(self.paths.license_path());
+            return Err("this computer is no longer signed in to its account".to_string());
+        }
+        if !response.status().is_success() {
+            return Err(format!("license check failed: {}", response.status()));
+        }
+        let status: LicenseStatus = response.json().await.map_err(err)?;
+        self.store_license(crate::AccountLicense {
+            account_name: status.account_name,
+            plan: status.plan,
+            expires_on: status.expires_on,
+            checked_on: chrono::Utc::now().date_naive(),
+        })
     }
 
     /// True when this computer has enrolled and still has a refresh token.
@@ -165,6 +197,8 @@ impl Desk {
         };
         let client = http_client()?;
         let mut report = SyncReport::default();
+        self.refresh_license(&client, &config.server_url, &token)
+            .await?;
 
         match self.db.primary_hostel_id().await.map_err(err)? {
             Some(hostel_id) => {
@@ -320,27 +354,9 @@ impl Desk {
                 .map_err(err)?
                 .or(hostel_id);
             report.applied += pulled.changes.len();
-            if let (Some(lease), Some(id)) = (pulled.lease.as_deref(), hostel_id) {
-                self.db.save_lease(id, lease).await.map_err(err)?;
-                self.adopt_lease(lease);
-            }
             cursor = pulled.cursor;
             if !pulled.has_more {
                 return Ok(hostel_id);
-            }
-        }
-    }
-
-    /// Use a server lease when it verifies and outlasts the license in force,
-    /// so a short lease never replaces a longer license file.
-    fn adopt_lease(&self, lease: &str) {
-        let Ok(payload) = license::verify_license(lease) else {
-            return;
-        };
-        let current = self.license.get();
-        if current.is_none_or(|current| current.expiry_date < payload.expiry_date) {
-            if let Err(error) = self.activate_license_text(lease) {
-                tracing::warn!(%error, "could not store cloud lease");
             }
         }
     }
@@ -477,7 +493,6 @@ mod tests {
             .await
             .expect("bind");
         let addr = listener.local_addr().expect("addr");
-        // `MemoryStore::new` signs leases with the dev key (dev-license feature).
         let store = Arc::new(server::MemoryStore::new());
         let served = store.clone();
         tokio::spawn(async move {
@@ -597,7 +612,7 @@ mod tests {
         assert!(report.pushed >= 5, "{report:?}");
         assert_eq!(desk_a.db.pending_sync_count(hostel.id).await.unwrap(), 0);
         assert_eq!(
-            desk_a.license_status().map(|license| license.tier),
+            desk_a.license_status().map(|license| license.plan),
             Some("trial".to_string()),
             "a new account unlocks on its trial"
         );
@@ -689,8 +704,8 @@ mod tests {
         let license = desk
             .license_status()
             .expect("unlocked at sign-up, before any hostel");
-        assert_eq!(license.hostel_name, "Sunrise");
-        assert!(license.account_expiry.is_some());
+        assert_eq!(license.account_name, "Sunrise");
+        assert_eq!(license.checked_on, chrono::Utc::now().date_naive());
 
         // The account's license ends: a computer signing in now stays locked.
         let auth: protocol::AuthResponse = reqwest::Client::new()

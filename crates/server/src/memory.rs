@@ -4,15 +4,13 @@
 // in SQL, and scripts/smoke-worker.sh covers them.
 
 use crate::{
-    account_lease, apply_batch, dev_signing_key, hash_password, normalize_email,
-    random_device_prefix, random_id, route, token_hash, verify_password, ApiError, Reply,
-    SyncStore, DUMMY_HASH, TRIAL_DAYS,
+    apply_batch, hash_password, normalize_email, random_device_prefix, random_id, route,
+    token_hash, verify_password, ApiError, Reply, SyncStore, DUMMY_HASH, TRIAL_DAYS,
 };
 use chrono::NaiveDate;
-use ed25519_dalek::SigningKey;
 use protocol::{
-    AuthResponse, EnrollRequest, EnrollResponse, Entity, Ledger, PullRequest, PullResponse,
-    PushRequest, PushResponse, SignInRequest, SignUpRequest, PULL_PAGE_SIZE,
+    AuthResponse, EnrollRequest, EnrollResponse, Entity, Ledger, LicenseStatus, PullRequest,
+    PullResponse, PushRequest, PushResponse, SignInRequest, SignUpRequest, PULL_PAGE_SIZE,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -45,32 +43,15 @@ struct Inner {
 }
 
 /// In-memory [`SyncStore`]. One lock serializes every request.
+#[derive(Default)]
 pub struct MemoryStore {
     inner: Mutex<Inner>,
-    signing_key: Option<SigningKey>,
-}
-
-impl Default for MemoryStore {
-    fn default() -> Self {
-        Self {
-            inner: Mutex::default(),
-            signing_key: dev_signing_key(),
-        }
-    }
 }
 
 impl MemoryStore {
-    /// Empty store. Signs leases with the dev key when built with `dev-license`.
+    /// Empty store.
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// Empty store that signs leases with `key`.
-    pub fn with_signing_key(key: SigningKey) -> Self {
-        Self {
-            inner: Mutex::default(),
-            signing_key: Some(key),
-        }
     }
 
     /// Serve one request the way the Worker does.
@@ -99,12 +80,6 @@ impl MemoryStore {
         license.plan = plan.to_string();
         license.expires_on = expires_on;
         Ok(())
-    }
-
-    fn lease(&self, inner: &Inner, org_id: &str) -> Option<String> {
-        let (key, license) = (self.signing_key.as_ref()?, inner.licenses.get(org_id)?);
-        let today = chrono::Utc::now().date_naive();
-        account_lease(&license.name, &license.plan, license.expires_on, today, key)
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, Inner>, ApiError> {
@@ -212,7 +187,6 @@ impl SyncStore for MemoryStore {
             device_prefix,
             refresh_token,
             hostel_public_ids,
-            lease: self.lease(&inner, &org_id),
         })
     }
 
@@ -259,7 +233,6 @@ impl SyncStore for MemoryStore {
                 cursor: request.cursor,
                 changes: Vec::new(),
                 has_more: false,
-                lease: None,
             });
         };
         if hostel.org_id != org_id {
@@ -274,12 +247,24 @@ impl SyncStore for MemoryStore {
         let has_more = page.len() > PULL_PAGE_SIZE as usize;
         page.truncate(PULL_PAGE_SIZE as usize);
         let cursor = page.last().map_or(request.cursor, |(at, _)| *at);
-        let lease = self.lease(&inner, &org_id);
         Ok(PullResponse {
             cursor,
             changes: page.into_iter().map(|(_, entity)| entity.clone()).collect(),
             has_more,
-            lease,
+        })
+    }
+
+    async fn license(&self, refresh_token: &str) -> Result<LicenseStatus, ApiError> {
+        let inner = self.lock()?;
+        let org_id = Self::device_org(&inner, refresh_token)?;
+        let license = inner
+            .licenses
+            .get(&org_id)
+            .ok_or_else(|| ApiError::Storage("organization has no license row".into()))?;
+        Ok(LicenseStatus {
+            account_name: license.name.clone(),
+            plan: license.plan.clone(),
+            expires_on: license.expires_on,
         })
     }
 }
@@ -342,7 +327,7 @@ async fn answer(stream: tokio::net::TcpStream, store: &MemoryStore) -> std::io::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use protocol::{AckStatus, CommandEnvelope, SyncCommand};
+    use protocol::{AckStatus, CommandEnvelope, LicenseStatus, SyncCommand};
 
     async fn call(
         app: &MemoryStore,
@@ -503,80 +488,37 @@ mod tests {
         assert_eq!(status, 401);
     }
 
-    /// Verify a lease with `key` and return its payload.
-    fn open_lease(lease: &str, key: &SigningKey) -> serde_json::Value {
-        use base64::Engine;
-        use ed25519_dalek::Verifier;
-        let engine = base64::engine::general_purpose::STANDARD;
-        let (signature, payload) = lease.split_once(':').unwrap();
-        let signature =
-            ed25519_dalek::Signature::from_slice(&engine.decode(signature).unwrap()).unwrap();
-        let payload = engine.decode(payload).unwrap();
-        key.verifying_key().verify(&payload, &signature).unwrap();
-        serde_json::from_slice(&payload).unwrap()
-    }
-
-    fn days(n: i64) -> String {
-        (chrono::Utc::now().date_naive() + chrono::Duration::days(n)).to_string()
-    }
-
-    async fn enroll_again(app: &MemoryStore) -> serde_json::Value {
-        let (_, auth) = call(
-            app,
-            "/v1/sign-in",
-            None,
-            serde_json::json!({"email":"a@b.co","password":"secret-pass"}),
-        )
-        .await;
-        let token = auth["access_token"].as_str().unwrap().to_string();
-        call(
-            app,
-            "/v1/devices",
-            Some(&token),
-            serde_json::json!({"device_name":"desk"}),
-        )
-        .await
-        .1
-    }
-
-    /// The account is the license: a new account is on a trial straight away,
-    /// so a fresh computer unlocks at sign-in, before it has any hostel.
+    /// The account is the license, and only the server decides it: a new
+    /// account is on a trial straight away, before it has any hostel.
     #[tokio::test]
-    async fn a_new_account_unlocks_on_a_trial_lease() {
-        let key = SigningKey::from_bytes(&[7u8; 32]);
-        let app = MemoryStore::with_signing_key(key.clone());
-        enrolled(&app).await;
-        let device = enroll_again(&app).await;
-        let lease = open_lease(device["lease"].as_str().expect("trial lease"), &key);
-        assert_eq!(lease["tier"], "trial");
-        assert_eq!(lease["hostel_name"], "North");
-        assert_eq!(lease["account_expiry"], days(crate::TRIAL_DAYS));
-        assert_eq!(lease["expiry_date"], days(crate::LEASE_DAYS));
-    }
-
-    #[tokio::test]
-    async fn the_lease_never_outlives_the_account_license() {
-        let key = SigningKey::from_bytes(&[7u8; 32]);
-        let app = MemoryStore::with_signing_key(key.clone());
-        let (org_id, _) = enrolled(&app).await;
+    async fn a_new_account_is_on_a_trial_and_the_server_reports_it() {
+        let app = MemoryStore::new();
+        let (org_id, refresh) = enrolled(&app).await;
+        let (status, license) =
+            call(&app, "/v1/license", Some(&refresh), serde_json::json!({})).await;
+        assert_eq!(status, 200);
+        let license: LicenseStatus = serde_json::from_value(license).unwrap();
         let today = chrono::Utc::now().date_naive();
-
-        app.set_license(&org_id, "1-year", today + chrono::Duration::days(5))
-            .unwrap();
-        let lease = open_lease(enroll_again(&app).await["lease"].as_str().unwrap(), &key);
-        assert_eq!(lease["tier"], "1-year");
         assert_eq!(
-            lease["expiry_date"],
-            days(5),
-            "capped at the account expiry"
+            license,
+            LicenseStatus {
+                account_name: "North".into(),
+                plan: "trial".into(),
+                expires_on: today + chrono::Duration::days(crate::TRIAL_DAYS),
+            }
         );
 
-        app.set_license(&org_id, "trial", today - chrono::Duration::days(1))
+        app.set_license(&org_id, "1-year", today - chrono::Duration::days(1))
             .unwrap();
+        let (_, license) = call(&app, "/v1/license", Some(&refresh), serde_json::json!({})).await;
+        let license: LicenseStatus = serde_json::from_value(license).unwrap();
         assert!(
-            enroll_again(&app).await["lease"].is_null(),
-            "an expired account gets no lease"
+            license.expires_on < today,
+            "the desk locks on an ended plan"
         );
+
+        let (status, _) = call(&app, "/v1/license", Some("forged"), serde_json::json!({})).await;
+        assert_eq!(status, 401);
     }
 
     #[tokio::test]

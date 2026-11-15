@@ -6,13 +6,6 @@ license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
 
-[features]
-# Forwarded to license/dev-license. Pass --features dev-license to
-# `cargo run -p app --features dev-license` to activate with a license minted by
-# license/examples/generate_dev_license.rs. Off by default, including for
-# `cargo build -p app`, so a shippable build can never accept one.
-dev-license = ["license/dev-license"]
-
 [dependencies]
 anyhow = { workspace = true }
 chrono = { workspace = true }
@@ -20,7 +13,6 @@ db = { path = "../db" }
 directories = "6"
 eframe = "0.35.0"
 hosteldesk-core = { path = "../core" }
-license = { path = "../license" }
 open = "5"
 pdf = { path = "../pdf" }
 protocol = { path = "../protocol" }
@@ -35,10 +27,7 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
-# Tests sign and verify leases with the dev key. Dev-dependency features are
-# only unified into test builds, so a release build never accepts that key.
-license = { path = "../license", features = ["dev-license"] }
-server = { path = "../server", features = ["dev-license"] }
+server = { path = "../server" }
 tempfile = "3"
 
 [[bin]]

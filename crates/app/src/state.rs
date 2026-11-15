@@ -1,8 +1,40 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use license::LicensePayload;
+use chrono::NaiveDate;
+use serde::{Deserialize, Serialize};
 use tracing::error;
+
+/// Days a computer keeps working without reaching the server. Past that it
+/// locks until it can ask the server again.
+pub const OFFLINE_GRACE_DAYS: i64 = 14;
+
+/// What the server last said about this computer's account license.
+///
+/// The server is the only authority; this is a cache so the desk keeps
+/// working offline for [`OFFLINE_GRACE_DAYS`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountLicense {
+    /// Organization name.
+    pub account_name: String,
+    /// `trial`, `semester`, `1-year`, `3-year`, or `5-year`.
+    pub plan: String,
+    /// Last day the account's license is valid.
+    pub expires_on: NaiveDate,
+    /// Day this computer last heard it from the server.
+    pub checked_on: NaiveDate,
+}
+
+impl AccountLicense {
+    /// Usable on `today`: the plan has not ended, the server confirmed it
+    /// within [`OFFLINE_GRACE_DAYS`], and the clock has not been wound back
+    /// before that confirmation.
+    pub fn is_active(&self, today: NaiveDate) -> bool {
+        today <= self.expires_on
+            && self.checked_on <= today
+            && (today - self.checked_on).num_days() <= OFFLINE_GRACE_DAYS
+    }
+}
 
 /// A session with no activity for this long is treated as signed out. Every
 /// guarded command reads the session via [`AuthState::current_session`], so
@@ -78,17 +110,15 @@ fn is_idle(last_active: Instant, timeout: Duration) -> bool {
     last_active.elapsed() > timeout
 }
 
-/// Runtime license state for the desktop process.
-///
-/// `None` means the app is locked because no license was supplied or the
-/// stored license is invalid/expired. Data/mutating commands check this state
-/// via `commands::require_license` before doing any work.
+/// Runtime license state for the desktop process: the last answer from the
+/// server, if any. Data and mutating commands check it via
+/// `commands::require_license` before doing any work.
 #[derive(Debug, Default)]
-pub struct LicenseState(Mutex<Option<LicensePayload>>);
+pub struct LicenseState(Mutex<Option<AccountLicense>>);
 
 impl LicenseState {
-    /// Replace the current license payload.
-    pub fn set(&self, payload: LicensePayload) {
+    /// Replace the cached license.
+    pub fn set(&self, payload: AccountLicense) {
         if let Ok(mut guard) = self.0.lock() {
             *guard = Some(payload);
         } else {
@@ -96,15 +126,55 @@ impl LicenseState {
         }
     }
 
-    /// Return the currently active license payload, if any.
-    pub fn get(&self) -> Option<LicensePayload> {
+    /// The cached license, active or not.
+    pub fn get(&self) -> Option<AccountLicense> {
         self.0.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// The cached license if it is usable today.
+    pub fn active(&self) -> Option<AccountLicense> {
+        let today = chrono::Utc::now().date_naive();
+        self.get().filter(|license| license.is_active(today))
+    }
+
+    /// Forget the license, for example when the server no longer knows this device.
+    pub fn clear(&self) {
+        if let Ok(mut guard) = self.0.lock() {
+            *guard = None;
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn license_works_offline_for_a_while_but_not_past_its_end_or_a_wound_back_clock() {
+        let day = |d| NaiveDate::from_ymd_opt(2026, 11, d).unwrap();
+        let license = AccountLicense {
+            account_name: "Sunrise".into(),
+            plan: "trial".into(),
+            expires_on: day(30),
+            checked_on: day(10),
+        };
+        assert!(license.is_active(day(10)));
+        assert!(license.is_active(day(24)), "14 days offline is fine");
+        assert!(!license.is_active(day(25)), "15 days offline locks");
+        assert!(
+            !license.is_active(day(9)),
+            "clock set before the last check"
+        );
+        let ended = AccountLicense {
+            checked_on: day(30),
+            ..license
+        };
+        assert!(ended.is_active(day(30)));
+        assert!(
+            !ended.is_active(NaiveDate::from_ymd_opt(2026, 12, 1).unwrap()),
+            "past the plan's end"
+        );
+    }
 
     #[test]
     fn session_is_idle_after_timeout_elapses() {
