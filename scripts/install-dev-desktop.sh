@@ -9,7 +9,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-bin_path="$repo_root/target/debug/app"
+bin_path="$repo_root/target/debug/hosteldesk"
 icon_path="$repo_root/crates/app/icons/icon.png"
 desktop_dir="$HOME/.local/share/applications"
 desktop_file="$desktop_dir/com.hosteldesk.app.desktop"
@@ -33,4 +33,4 @@ echo "Installed $desktop_file"
 if [ ! -x "$bin_path" ]; then
 	echo "Note: $bin_path does not exist yet -- the launcher won't start until you build it."
 fi
-echo "Build the app once (cargo build -p app or cargo tauri dev), then relaunch it -- the taskbar/dock icon should show HostelDesk."
+echo "Build the app once (cargo build -p app), then relaunch it -- the taskbar/dock icon should show HostelDesk."

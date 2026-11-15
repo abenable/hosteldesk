@@ -24,15 +24,38 @@ impl DbPool {
                 |e| error!(error = %e, "database error beginning receipt transaction"),
             )?;
 
-        let next_number: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(MAX(CAST(receipt_number AS INTEGER)), 0) + 1 FROM receipts WHERE hostel_id = ?1"
+        let prefixed: Option<(String, i64)> = sqlx::query_as(
+            r#"
+            SELECT device_prefix, next_receipt
+            FROM sync_state
+            WHERE hostel_id = ?1
+              AND device_prefix IS NOT NULL
+              AND device_prefix <> ''
+            "#,
         )
         .bind(payment.hostel_id)
-        .fetch_one(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await
-        .inspect_err(|e| error!(error = %e, hostel_id = payment.hostel_id, "database error allocating receipt number"))?;
+        .inspect_err(|e| error!(error = %e, hostel_id = payment.hostel_id, "database error reading receipt prefix"))?;
 
-        let receipt_number = next_number.to_string();
+        let receipt_number = if let Some((prefix, next_receipt)) = prefixed {
+            sqlx::query("UPDATE sync_state SET next_receipt = ?1, updated_at = CURRENT_TIMESTAMP WHERE hostel_id = ?2")
+                .bind(next_receipt + 1)
+                .bind(payment.hostel_id)
+                .execute(&mut *tx)
+                .await
+                .inspect_err(|e| error!(error = %e, hostel_id = payment.hostel_id, "database error advancing receipt sequence"))?;
+            format!("{prefix}-{next_receipt:04}")
+        } else {
+            let next_number: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(MAX(CAST(receipt_number AS INTEGER)), 0) + 1 FROM receipts WHERE hostel_id = ?1",
+            )
+            .bind(payment.hostel_id)
+            .fetch_one(&mut *tx)
+            .await
+            .inspect_err(|e| error!(error = %e, hostel_id = payment.hostel_id, "database error allocating receipt number"))?;
+            next_number.to_string()
+        };
 
         let payment_id = sqlx::query(
             r#"

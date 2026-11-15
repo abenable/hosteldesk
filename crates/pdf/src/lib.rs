@@ -15,8 +15,9 @@ pub struct ReceiptPayload {
     pub hostel_address: Option<String>,
     /// Optional contact phone number, shown under the address.
     pub hostel_phone: Option<String>,
-    /// Sequential receipt number, zero-padded in the rendered output.
-    pub receipt_number: u64,
+    /// Receipt number as printed. Numeric receipts are zero-padded; a device
+    /// prefix such as `AB12-0007` is shown as issued.
+    pub receipt_number: String,
     /// Full name of the resident who made the payment.
     pub resident_name: String,
     /// Room the payment is associated with.
@@ -192,6 +193,15 @@ fn amount_in_words(amount: Decimal) -> String {
     }
 }
 
+/// Numeric receipt numbers stay zero-padded. Prefixed numbers are already formatted.
+fn display_receipt_number(number: &str) -> String {
+    if number.bytes().all(|byte| byte.is_ascii_digit()) {
+        format!("{number:0>6}")
+    } else {
+        number.to_string()
+    }
+}
+
 /// Generate a PDF receipt at `path` from `payload`.
 ///
 /// Overwrites any existing file at the path. The page size is fixed at A4.
@@ -288,7 +298,7 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
         &bold,
     );
     l.use_text(
-        format!("No. {:06}", payload.receipt_number),
+        format!("No. {}", display_receipt_number(&payload.receipt_number)),
         11.0,
         Mm(margin_x),
         Mm(title_y),
@@ -459,7 +469,7 @@ mod tests {
             hostel_name: "Sunny Hostel".to_string(),
             hostel_address: Some("Plot 1, Main Street".to_string()),
             hostel_phone: Some("0700000000".to_string()),
-            receipt_number: 123,
+            receipt_number: "123".to_string(),
             resident_name: "Jane Doe".to_string(),
             room_number: "A01".to_string(),
             amount: Decimal::from_str("150000").unwrap(),

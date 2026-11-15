@@ -2,23 +2,22 @@
 
 ## 1. Architecture
 
-This is a **Tauri v2** project with a **Rust backend** and a **React / TypeScript / Tailwind** frontend, organized as a **Cargo workspace** with the following members:
+This is a **Rust** desktop app with an **egui** interface, organized as a **Cargo workspace** with the following members:
 
 - `core` — currency parsing shared between `app` and `db` (see `hosteldesk-core`)
-- `db` — persistence layer (SQLite via `sqlx`)
+- `db` — local SQLite ledger (sqlx), including the offline sync cache
 - `pdf` — PDF generation
-- `license` — licensing logic
-- `app` — the Tauri application shell that wires everything together
+- `license` — Ed25519 license and offline-lease verification
+- `protocol` — sync command types shared by the desktop and the server
+- `app` — egui shell and the `Desk` application service
+- `server` — hosted multi-tenant Axum API (Postgres)
 
 ## 2. Tech Stack
 
 - **Rust**
-- **Tauri v2**
-- **sqlx** (SQLite)
-- **React**
-- **TypeScript**
-- **TailwindCSS**
-- **rust_decimal`
+- **egui / eframe**
+- **sqlx** (SQLite on the desktop, Postgres on the server)
+- **rust_decimal**
 - **chrono**
 
 ## 3. Currency Constraint
@@ -42,7 +41,6 @@ After **every significant change**, run the following and do **not** proceed if 
 cargo check
 cargo clippy
 cargo test
-npm run lint
 ```
 
 Treat warnings as failures. Fix the root cause; do not suppress or ignore them.
@@ -73,7 +71,7 @@ Migrations live in `crates/db/migrations/` and are applied by `sqlx::migrate!`.
 ## 9. Branching and Releases
 
 - Every release — **major or minor** — is developed on a **version branch** named after the upcoming release (e.g. `v1.0.1`, `v1.1.0`, `v2.0.0`). **All changes for that release go on the version branch** — not directly on `main`.
-- To cut a release: bump `version` in `crates/app/tauri.conf.json` (and `frontend/package.json` to match), merge the version branch into `main`, then tag:
+- To cut a release: bump `version` in every `crates/*/Cargo.toml`, merge the version branch into `main`, then tag:
 
   ```sh
   git tag v1.0.1

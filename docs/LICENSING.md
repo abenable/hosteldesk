@@ -32,7 +32,7 @@ Builds with the `dev-license` Cargo feature additionally accept a development-on
 
 ```sh
 cargo run --example generate_dev_license -p license > dev.hdlicense
-cargo tauri dev --features dev-license
+cargo run -p app --features dev-license
 ```
 
-(or `cargo tauri build --debug --features dev-license` for a debug bundle), then pick `dev.hdlicense` on the activation screen. The feature is off by default — including for a plain `cargo tauri build --debug` — so a shippable build can never accept a dev-minted license.
+(or `cargo build -p app --features dev-license` for a debug binary), then pick `dev.hdlicense` on the activation screen. The feature is off by default — including for a plain `cargo build -p app` — so a shippable build can never accept a dev-minted license.

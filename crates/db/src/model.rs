@@ -41,6 +41,8 @@ pub struct Room {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewResident {
+    /// Hostel that owns this resident. Required so a resident cannot leak across tenants.
+    pub hostel_id: i64,
     pub full_name: String,
     pub phone: Option<String>,
     pub email: Option<String>,

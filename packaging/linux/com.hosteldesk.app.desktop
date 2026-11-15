@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=HostelDesk
+Comment=Rooms, residents, payments, and receipts
+Exec=hosteldesk
+Icon=com.hosteldesk.app
+Terminal=false
+Categories=Office;
+StartupWMClass=com.hosteldesk.app

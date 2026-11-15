@@ -1,8 +1,6 @@
 use super::support::*;
 use db::{DbPool, Hostel, HostelProfile, NewHostel, User};
 use serde::Deserialize;
-use tauri::State;
-use tauri::{AppHandle, Manager};
 use tracing::{info, instrument};
 
 /// Payload for completing first-run onboarding.
@@ -19,9 +17,8 @@ pub struct CompleteOnboardingRequest {
 }
 
 /// Return whether one hostel and at least one staff account exist.
-#[tauri::command]
 #[instrument(skip(state), fields(command = "get_onboarding_status"))]
-pub async fn get_onboarding_status(state: State<'_, DbPool>) -> Result<bool, String> {
+pub async fn get_onboarding_status(state: &DbPool) -> Result<bool, String> {
     info!("get_onboarding_status invoked");
     state
         .is_onboarding_complete()
@@ -34,19 +31,18 @@ pub async fn get_onboarding_status(state: State<'_, DbPool>) -> Result<bool, Str
 /// This is the only command that may bootstrap an account without a session.
 /// The database operation is one-time, so it cannot be replayed to create a
 /// second hostel or another bootstrap administrator.
-#[tauri::command]
 #[instrument(
     skip(state, request, license_state, auth_state),
     fields(command = "complete_onboarding")
 )]
 pub async fn complete_onboarding(
     request: CompleteOnboardingRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<User, String> {
     info!(hostel_name = %request.hostel_name, "complete_onboarding invoked");
-    require_license(&license_state)?;
+    require_license(license_state)?;
 
     if request.hostel_name.trim().is_empty() {
         return Err("hostel name is required".to_string());
@@ -84,17 +80,16 @@ pub async fn complete_onboarding(
 }
 
 /// Return the hostel profile with derived onboarding state, or `None`.
-#[tauri::command(rename_all = "snake_case")]
 #[instrument(skip(state, license_state), fields(command = "get_hostel_profile"))]
 pub async fn get_hostel_profile(
     hostel_id: i64,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<Option<HostelProfile>, String> {
     info!(hostel_id, "get_hostel_profile invoked");
-    require_license(&license_state)?;
-    require_session(&auth_state, hostel_id)?;
+    require_license(license_state)?;
+    require_session(auth_state, hostel_id)?;
     state
         .get_hostel_profile(hostel_id)
         .await
@@ -102,16 +97,15 @@ pub async fn get_hostel_profile(
 }
 
 /// Return all hostels ordered by id.
-#[tauri::command]
 #[instrument(skip(state, license_state), fields(command = "list_hostels"))]
 pub async fn list_hostels(
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<Vec<Hostel>, String> {
     info!("list_hostels invoked");
-    require_license(&license_state)?;
-    let session = require_session_current(&auth_state)?;
+    require_license(license_state)?;
+    let session = require_session_current(auth_state)?;
     let hostel = state
         .get_hostel_by_id(session.hostel_id)
         .await
@@ -132,20 +126,19 @@ pub struct UpdateHostelRequest {
 }
 
 /// Update the hostel profile and return the updated record.
-#[tauri::command]
 #[instrument(
     skip(state, license_state, auth_state),
     fields(command = "update_hostel")
 )]
 pub async fn update_hostel(
     request: UpdateHostelRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<Hostel, String> {
     info!(hostel_id = request.hostel_id, "update_hostel invoked");
-    require_license(&license_state)?;
-    require_admin(&auth_state, request.hostel_id)?;
+    require_license(license_state)?;
+    require_admin(auth_state, request.hostel_id)?;
     state
         .update_hostel(
             request.hostel_id,
@@ -184,20 +177,19 @@ fn validate_logo_filename(filename: &str) -> Result<String, String> {
 ///
 /// The file is saved to `<app-data>/hostels/<hostel_id>/logo.<ext>`. Only PNG,
 /// JPG/JPEG and WebP files up to 10 MB are accepted.
-#[tauri::command]
 #[instrument(
-    skip(app, request, license_state, auth_state),
+    skip(paths, request, license_state, auth_state),
     fields(command = "upload_hostel_logo")
 )]
 pub async fn upload_hostel_logo(
     request: UploadHostelLogoRequest,
-    app: AppHandle,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    paths: &crate::paths::AppPaths,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<String, String> {
     info!(hostel_id = request.hostel_id, filename = %request.filename, "upload_hostel_logo invoked");
-    require_license(&license_state)?;
-    require_admin(&auth_state, request.hostel_id)?;
+    require_license(license_state)?;
+    require_admin(auth_state, request.hostel_id)?;
 
     const MAX_BYTES: usize = 10 * 1024 * 1024;
     if request.data.len() > MAX_BYTES {
@@ -206,11 +198,7 @@ pub async fn upload_hostel_logo(
 
     let ext = validate_logo_filename(&request.filename)?;
 
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("could not resolve app data dir: {e}"))?;
-    let logo_dir = data_dir.join("hostels").join(request.hostel_id.to_string());
+    let logo_dir = paths.logo_dir(request.hostel_id);
     std::fs::create_dir_all(&logo_dir)
         .map_err(|e| format!("could not create logo directory: {e}"))?;
 
