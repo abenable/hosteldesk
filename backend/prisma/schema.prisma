@@ -1,0 +1,269 @@
+// HostelDesk cloud schema — Prisma ORM.
+//
+// Translated from the frozen SQLite baseline
+// (crates/db/migrations/20260905000000_initial_schema.sql + follow-ups).
+//
+// Money policy (project-wide rule: never floats): monetary columns are
+// `Decimal` (Postgres NUMERIC, exact). The client returns decimal.js
+// instances; the API layer always serializes them via .toString(). Money is
+// never parsed into a JS number.
+//
+// DB-level CHECK constraints (positive amounts, currency/academic-year
+// formats) are appended to the generated migration SQL by hand, since
+// Prisma cannot express CHECKs.
+
+generator client {
+  provider           = "prisma-client"
+  // Cloudflare Workers runtime: no Rust engine, no runtime WASM; pairs with
+  // @prisma/adapter-pg over nodejs_compat.
+  runtime            = "cloudflare"
+  output             = "../src/generated/prisma"
+  importFileExtension = "ts"
+}
+
+generator clientNode {
+  provider           = "prisma-client"
+  // Bun flavor for local dev + tests under Bun (runtime WASM compile, which
+  // workerd forbids but Bun handles fine). dev.ts/tests use this one.
+  runtime            = "bun"
+  output             = "../src/generated/prisma-bun"
+  importFileExtension = "ts"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum RoomType {
+  single
+  double
+  dorm
+}
+
+enum RoomStatus {
+  vacant
+  occupied
+  maintenance
+}
+
+enum AllocationStatus {
+  active
+  checked_out
+}
+
+enum Term {
+  semester_1
+  semester_2
+  recess
+}
+
+enum PaymentMethod {
+  cash
+  mobile_money
+  bank_transfer
+  card
+}
+
+enum UserRole {
+  admin
+  manager
+}
+
+model Hostel {
+  id               Int      @id @default(autoincrement())
+  name             String
+  address          String?
+  phone            String?
+  currency         String   @default("UGX")
+  // Timezone for revenue "today"/"month" day boundaries (server-side policy).
+  timezone         String   @default("Africa/Kampala")
+  brandingLogoPath String?
+  createdAt        DateTime @default(now())
+
+  rooms          Room[]
+  allocations    Allocation[]
+  payments       Payment[]
+  receipts      Receipt[]
+  receiptCounter ReceiptCounter?
+  appPreference  AppPreference?
+  users          User[]
+}
+
+model Room {
+  id           Int        @id @default(autoincrement())
+  hostelId     Int
+  roomNumber   String
+  roomType     RoomType   @default(single)
+  capacity     Int        @default(1)
+  floor        Int?
+  semesterRate Decimal
+  recessRate   Decimal
+  status       RoomStatus @default(vacant)
+  createdAt    DateTime   @default(now())
+
+  hostel      Hostel       @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+  allocations Allocation[]
+
+  @@unique([hostelId, roomNumber])
+}
+
+model Resident {
+  id             Int      @id @default(autoincrement())
+  fullName       String
+  phone          String?
+  email          String?
+  idNumber       String?
+  nextOfKin      String?
+  nextOfKinPhone String?
+  photoPath     String?
+  createdAt      DateTime @default(now())
+
+  allocations Allocation[]
+  payments    Payment[]
+}
+
+model Allocation {
+  id               Int              @id @default(autoincrement())
+  hostelId         Int
+  residentId       Int
+  roomId           Int
+  checkInDate      DateTime         @db.Date
+  checkOutDate     DateTime?        @db.Date
+  expectedCheckout DateTime         @db.Date
+  status           AllocationStatus @default(active)
+  rateAgreed       Decimal
+  term             Term
+  academicYear     String
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  hostel   Hostel   @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+  resident Resident @relation(fields: [residentId], references: [id], onDelete: Restrict)
+  room     Room     @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  payments Payment[]
+
+  @@index([hostelId, status])
+  @@index([residentId])
+  @@index([roomId, hostelId, status])
+}
+
+model Payment {
+  id            Int           @id @default(autoincrement())
+  hostelId      Int
+  allocationId  Int
+  residentId    Int
+  amount        Decimal
+  paymentDate   DateTime      @default(now())
+  paymentMethod PaymentMethod
+  periodStart   DateTime?     @db.Date
+  periodEnd     DateTime?     @db.Date
+  notes         String?
+  createdAt     DateTime      @default(now())
+
+  hostel    Hostel     @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+  allocation Allocation @relation(fields: [allocationId], references: [id], onDelete: Restrict)
+  resident  Resident   @relation(fields: [residentId], references: [id], onDelete: Restrict)
+  receipt   Receipt?
+
+  @@index([hostelId, paymentDate])
+  @@index([allocationId])
+  @@index([hostelId, residentId, paymentDate])
+}
+
+model ReceiptCounter {
+  // Per-hostel gapless receipt numbering. The payment transaction runs
+  // `UPDATE "ReceiptCounter" SET "nextNumber" = "nextNumber" + 1 ... WHERE
+  // "hostelId" = $1 RETURNING` — the row lock serializes concurrent issuers
+  // and a rollback returns the number to the pool (no gaps, no duplicates).
+  hostelId   Int @id
+  nextNumber Int @default(1)
+
+  hostel Hostel @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+}
+
+model Receipt {
+  id            Int      @id @default(autoincrement())
+  hostelId      Int
+  paymentId     Int      @unique
+  receiptNumber String
+  generatedAt   DateTime @default(now())
+  pdfPath       String?
+  createdAt     DateTime @default(now())
+
+  hostel  Hostel  @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@unique([hostelId, receiptNumber])
+  @@index([paymentId])
+}
+
+model AppPreference {
+  hostelId      Int      @id
+  dateFormat    String   @default("dd/MM/yyyy")
+  language      String   @default("en")
+  receiptFooter String?
+  updatedAt     DateTime @updatedAt
+
+  hostel Hostel @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------------
+// better-auth tables (standard shape) plus HostelDesk additions on User:
+// hostelId and role. The desktop app's `users` table concept maps onto User.
+// ---------------------------------------------------------------------------
+
+model User {
+  id            String    @id
+  name          String
+  email         String    @unique
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  hostelId      Int?
+  role          UserRole  @default(manager)
+
+  hostel   Hostel?   @relation(fields: [hostelId], references: [id], onDelete: Cascade)
+  sessions Session[]
+  accounts Account[]
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Account {
+  id                   String    @id
+  accountId            String
+  providerId           String
+  userId               String
+  accessToken          String?
+  refreshToken         String?
+  idToken              String?
+  accessTokenExpiresAt DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                String?
+  password             String?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
