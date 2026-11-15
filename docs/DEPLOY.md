@@ -1,48 +1,61 @@
 # Deploying the sync Worker
 
-The sync API (`crates/server`) is a Rust Cloudflare Worker named `hosteldesk-sync`. It stores data in a D1 database named `hosteldesk`. Desks reach it at `https://hosteldesk-sync.<your-subdomain>.workers.dev`, the default in `crates/app/src/sync.rs` (`DEFAULT_SERVER_URL`).
+The sync API (`crates/server`) is a Rust Cloudflare Worker named `hosteldesk-sync`.
+- **Data:** a **Neon Postgres** database (project `hosteldesk`, `frosty-shape-12386475`, `aws-eu-central-1`).
+- **Connection:** the Worker reaches Neon through **Cloudflare Hyperdrive**, which keeps a warm connection pool near the database.
+- **Address:** desks connect to `https://hosteldesk-sync.ableabenaitwe.workers.dev`, the `DEFAULT_SERVER_URL` in `crates/app/src/sync.rs`.
+
+The Neon connection string lives only in `~/.hosteldesk/neon_url` (mode 0600), next to the license signing key. Never commit it.
 
 ## One-time setup
 
-1. **Workers Paid plan** ($5/month). Sign-in hashes passwords with Argon2, which needs more CPU than the Free plan's 10 ms per request allows.
-2. **Log in**: `npx -y wrangler@4 login`.
-3. **Create the database** and put its id into `crates/server/wrangler.toml` (`database_id`):
+1. **Workers Paid plan** ($5/month). Sign-in hashes passwords with Argon2, which needs more CPU than the Free plan's 10 ms per request allows. Hyperdrive is included in the plan.
+2. **Log wrangler in.** Wrangler prefers a `CLOUDFLARE_API_TOKEN` environment variable over its own login. If your shell sets one for another project, unset it for wrangler commands:
+
+   ```sh
+   env -u CLOUDFLARE_API_TOKEN npx -y wrangler@4 login
+   ```
+
+3. **Create the Hyperdrive config.** It points at Neon's direct (unpooled) endpoint. Put the printed `id` into `crates/server/wrangler.toml` under `[[hyperdrive]]`:
 
    ```sh
    cd crates/server
-   npx -y wrangler@4 d1 create hosteldesk
+   env -u CLOUDFLARE_API_TOKEN npx -y wrangler@4 hyperdrive create hosteldesk \
+     --connection-string="$(sed 's/?.*//' ~/.hosteldesk/neon_url)"
    ```
 
 4. **Signing key secret.** Leases are signed with the production license key. Pipe it in so it never shows on screen or in shell history:
 
    ```sh
-   npx -y wrangler@4 secret put HOSTELDESK_SIGNING_KEY < ~/.hosteldesk/signing_key.b64
+   env -u CLOUDFLARE_API_TOKEN npx -y wrangler@4 secret put HOSTELDESK_SIGNING_KEY < ~/.hosteldesk/signing_key.b64
    ```
 
 ## Every deploy
 
 ```sh
-scripts/deploy-worker.sh          # D1 migrations, then wrangler deploy
-scripts/smoke-worker.sh https://hosteldesk-sync.<your-subdomain>.workers.dev
+env -u CLOUDFLARE_API_TOKEN scripts/deploy-worker.sh   # migrates Neon, then wrangler deploy
+scripts/smoke-worker.sh https://hosteldesk-sync.ableabenaitwe.workers.dev
 ```
 
-The smoke test creates two throwaway organizations named "Smoke" and "Other". Delete them afterwards if you want a clean database. The test's sign-in lockout check also locks its own throwaway email for 15 minutes.
+The smoke test creates two throwaway organizations named "Smoke" and "Other". Delete them afterwards if you want a clean database.
 
-Logs: `npx -y wrangler@4 tail hosteldesk-sync`, or Workers → hosteldesk-sync → Observability in the dashboard.
+**Logs:** run `npx -y wrangler@4 tail hosteldesk-sync`, or open Workers → hosteldesk-sync → Observability in the Cloudflare dashboard.
 
 ## Operations
 
-All of these run from `crates/server` with `npx -y wrangler@4 d1 execute hosteldesk --remote --command "…"`:
+Run all of these with `psql "$(cat ~/.hosteldesk/neon_url)" -c "…"`:
 
 | Task | SQL |
 |---|---|
-| License a paying organization | `UPDATE organizations SET licensed = 1 WHERE id = '<org id>'` |
+| License a paying organization | `UPDATE organizations SET licensed = true WHERE id = '<org id>'` |
 | Find an organization by email | `SELECT o.id, o.name, o.licensed FROM organizations o JOIN accounts a ON a.org_id = o.id WHERE a.email = '<email>'` |
-| Revoke a lost or stolen computer | `UPDATE devices SET revoked_at = datetime('now') WHERE device_id = '<id>'` |
+| Revoke a lost or stolen computer | `UPDATE devices SET revoked_at = now() WHERE device_id = '<id>'` |
 | List an organization's computers | `SELECT device_id, name, device_prefix, created_at, revoked_at FROM devices WHERE org_id = '<org id>'` |
 
-D1 keeps 30 days of point-in-time history (`wrangler d1 time-travel`), which serves as the server-side backup.
+Neon keeps restorable history for a short window (hours) on the Free plan, and for longer on paid plans. Raise it in the Neon console (Project settings → Storage) before you have real customers, or move the project to a paid org.
 
 ## Schema changes
 
-Add a new numbered file in `crates/server/migrations/`; never edit one that has been applied. `scripts/deploy-worker.sh` applies it before the new Worker goes live. Keep each change backward compatible with the Worker version that is still running, because migrations run first.
+- Add a new numbered file in `crates/server/migrations/` (for example `0002_add_x.sql`). Never edit one that has been applied.
+- `scripts/migrate-sync-db.sh` applies pending files in order, each in its own transaction, and records them in `schema_migrations`. `scripts/deploy-worker.sh` runs it before the new Worker goes live.
+- Keep each change backward compatible with the Worker that is still running.

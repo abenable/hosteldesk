@@ -10,14 +10,14 @@ This is an all-**Rust** project: an **egui** desktop app plus a sync API that ru
 - `license` — Ed25519 license and offline-lease verification
 - `protocol` — sync wire types and the ledger rules, shared by the desktop and the server
 - `app` — egui shell and the `Desk` application service
-- `server` — the sync API. Built for `wasm32` it is the Cloudflare Worker (workers-rs, D1, `crates/server/wrangler.toml`); built natively it serves an in-memory store for tests. **No web framework** (no axum/tower/hyper): routing is a `match` on method and path.
+- `server` — the sync API. Built for `wasm32` it is the Cloudflare Worker (workers-rs, Neon Postgres through Hyperdrive, `crates/server/wrangler.toml`); built natively it serves an in-memory store for tests. **No web framework** (no axum/tower/hyper): routing is a `match` on method and path.
 
 ## 2. Tech Stack
 
 - **Rust**
 - **egui / eframe**
 - **sqlx** (SQLite on the desktop)
-- **workers-rs** + **Cloudflare D1** (the sync Worker)
+- **workers-rs** + **tokio-postgres** over **Cloudflare Hyperdrive** to **Neon Postgres** (the sync Worker)
 - **rust_decimal**
 - **chrono**
 
@@ -45,7 +45,7 @@ cargo clippy -p server --target wasm32-unknown-unknown -- -D warnings
 cargo test --workspace
 ```
 
-When `crates/server` or `crates/protocol` changes, also run the Worker against a local D1 (`crates/server`: `npx -y wrangler@4 d1 migrations apply hosteldesk --local`, then `npx -y wrangler@4 dev`) and `scripts/smoke-worker.sh`.
+When `crates/server` or `crates/protocol` changes, also run the Worker against a local Postgres and `scripts/smoke-worker.sh` (steps in `docs/DEVELOPMENT.md`).
 
 Treat warnings as failures. Fix the root cause; do not suppress or ignore them.
 
@@ -57,14 +57,14 @@ Document **all public Rust structs, enums, and functions** with doc comments (`/
 
 Before completing any task, review the code against these security and quality practices:
 
-- **SQL injection prevention** — use `sqlx::query`/`sqlx::query_as::<_, T>` (desktop) and D1 `prepare(..).bind(..)` (Worker) with bound (`?N`) parameters, never string-interpolated SQL. In the Worker, bind a list as one JSON array and expand it with `json_each(?N)`: D1 allows at most 100 bound parameters per statement. Prefer the runtime `query_as::<_, T>` form over the `query!`/`query_as!` macros: the macros need a live `DATABASE_URL` (or a committed `.sqlx/` cache) to compile, which this project deliberately avoids so CI never needs a database just to build.
+- **SQL injection prevention** — use `sqlx::query`/`sqlx::query_as::<_, T>` (desktop) and `tokio-postgres` `query(sql, &[..])` (Worker) with bound (`?N` / `$N`) parameters, never string-interpolated SQL. In the Worker, bind a list as one array parameter (`= ANY($N)`, `unnest($N::text[])`), not one parameter per item. Prefer the runtime `query_as::<_, T>` form over the `query!`/`query_as!` macros: the macros need a live `DATABASE_URL` (or a committed `.sqlx/` cache) to compile, which this project deliberately avoids so CI never needs a database just to build.
 - **Error handling** — use `Result<T, E>` and propagate errors explicitly. Avoid panics in normal control flow.
 - **Money on the wire** — amounts and rates are decimal strings checked with `protocol::validate_money`, which matches the desk's SQLite CHECK constraints, so nothing the server accepts can poison a desk's pull.
 - **No `.unwrap()` in production code** — use `?`, `.context(...)`, `unwrap_or`, `unwrap_or_else`, or explicit `match` instead. `.unwrap()` / `.expect()` are acceptable only in tests.
 
 ## 8. Migrations
 
-Desk migrations live in `crates/db/migrations/` and are applied by `sqlx::migrate!`. Worker (D1) migrations live in `crates/server/migrations/` and are applied by `wrangler d1 migrations apply` (see `scripts/deploy-worker.sh`). The rules below apply to both.
+Desk migrations live in `crates/db/migrations/` and are applied by `sqlx::migrate!`. Worker (Neon Postgres) migrations live in `crates/server/migrations/` and are applied by `scripts/migrate-sync-db.sh` (run by `scripts/deploy-worker.sh`), which records them in `schema_migrations`. The rules below apply to both.
 
 - **`20260905000000_initial_schema.sql` is frozen as of the `v1.0.0` tag.** It was re-baselined into a single file immediately before release, which is only safe because nothing had shipped yet. Once `v1.0.0` is tagged, that precondition no longer holds — never edit this file again; fix forward with a new timestamped migration, per the append-only rule below.
 - Migrations are **append-only** once shipped or applied to any teammate's or user's database. Never edit a migration file that has ever run against a real DB; fix forward with a new timestamped file.
@@ -84,5 +84,5 @@ Desk migrations live in `crates/db/migrations/` and are applied by `sqlx::migrat
   ```
 
 - The tag push triggers `.github/workflows/release.yml`, which builds the Ubuntu `.deb` (22.04) and the Windows NSIS `.exe`, uploads platform checksum files, and publishes the GitHub release. CI (`.github/workflows/ci.yml`) runs fmt, clippy `-D warnings` (native and wasm32), tests, and an installer-script compile on every `main` push and PR.
-- The sync Worker is deployed separately with `scripts/deploy-worker.sh` (D1 migrations, then `wrangler deploy`); see `docs/DEPLOY.md`. Deploy the Worker before releasing a desk build that depends on a new endpoint or migration.
+- The sync Worker is deployed separately with `scripts/deploy-worker.sh` (Neon migrations, then `wrangler deploy`); see `docs/DEPLOY.md`. Deploy the Worker before releasing a desk build that depends on a new endpoint or migration.
 - Do not move or re-tag a version tag once its release run has started; if a release fails, fix forward on `main` and cut the next version tag.

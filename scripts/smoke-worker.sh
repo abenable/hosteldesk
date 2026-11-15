@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# End-to-end check of the sync Worker against real D1.
+# End-to-end check of the sync Worker against a real Postgres.
 #
-#   cd crates/server && npx -y wrangler@4 d1 migrations apply hosteldesk --local
-#   npx -y wrangler@4 dev --port 8787 &
+# Locally (see docs/DEVELOPMENT.md for the Postgres container):
+#   SYNC_DATABASE_URL=postgres://postgres:devpass@127.0.0.1:55432/hosteldesk scripts/migrate-sync-db.sh
+#   cd crates/server && CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE=\
+#     "postgres://postgres:devpass@127.0.0.1:55432/hosteldesk?sslmode=disable" npx -y wrangler@4 dev --port 8787 &
 #   scripts/smoke-worker.sh http://127.0.0.1:8787
 #
 # Point it at the deployed URL to smoke-test production (it creates a throwaway org).

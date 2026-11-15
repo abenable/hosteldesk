@@ -1,7 +1,7 @@
 //! Hosted sync API: sign-up, device enrollment, push, and pull.
 //!
-//! Built for `wasm32` this crate is the Cloudflare Worker, storing data in D1
-//! (see `d1.rs`). Built natively it serves [`MemoryStore`], which the tests
+//! Built for `wasm32` this crate is the Cloudflare Worker, storing data in
+//! Neon Postgres through Hyperdrive (see `pg.rs`). Built natively it serves [`MemoryStore`], which the tests
 //! and the desk's two-desk sync test run against.
 //!
 //! Both stores go through the same [`route`] and run the same [`apply_batch`]
@@ -9,7 +9,7 @@
 //! one place. No web framework: routing is a `match` on method and path.
 
 #[cfg(target_arch = "wasm32")]
-mod d1;
+mod pg;
 
 use argon2::password_hash::{
     rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
@@ -90,7 +90,7 @@ fn tracing_log(detail: &str) {
     eprintln!("storage error: {detail}");
 }
 
-/// What [`route`] needs from a store. Crate-private: the Worker's D1 store and
+/// What [`route`] needs from a store. Crate-private: the Worker's Postgres store and
 /// [`MemoryStore`] are the only implementations.
 pub(crate) trait SyncStore {
     /// Create an organization and its first account.

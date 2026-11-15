@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Deploy the sync Worker: apply pending D1 migrations, then publish the Worker.
-# One-time setup (Workers Paid plan, `wrangler login`, `d1 create`, secrets): docs/DEPLOY.md.
+# Deploy the sync Worker: migrate the Neon database first, then publish the Worker.
+# One-time setup (Workers Paid, wrangler login, Neon, Hyperdrive, secret): docs/DEPLOY.md.
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/../crates/server"
-npx -y wrangler@4 d1 migrations apply hosteldesk --remote
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+"$root/scripts/migrate-sync-db.sh"
+cd "$root/crates/server"
 npx -y wrangler@4 deploy

@@ -1,6 +1,6 @@
 //! Process-local store for tests and the desk's two-desk sync test.
 //!
-// ponytail: no session expiry or sign-in lockout here; D1Store enforces both
+// ponytail: no session expiry or sign-in lockout here; PgStore enforces both
 // in SQL, and scripts/smoke-worker.sh covers them.
 
 use crate::{
@@ -37,7 +37,7 @@ struct Inner {
     hostels: HashMap<String, HostelData>,
 }
 
-/// In-memory [`SyncStore`]. One lock serializes every request, like D1 does.
+/// In-memory [`SyncStore`]. One lock serializes every request.
 pub struct MemoryStore {
     inner: Mutex<Inner>,
     signing_key: Option<SigningKey>,

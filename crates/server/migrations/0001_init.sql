@@ -1,12 +1,13 @@
--- HostelDesk sync server schema (Cloudflare D1). Append-only once deployed:
--- fix forward with a new numbered file, never edit this one.
+-- HostelDesk sync server schema (Neon Postgres, reached through Hyperdrive).
+-- Applied by scripts/migrate-sync-db.sh. Append-only once applied: fix forward
+-- with a new numbered file, never edit this one.
 
 CREATE TABLE organizations (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
-    -- Set to 1 by hand when the customer pays; only then do pulls carry a lease.
-    licensed INTEGER NOT NULL DEFAULT 0 CHECK (licensed IN (0, 1)),
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    -- Set to true by hand when the customer pays; only then do pulls carry a lease.
+    licensed BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE accounts (
@@ -14,14 +15,15 @@ CREATE TABLE accounts (
     org_id TEXT NOT NULL REFERENCES organizations(id),
     password_hash TEXT NOT NULL,
     failed_logins INTEGER NOT NULL DEFAULT 0,
-    locked_until TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    locked_until TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE INDEX idx_accounts_org ON accounts(org_id);
 
 CREATE TABLE sessions (
     token_hash TEXT PRIMARY KEY,
     org_id TEXT NOT NULL REFERENCES organizations(id),
-    expires_at TEXT NOT NULL
+    expires_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE TABLE devices (
@@ -30,8 +32,8 @@ CREATE TABLE devices (
     org_id TEXT NOT NULL REFERENCES organizations(id),
     device_prefix TEXT NOT NULL,
     name TEXT NOT NULL,
-    revoked_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    revoked_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (org_id, device_prefix)
 );
 
@@ -48,11 +50,11 @@ CREATE TABLE entities (
     kind TEXT NOT NULL,
     public_id TEXT NOT NULL,
     lookup_key TEXT,
-    active INTEGER NOT NULL DEFAULT 0,
-    body TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT false,
+    body JSONB NOT NULL,
     PRIMARY KEY (hostel_public_id, kind, public_id)
 );
-CREATE INDEX idx_entities_lookup ON entities(hostel_public_id, kind, lookup_key, active);
+CREATE INDEX idx_entities_lookup ON entities(hostel_public_id, kind, lookup_key);
 
 CREATE TABLE applied_commands (
     hostel_public_id TEXT NOT NULL REFERENCES hostels(public_id),
@@ -60,11 +62,10 @@ CREATE TABLE applied_commands (
     PRIMARY KEY (hostel_public_id, idempotency_key)
 );
 
--- Append-only change log that desks pull. The primary key doubles as the
--- write-conflict guard: two pushes from the same snapshot claim the same cursor.
+-- Append-only change log that desks pull, in cursor order.
 CREATE TABLE changes (
     hostel_public_id TEXT NOT NULL REFERENCES hostels(public_id),
-    cursor INTEGER NOT NULL,
-    body TEXT NOT NULL,
+    cursor BIGINT NOT NULL,
+    body JSONB NOT NULL,
     PRIMARY KEY (hostel_public_id, cursor)
 );

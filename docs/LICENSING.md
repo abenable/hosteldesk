@@ -44,9 +44,7 @@ A desk connected to HostelDesk Cloud can also be activated by a **lease**: a 14-
 To license an organization after a customer pays (find its id in the `organizations` table):
 
 ```sh
-cd crates/server
-npx -y wrangler@4 d1 execute hosteldesk --remote \
-  --command "UPDATE organizations SET licensed = 1 WHERE id = '<org id>'"
+psql "$(cat ~/.hosteldesk/neon_url)" -c "UPDATE organizations SET licensed = true WHERE id = '<org id>'"
 ```
 
-Set `licensed = 0` to stop issuing leases; desks keep working until their last lease expires.
+Set `licensed = false` to stop issuing leases; desks keep working until their last lease expires.
