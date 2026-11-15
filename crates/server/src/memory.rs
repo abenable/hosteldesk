@@ -4,10 +4,11 @@
 // in SQL, and scripts/smoke-worker.sh covers them.
 
 use crate::{
-    apply_batch, dev_signing_key, hash_password, normalize_email, random_device_prefix, random_id,
-    route, sign_lease, token_hash, verify_password, ApiError, Reply, SyncStore, DUMMY_HASH,
-    LEASE_DAYS,
+    account_lease, apply_batch, dev_signing_key, hash_password, normalize_email,
+    random_device_prefix, random_id, route, token_hash, verify_password, ApiError, Reply,
+    SyncStore, DUMMY_HASH, TRIAL_DAYS,
 };
+use chrono::NaiveDate;
 use ed25519_dalek::SigningKey;
 use protocol::{
     AuthResponse, EnrollRequest, EnrollResponse, Entity, Ledger, PullRequest, PullResponse,
@@ -28,10 +29,16 @@ struct HostelData {
     changes: Vec<(i64, Entity)>,
 }
 
+struct License {
+    name: String,
+    plan: String,
+    expires_on: NaiveDate,
+}
+
 #[derive(Default)]
 struct Inner {
     accounts: HashMap<String, Account>,
-    licensed: HashMap<String, bool>,
+    licenses: HashMap<String, License>,
     sessions: HashMap<String, String>,
     devices: HashMap<String, (String, String)>,
     hostels: HashMap<String, HostelData>,
@@ -77,10 +84,27 @@ impl MemoryStore {
         route(self, method, path, authorization, body).await
     }
 
-    /// Mark an organization as paid, so its pulls carry a lease.
-    pub fn mark_licensed(&self, org_id: &str) -> Result<(), ApiError> {
-        self.lock()?.licensed.insert(org_id.to_string(), true);
+    /// Set an organization's license, as `scripts/license-account.sh` does in Postgres.
+    pub fn set_license(
+        &self,
+        org_id: &str,
+        plan: &str,
+        expires_on: NaiveDate,
+    ) -> Result<(), ApiError> {
+        let mut inner = self.lock()?;
+        let license = inner
+            .licenses
+            .get_mut(org_id)
+            .ok_or_else(|| ApiError::BadRequest("no such organization".into()))?;
+        license.plan = plan.to_string();
+        license.expires_on = expires_on;
         Ok(())
+    }
+
+    fn lease(&self, inner: &Inner, org_id: &str) -> Option<String> {
+        let (key, license) = (self.signing_key.as_ref()?, inner.licenses.get(org_id)?);
+        let today = chrono::Utc::now().date_naive();
+        account_lease(&license.name, &license.plan, license.expires_on, today, key)
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, Inner>, ApiError> {
@@ -118,6 +142,14 @@ impl SyncStore for MemoryStore {
             return Err(ApiError::BadRequest("email is already registered".into()));
         }
         let org_id = random_id();
+        inner.licenses.insert(
+            org_id.clone(),
+            License {
+                name: request.organization_name.trim().to_string(),
+                plan: "trial".into(),
+                expires_on: chrono::Utc::now().date_naive() + chrono::Duration::days(TRIAL_DAYS),
+            },
+        );
         inner.accounts.insert(
             email,
             Account {
@@ -180,6 +212,7 @@ impl SyncStore for MemoryStore {
             device_prefix,
             refresh_token,
             hostel_public_ids,
+            lease: self.lease(&inner, &org_id),
         })
     }
 
@@ -241,18 +274,7 @@ impl SyncStore for MemoryStore {
         let has_more = page.len() > PULL_PAGE_SIZE as usize;
         page.truncate(PULL_PAGE_SIZE as usize);
         let cursor = page.last().map_or(request.cursor, |(at, _)| *at);
-        let lease = match (&self.signing_key, inner.licensed.get(&org_id)) {
-            (Some(key), Some(true)) => {
-                let name = hostel
-                    .ledger
-                    .hostel
-                    .as_ref()
-                    .map_or("HostelDesk", |hostel| hostel.name.as_str());
-                let expiry = chrono::Utc::now().date_naive() + chrono::Duration::days(LEASE_DAYS);
-                sign_lease(name, expiry, key)
-            }
-            _ => None,
-        };
+        let lease = self.lease(&inner, &org_id);
         Ok(PullResponse {
             cursor,
             changes: page.into_iter().map(|(_, entity)| entity.clone()).collect(),
@@ -459,7 +481,6 @@ mod tests {
         let pulled: PullResponse = serde_json::from_value(pulled).unwrap();
         assert!(!pulled.has_more);
         assert_eq!(pulled.cursor, pulled.changes.len() as i64);
-        assert!(pulled.lease.is_none(), "unlicensed orgs get no lease");
     }
 
     #[tokio::test]
@@ -482,38 +503,80 @@ mod tests {
         assert_eq!(status, 401);
     }
 
-    #[tokio::test]
-    async fn only_licensed_orgs_get_a_verifiable_lease() {
-        let key = SigningKey::from_bytes(&[7u8; 32]);
-        let app = MemoryStore::with_signing_key(key.clone());
-        let (org_id, refresh) = enrolled(&app).await;
-        let push = PushRequest {
-            hostel_public_id: "h1".into(),
-            commands: vec![envelope("1", room("r1", "1"))],
-        };
-        call(
-            &app,
-            "/v1/push",
-            Some(&refresh),
-            serde_json::to_value(&push).unwrap(),
-        )
-        .await;
-        let pull = serde_json::json!({"hostel_public_id":"h1","cursor":0});
-        let (_, before) = call(&app, "/v1/pull", Some(&refresh), pull.clone()).await;
-        assert!(before["lease"].is_null());
-
-        app.mark_licensed(&org_id).unwrap();
-        let (_, after) = call(&app, "/v1/pull", Some(&refresh), pull).await;
-        let lease = after["lease"].as_str().expect("licensed org gets a lease");
-        let (signature, payload) = lease.split_once(':').unwrap();
+    /// Verify a lease with `key` and return its payload.
+    fn open_lease(lease: &str, key: &SigningKey) -> serde_json::Value {
         use base64::Engine;
         use ed25519_dalek::Verifier;
         let engine = base64::engine::general_purpose::STANDARD;
+        let (signature, payload) = lease.split_once(':').unwrap();
         let signature =
             ed25519_dalek::Signature::from_slice(&engine.decode(signature).unwrap()).unwrap();
-        key.verifying_key()
-            .verify(&engine.decode(payload).unwrap(), &signature)
+        let payload = engine.decode(payload).unwrap();
+        key.verifying_key().verify(&payload, &signature).unwrap();
+        serde_json::from_slice(&payload).unwrap()
+    }
+
+    fn days(n: i64) -> String {
+        (chrono::Utc::now().date_naive() + chrono::Duration::days(n)).to_string()
+    }
+
+    async fn enroll_again(app: &MemoryStore) -> serde_json::Value {
+        let (_, auth) = call(
+            app,
+            "/v1/sign-in",
+            None,
+            serde_json::json!({"email":"a@b.co","password":"secret-pass"}),
+        )
+        .await;
+        let token = auth["access_token"].as_str().unwrap().to_string();
+        call(
+            app,
+            "/v1/devices",
+            Some(&token),
+            serde_json::json!({"device_name":"desk"}),
+        )
+        .await
+        .1
+    }
+
+    /// The account is the license: a new account is on a trial straight away,
+    /// so a fresh computer unlocks at sign-in, before it has any hostel.
+    #[tokio::test]
+    async fn a_new_account_unlocks_on_a_trial_lease() {
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let app = MemoryStore::with_signing_key(key.clone());
+        enrolled(&app).await;
+        let device = enroll_again(&app).await;
+        let lease = open_lease(device["lease"].as_str().expect("trial lease"), &key);
+        assert_eq!(lease["tier"], "trial");
+        assert_eq!(lease["hostel_name"], "North");
+        assert_eq!(lease["account_expiry"], days(crate::TRIAL_DAYS));
+        assert_eq!(lease["expiry_date"], days(crate::LEASE_DAYS));
+    }
+
+    #[tokio::test]
+    async fn the_lease_never_outlives_the_account_license() {
+        let key = SigningKey::from_bytes(&[7u8; 32]);
+        let app = MemoryStore::with_signing_key(key.clone());
+        let (org_id, _) = enrolled(&app).await;
+        let today = chrono::Utc::now().date_naive();
+
+        app.set_license(&org_id, "1-year", today + chrono::Duration::days(5))
             .unwrap();
+        let lease = open_lease(enroll_again(&app).await["lease"].as_str().unwrap(), &key);
+        assert_eq!(lease["tier"], "1-year");
+        assert_eq!(
+            lease["expiry_date"],
+            days(5),
+            "capped at the account expiry"
+        );
+
+        app.set_license(&org_id, "trial", today - chrono::Duration::days(1))
+            .unwrap();
+        assert!(
+            enroll_again(&app).await["lease"].is_null(),
+            "an expired account gets no lease"
+        );
     }
 
     #[tokio::test]

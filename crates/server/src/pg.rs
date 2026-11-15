@@ -14,9 +14,9 @@
 //! after the other against current data.
 
 use crate::{
-    apply_batch, dev_signing_key, dump_from, entity_key, hash_password, normalize_email,
-    random_device_prefix, random_id, route, sign_lease, signing_key_from_base64, token_hash,
-    verify_password, ApiError, BatchOutcome, SyncStore, DUMMY_HASH,
+    account_lease, apply_batch, dev_signing_key, dump_from, entity_key, hash_password,
+    normalize_email, random_device_prefix, random_id, route, signing_key_from_base64, token_hash,
+    verify_password, ApiError, BatchOutcome, SyncStore, DUMMY_HASH, TRIAL_DAYS,
 };
 use ed25519_dalek::SigningKey;
 use protocol::{
@@ -164,6 +164,34 @@ impl PgStore {
         .await?
         .map(|row| row.get(0))
         .ok_or(ApiError::Unauthorized)
+    }
+
+    /// A fresh lease for `org_id`, or `None` when its license has ended (or
+    /// no signing key is configured). "Today" is the database's date.
+    async fn lease(&self, org_id: &str) -> Result<Option<String>, ApiError> {
+        let Some(key) = &self.signing_key else {
+            return Ok(None);
+        };
+        let row = self
+            .row(
+                "SELECT name, license_plan, to_char(license_expires_on, 'YYYY-MM-DD'), \
+                 to_char(current_date, 'YYYY-MM-DD') FROM organizations WHERE id = $1",
+                &[(&org_id, Type::TEXT)],
+            )
+            .await?;
+        let (name, plan, expires_on, today): (String, String, String, String) =
+            (row.get(0), row.get(1), row.get(2), row.get(3));
+        let date = |text: &str| {
+            chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
+                .map_err(|e| ApiError::Storage(e.to_string()))
+        };
+        Ok(account_lease(
+            &name,
+            &plan,
+            date(&expires_on)?,
+            date(&today)?,
+            key,
+        ))
     }
 
     async fn new_session(&self, org_id: &str) -> Result<String, ApiError> {
@@ -352,7 +380,8 @@ impl SyncStore for PgStore {
         // created together or not at all.
         let result = self
             .exec(
-                "WITH org AS (INSERT INTO organizations (id, name) VALUES ($1, $2)), \
+                "WITH org AS (INSERT INTO organizations (id, name, license_plan, license_expires_on) \
+                              VALUES ($1, $2, 'trial', current_date + $6::int)), \
                       acc AS (INSERT INTO accounts (email, org_id, password_hash) \
                               VALUES ($3, $1, $4)) \
                  INSERT INTO sessions (token_hash, org_id, expires_at) \
@@ -363,6 +392,7 @@ impl SyncStore for PgStore {
                     (&email, Type::TEXT),
                     (&password_hash, Type::TEXT),
                     (&token_hash(&access_token), Type::TEXT),
+                    (&(TRIAL_DAYS as i32), Type::INT4),
                 ],
             )
             .await;
@@ -475,6 +505,7 @@ impl SyncStore for PgStore {
             device_prefix,
             refresh_token,
             hostel_public_ids,
+            lease: self.lease(&org_id).await?,
         })
     }
 
@@ -568,26 +599,7 @@ impl SyncStore for PgStore {
                     .map_err(|e| ApiError::Storage(e.to_string()))?,
             );
         }
-        let lease = match &self.signing_key {
-            Some(key) => {
-                let license = self
-                    .row(
-                        "SELECT o.licensed, to_char(current_date + 14, 'YYYY-MM-DD'), \
-                         coalesce((SELECT body->>'name' FROM entities \
-                                   WHERE hostel_public_id = $2 AND kind = 'hostel'), 'HostelDesk') \
-                         FROM organizations o WHERE o.id = $1",
-                        &[(&org_id, Type::TEXT), (&hostel, Type::TEXT)],
-                    )
-                    .await?;
-                let (licensed, expiry, name): (bool, String, String) =
-                    (license.get(0), license.get(1), license.get(2));
-                licensed
-                    .then(|| chrono::NaiveDate::parse_from_str(&expiry, "%Y-%m-%d").ok())
-                    .flatten()
-                    .and_then(|expiry| sign_lease(&name, expiry, key))
-            }
-            None => None,
-        };
+        let lease = self.lease(&org_id).await?;
         Ok(PullResponse {
             cursor,
             changes,

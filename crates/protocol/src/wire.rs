@@ -59,6 +59,9 @@ pub struct EnrollResponse {
     /// Hostels this organization already has on the server. Empty for the first desk.
     #[serde(default)]
     pub hostel_public_ids: Vec<String>,
+    /// Signed lease that activates this desk, while the account's license runs.
+    #[serde(default)]
+    pub lease: Option<String>,
 }
 
 /// Body of `POST /v1/push`.
@@ -117,6 +120,6 @@ pub struct PullResponse {
     /// More changes exist after `cursor`; pull again.
     #[serde(default)]
     pub has_more: bool,
-    /// Signed offline lease, only for organizations marked licensed.
+    /// Fresh signed lease, while the account's license runs.
     pub lease: Option<String>,
 }

@@ -35,7 +35,10 @@ tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
-server = { path = "../server" }
+# Tests sign and verify leases with the dev key. Dev-dependency features are
+# only unified into test builds, so a release build never accepts that key.
+license = { path = "../license", features = ["dev-license"] }
+server = { path = "../server", features = ["dev-license"] }
 tempfile = "3"
 
 [[bin]]

@@ -24,7 +24,7 @@ The Neon connection string lives only in `~/.hosteldesk/neon_url` (mode 0600), n
      --connection-string="$(sed 's/?.*//' ~/.hosteldesk/neon_url)"
    ```
 
-4. **Signing key secret.** Leases are signed with the production license key. Pipe it in so it never shows on screen or in shell history:
+4. **Signing key secret (required).** Licenses live on accounts, and the Worker signs each desk's lease with the production license key. Without this secret no desk can unlock. Pipe it in so it never shows on screen or in shell history:
 
    ```sh
    env -u CLOUDFLARE_API_TOKEN npx -y wrangler@4 secret put HOSTELDESK_SIGNING_KEY < ~/.hosteldesk/signing_key.b64
@@ -43,12 +43,12 @@ The smoke test creates two throwaway organizations named "Smoke" and "Other". De
 
 ## Operations
 
-Run all of these with `psql "$(cat ~/.hosteldesk/neon_url)" -c "…"`:
+Licensing has its own script. Run everything else with `psql "$(cat ~/.hosteldesk/neon_url)" -c "…"`:
 
 | Task | SQL |
 |---|---|
-| License a paying organization | `UPDATE organizations SET licensed = true WHERE id = '<org id>'` |
-| Find an organization by email | `SELECT o.id, o.name, o.licensed FROM organizations o JOIN accounts a ON a.org_id = o.id WHERE a.email = '<email>'` |
+| Sell, renew, show or end a license | `scripts/license-account.sh <email> 1-year` (see `LICENSING.md`) |
+| Find an organization by email | `SELECT o.id, o.name, o.license_plan, o.license_expires_on FROM organizations o JOIN accounts a ON a.org_id = o.id WHERE a.email = '<email>'` |
 | Revoke a lost or stolen computer | `UPDATE devices SET revoked_at = now() WHERE device_id = '<id>'` |
 | List an organization's computers | `SELECT device_id, name, device_prefix, created_at, revoked_at FROM devices WHERE org_id = '<org id>'` |
 

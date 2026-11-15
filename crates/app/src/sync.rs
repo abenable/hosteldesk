@@ -66,8 +66,10 @@ impl Desk {
     /// joining an organization that already has a hostel must be a fresh
     /// install; merging two different hostels is refused.
     ///
-    /// Signing in never unlocks the desk by itself: only a verified license
-    /// or a lease the server signs for a licensed organization does.
+    /// The account is the license: the server returns a signed lease while
+    /// the account's plan runs, and that lease unlocks this computer. Signing
+    /// in to an account whose license has ended, or to any server whose lease
+    /// does not verify, leaves the desk locked.
     pub async fn connect_cloud(
         &self,
         server_url: &str,
@@ -123,6 +125,9 @@ impl Desk {
         }
 
         store_token(&self.paths, &enrolled.refresh_token)?;
+        if let Some(lease) = &enrolled.lease {
+            self.adopt_lease(lease);
+        }
         write_config(
             &self.paths,
             &CloudConfig {
@@ -467,15 +472,18 @@ mod tests {
     use db::{DbPool, NewCheckIn, NewHostel, NewPayment, NewRoom};
     use std::sync::Arc;
 
-    async fn memory_server() -> String {
+    async fn memory_server() -> (String, Arc<server::MemoryStore>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
         let addr = listener.local_addr().expect("addr");
+        // `MemoryStore::new` signs leases with the dev key (dev-license feature).
+        let store = Arc::new(server::MemoryStore::new());
+        let served = store.clone();
         tokio::spawn(async move {
-            let _ = server::serve_memory(listener, Arc::new(server::MemoryStore::new())).await;
+            let _ = server::serve_memory(listener, served).await;
         });
-        format!("http://{addr}")
+        (format!("http://{addr}"), store)
     }
 
     async fn desk_at(root: &std::path::Path) -> Desk {
@@ -515,7 +523,7 @@ mod tests {
     /// receipt numbers, and an overbooked bed is flagged instead of undone.
     #[tokio::test]
     async fn existing_hostel_uploads_fresh_desk_joins_and_overbooking_is_flagged() {
-        let url = memory_server().await;
+        let (url, _) = memory_server().await;
         let root_a = tempfile::tempdir().expect("temp a");
         let desk_a = desk_at(root_a.path()).await;
         let hostel = desk_a
@@ -588,9 +596,10 @@ mod tests {
         assert_eq!(report.issues, 0, "{report:?}");
         assert!(report.pushed >= 5, "{report:?}");
         assert_eq!(desk_a.db.pending_sync_count(hostel.id).await.unwrap(), 0);
-        assert!(
-            desk_a.license_status().is_none(),
-            "signing in to an unlicensed organization must not unlock the desk"
+        assert_eq!(
+            desk_a.license_status().map(|license| license.tier),
+            Some("trial".to_string()),
+            "a new account unlocks on its trial"
         );
 
         // A desk that already has its own hostel may not join this organization.
@@ -664,6 +673,46 @@ mod tests {
                 "neither stay is rolled back"
             );
         }
+    }
+
+    /// Licensing is on the account: a fresh computer unlocks by signing in,
+    /// and only while the account's license runs.
+    #[tokio::test]
+    async fn signing_in_unlocks_only_while_the_account_is_licensed() {
+        let (url, store) = memory_server().await;
+        let root = tempfile::tempdir().expect("temp");
+        let desk = desk_at(root.path()).await;
+        assert!(desk.license_status().is_none());
+        desk.connect_cloud(&url, "owner@hostel.co", "secret-pass", true, "Sunrise")
+            .await
+            .expect("sign up");
+        let license = desk
+            .license_status()
+            .expect("unlocked at sign-up, before any hostel");
+        assert_eq!(license.hostel_name, "Sunrise");
+        assert!(license.account_expiry.is_some());
+
+        // The account's license ends: a computer signing in now stays locked.
+        let auth: protocol::AuthResponse = reqwest::Client::new()
+            .post(format!("{url}/v1/sign-in"))
+            .json(&serde_json::json!({"email":"owner@hostel.co","password":"secret-pass"}))
+            .send()
+            .await
+            .expect("sign in")
+            .json()
+            .await
+            .expect("auth");
+        let yesterday = chrono::Utc::now().date_naive() - chrono::Duration::days(1);
+        store
+            .set_license(&auth.organization_id, "trial", yesterday)
+            .expect("expire");
+        let root_b = tempfile::tempdir().expect("temp b");
+        let desk_b = desk_at(root_b.path()).await;
+        desk_b
+            .connect_cloud(&url, "owner@hostel.co", "secret-pass", false, "")
+            .await
+            .expect("sign in");
+        assert!(desk_b.license_status().is_none());
     }
 
     #[test]

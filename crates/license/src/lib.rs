@@ -11,8 +11,13 @@ pub struct LicensePayload {
     pub hostel_name: String,
     /// License expiration date.
     pub expiry_date: NaiveDate,
-    /// Licensed feature tier.
+    /// Licensed feature tier, or the account's plan for a cloud lease.
     pub tier: String,
+    /// For a cloud lease: when the account's license itself ends. The lease
+    /// (`expiry_date`) is renewed on every sync up to this date. Absent in
+    /// license files issued before accounts existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_expiry: Option<NaiveDate>,
 }
 
 /// Errors that can occur during license verification.
@@ -177,6 +182,7 @@ mod tests {
             hostel_name: "Sunny Hostel".to_string(),
             expiry_date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
             tier: "pro".to_string(),
+            account_expiry: None,
         };
         let key = signing_key();
         let license = sign_payload(&payload, &key);
@@ -193,6 +199,7 @@ mod tests {
             hostel_name: "Sunny Hostel".to_string(),
             expiry_date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
             tier: "pro".to_string(),
+            account_expiry: None,
         };
         let key = signing_key();
         let json = serde_json::to_vec(&payload).expect("payload serializes");
@@ -223,6 +230,7 @@ mod tests {
             hostel_name: "Sunny Hostel".to_string(),
             expiry_date: NaiveDate::from_ymd_opt(2025, 1, 1).unwrap(),
             tier: "pro".to_string(),
+            account_expiry: None,
         };
         let key = signing_key();
         let license = sign_payload(&payload, &key);

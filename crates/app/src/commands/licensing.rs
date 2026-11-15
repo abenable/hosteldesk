@@ -7,7 +7,8 @@ pub fn get_license_status(state: &crate::LicenseState) -> Option<LicensePayload>
     state.get()
 }
 
-/// Validate a license string, persist it, and update in-memory state.
+/// Validate a license string (a lease from the server), persist it beside the
+/// database so the desk unlocks offline until it expires, and update state.
 pub fn activate_license_text(
     license: &str,
     state: &crate::LicenseState,
@@ -25,23 +26,6 @@ pub fn activate_license_text(
 
     state.set(payload.clone());
     Ok(payload)
-}
-
-/// Open a native file dialog, then validate and persist the chosen license.
-pub fn activate_license_from_file(
-    state: &crate::LicenseState,
-    paths: &crate::paths::AppPaths,
-) -> Result<LicensePayload, String> {
-    let path = rfd::FileDialog::new()
-        .set_title("Select your HostelDesk license file")
-        .add_filter("HostelDesk license", &["hdlicense", "lic", "txt"])
-        .pick_file()
-        .ok_or_else(|| "No file selected".to_string())?;
-
-    let contents =
-        std::fs::read_to_string(&path).map_err(|e| format!("could not read license file: {e}"))?;
-
-    activate_license_text(contents.trim(), state, paths)
 }
 
 /// Return the running application version (`CARGO_PKG_VERSION`).

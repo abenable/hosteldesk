@@ -15,7 +15,7 @@
 
 ```sh
 cargo run -p app                       # debug window
-cargo run -p app --features dev-license  # accept a dev license (cargo run -p license --example generate_dev_license)
+cargo run -p app --features dev-license  # accept dev-key leases/licenses (see LICENSING.md → Development)
 cargo build --release -p app          # release binary at target/release/hosteldesk
 ```
 

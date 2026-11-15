@@ -25,6 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .checked_add_days(Days::new(3650))
             .ok_or("date overflow computing dev license expiry")?,
         tier: "pro".to_string(),
+        account_expiry: None,
     };
     let json = serde_json::to_vec(&payload)?;
     let signature = signing_key.sign(&json);

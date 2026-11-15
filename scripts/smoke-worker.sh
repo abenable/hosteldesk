@@ -83,7 +83,10 @@ done
 out="$(post /v1/pull "$refresh2" "{\"hostel_public_id\":\"$hostel\",\"cursor\":0}")"
 expect 200 "$out" "pull"
 body="${out#* }"
-jq -e '.has_more == false and .lease == null' <<<"$body" >/dev/null || fail "pull flags: $body"
+jq -e '.has_more == false' <<<"$body" >/dev/null || fail "pull flags: $body"
+# New accounts start on a trial, so a lease comes back whenever the Worker has
+# a signing key (production); without one (local dev) there is none.
+echo "trial lease issued: $(jq -r 'if .lease then "yes" else "no (no signing key)" end' <<<"$body")"
 rooms="$(jq -r '[.changes[] | select(.entity == "room") | .room_number] | unique | join(",")' <<<"$body")"
 [[ "$rooms" == "101,103,104" ]] || fail "pulled rooms: $rooms"
 jq -e '[.changes[] | select(.entity == "payment")] | length == 1 and .[0].payment_date == "2026-11-15T09:30:00Z"' <<<"$body" >/dev/null || fail "pulled payment"

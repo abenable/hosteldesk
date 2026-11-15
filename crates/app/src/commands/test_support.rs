@@ -19,6 +19,7 @@ pub(crate) fn setup_license_state() -> LicenseState {
         hostel_name: "Money Test Hostel".to_string(),
         expiry_date: chrono::Utc::now().date_naive() + chrono::Duration::days(30),
         tier: "trial".to_string(),
+        account_expiry: None,
     });
     state
 }

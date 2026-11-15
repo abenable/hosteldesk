@@ -295,17 +295,27 @@ pub fn dev_signing_key() -> Option<SigningKey> {
     None
 }
 
-/// Sign an offline lease in the `license` crate's format (`sig:payload`,
-/// both base64) that expires on `expiry`.
-pub fn sign_lease(
-    hostel_name: &str,
-    expiry: chrono::NaiveDate,
+/// Sign a lease for an account whose license (`plan`) runs until
+/// `expires_on`, in the `license` crate's format (`sig:payload`, both base64).
+///
+/// The lease lasts [`LEASE_DAYS`] but never past `expires_on`, so a desk that
+/// stops syncing locks within two weeks and never outlives the account's
+/// license. Returns `None` once the license has ended.
+pub fn account_lease(
+    account_name: &str,
+    plan: &str,
+    expires_on: chrono::NaiveDate,
+    today: chrono::NaiveDate,
     key: &SigningKey,
 ) -> Option<String> {
+    if expires_on < today {
+        return None;
+    }
     let payload = serde_json::json!({
-        "hostel_name": hostel_name,
-        "expiry_date": expiry,
-        "tier": "sync",
+        "hostel_name": account_name,
+        "expiry_date": expires_on.min(today + chrono::Duration::days(LEASE_DAYS)),
+        "tier": plan,
+        "account_expiry": expires_on,
     });
     let json = serde_json::to_vec(&payload).ok()?;
     let signature = key.sign(&json);
@@ -316,8 +326,12 @@ pub fn sign_lease(
     ))
 }
 
-/// Days an offline lease stays valid after the last successful pull.
+/// Days a lease stays valid after the desk last reached the server.
 pub const LEASE_DAYS: i64 = 14;
+
+/// Free trial every new account starts with. Paid plans are set with
+/// `scripts/license-account.sh`.
+pub const TRIAL_DAYS: i64 = 30;
 
 /// Serve one request. `authorization` is the raw `Authorization` header.
 pub(crate) async fn route(

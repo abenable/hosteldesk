@@ -64,14 +64,12 @@ impl Desk {
         commands::get_license_status(&self.license)
     }
 
-    /// Verify `license`, store it beside the database, and unlock the desk.
-    pub fn activate_license_text(&self, license: &str) -> Result<license::LicensePayload, String> {
+    /// Verify a lease from the server, store it beside the database, and unlock the desk.
+    pub(crate) fn activate_license_text(
+        &self,
+        license: &str,
+    ) -> Result<license::LicensePayload, String> {
         commands::activate_license_text(license, &self.license, &self.paths)
-    }
-
-    /// Ask the user for a license file, then activate it.
-    pub fn activate_license_from_file(&self) -> Result<license::LicensePayload, String> {
-        commands::activate_license_from_file(&self.license, &self.paths)
     }
 
     /// `CARGO_PKG_VERSION` of the running binary.
