@@ -20,13 +20,17 @@ if [[ -z "$makensis" ]]; then
 fi
 [[ -n "$makensis" ]] || { echo "makensis not found; install NSIS first" >&2; exit 1; }
 
-# On Windows, makensis wants a native path for the output file.
-command -v cygpath >/dev/null && outfile="$(cygpath -w "$outfile")"
+# Windows makensis splits File paths only on backslashes, so give it native
+# paths there; forward slashes elsewhere.
+native() {
+  if command -v cygpath >/dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi
+}
 
 # -NOCD keeps the repo root as the base for relative paths (makensis otherwise
 # changes into the script's folder).
 "$makensis" -NOCD \
   -DVERSION="$version" \
-  -DOUTFILE="$outfile" \
-  -DBINARY=target/release/hosteldesk.exe \
+  -DOUTFILE="$(native "$outfile")" \
+  -DBINARY="$(native target/release/hosteldesk.exe)" \
+  -DICON="$(native crates/app/icons/icon.ico)" \
   packaging/windows/hosteldesk.nsi

@@ -1,7 +1,8 @@
 ; Per-user HostelDesk installer. Silent install is `/S`, which scripts/install.ps1 uses.
 ;
 ; Build from the repo root with -NOCD so relative paths resolve there:
-;   makensis -NOCD -DVERSION=2.0.0 -DOUTFILE=out.exe -DBINARY=target/release/hosteldesk.exe packaging/windows/hosteldesk.nsi
+;   packaging/windows/build-installer.sh <version> <outfile>
+; (it runs makensis -NOCD with native paths; Windows makensis needs backslashes in File paths)
 ;
 ; Installs into the same folder, Start-menu shortcut and Uninstall registry key
 ; the 1.x (Tauri) installer used, so upgrading replaces it instead of leaving a
@@ -18,7 +19,9 @@
 !ifndef BINARY
   !define BINARY "target/release/hosteldesk.exe"
 !endif
-!define ICON "crates/app/icons/icon.ico"
+!ifndef ICON
+  !define ICON "crates/app/icons/icon.ico"
+!endif
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\HostelDesk"
 
 Name "HostelDesk ${VERSION}"

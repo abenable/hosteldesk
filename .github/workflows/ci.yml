@@ -64,6 +64,6 @@ jobs:
       - name: Build installer
         shell: bash
         run: |
-          mkdir -p target/release && : > target/release/hosteldesk.exe
+          mkdir -p target/release && printf 'placeholder' > target/release/hosteldesk.exe
           packaging/windows/build-installer.sh 0.0.0 "$RUNNER_TEMP/installer-check.exe"
           test -s "$RUNNER_TEMP/installer-check.exe"
