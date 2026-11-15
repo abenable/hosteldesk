@@ -214,7 +214,8 @@ impl DbPool {
         let row = sqlx::query_as::<_, Hostel>(
             r#"
             UPDATE hostels
-            SET name = ?1, address = ?2, phone = ?3, currency = ?4, branding_logo_path = ?5
+            SET name = ?1, address = ?2, phone = ?3, currency = ?4, branding_logo_path = ?5,
+                revision = revision + 1
             WHERE id = ?6
             RETURNING id, name, address, phone, currency, branding_logo_path, created_at
             "#,

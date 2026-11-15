@@ -6,6 +6,6 @@
 powershell -c "irm https://raw.githubusercontent.com/abenable/hosteldesk/main/scripts/install.ps1|iex"
 ```
 
-Both a per-user setup `.exe` and a machine-wide MSI are published; the MSI supports silent install with `msiexec /i HostelDesk_<version>_x64_en-US.msi /qn`.
+The published installer is a per-user NSIS setup (`HostelDesk_<version>_x64-setup.exe`). It installs silently with `/S`.
 
-**Linux (Ubuntu 22.04+)** — download the `.deb` from [Releases](https://github.com/abenable/hosteldesk/releases) and install it with `sudo apt install ./HostelDesk_<version>_amd64.deb`. Runtime dependencies (WebKitGTK and friends) are declared by the package.
+**Linux (Ubuntu 22.04+)** — download the `.deb` from [Releases](https://github.com/abenable/hosteldesk/releases) and install it with `sudo apt install ./HostelDesk_<version>_amd64.deb`. The package depends on GTK 3 and the usual X11/Wayland libraries, not a web view.

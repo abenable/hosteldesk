@@ -3,8 +3,6 @@ use chrono::NaiveDate;
 use db::{DbPool, ListPaymentsFilter, NewPayment, PaymentRow};
 use hosteldesk_core::currency::{parse_money, parse_positive_money};
 use serde::Deserialize;
-use tauri::Manager;
-use tauri::State;
 use tracing::{debug, error, info, instrument};
 
 /// Payload for recording a payment.
@@ -27,7 +25,7 @@ pub struct GenerateReceiptRequest {
     pub hostel_name: String,
     pub hostel_address: Option<String>,
     pub hostel_phone: Option<String>,
-    pub receipt_number: u64,
+    pub receipt_number: String,
     pub resident_name: String,
     pub room_number: String,
     pub amount: String,
@@ -47,16 +45,15 @@ pub struct GenerateReceiptRequest {
 ///
 /// Returns the generated `payment_id` and `receipt_number`. The PDF itself is
 /// generated separately via [`generate_and_open_receipt`].
-#[tauri::command]
 #[instrument(
     skip(state, license_state),
     fields(command = "record_payment_and_generate_receipt")
 )]
 pub async fn record_payment_and_generate_receipt(
     request: RecordPaymentRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<(i64, String), String> {
     info!(
         hostel_id = request.hostel_id,
@@ -64,8 +61,8 @@ pub async fn record_payment_and_generate_receipt(
         resident_id = request.resident_id,
         "record_payment_and_generate_receipt invoked"
     );
-    require_license(&license_state)?;
-    require_session(&auth_state, request.hostel_id)?;
+    require_license(license_state)?;
+    require_session(auth_state, request.hostel_id)?;
 
     let amount = parse_positive_money(&request.amount).map_err(|e| e.to_string())?;
 
@@ -91,30 +88,30 @@ pub async fn record_payment_and_generate_receipt(
 
 /// Generate a PDF receipt, open it with the default system PDF viewer, and
 /// persist the generated path back to the corresponding `receipts` row.
-#[tauri::command]
 #[instrument(
-    skip(app, state, license_state),
+    skip(paths, state, license_state),
     fields(command = "generate_and_open_receipt")
 )]
 pub async fn generate_and_open_receipt(
     request: GenerateReceiptRequest,
-    app: tauri::AppHandle,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    paths: &crate::paths::AppPaths,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<String, String> {
     info!(
         receipt_number = request.receipt_number,
         resident_name = %request.resident_name,
         "generate_and_open_receipt invoked"
     );
-    require_license(&license_state)?;
-    require_session(&auth_state, request.hostel_id)?;
+    require_license(license_state)?;
+    require_session(auth_state, request.hostel_id)?;
 
     let amount = parse_positive_money(&request.amount).map_err(|e| e.to_string())?;
     let balance = parse_money(&request.balance).map_err(|e| e.to_string())?;
-    let logo_path = validate_logo_path(&app, request.hostel_id, request.logo_path)?;
+    let logo_path = validate_logo_path(paths, request.hostel_id, request.logo_path)?;
 
+    let receipt_number = request.receipt_number.clone();
     let payload = pdf::ReceiptPayload {
         hostel_name: request.hostel_name,
         hostel_address: request.hostel_address,
@@ -132,27 +129,22 @@ pub async fn generate_and_open_receipt(
         logo_path,
     };
 
-    let documents_dir = app
-        .path()
-        .document_dir()
-        .map_err(|e| format!("Could not locate Documents folder: {e}"))?;
-    let out_dir = documents_dir.join("HostelDesk").join("receipts");
+    let out_dir = paths.receipts_dir();
     std::fs::create_dir_all(&out_dir).map_err(|e| e.to_string())?;
 
     let safe_name = payload
         .resident_name
         .replace(|c: char| !c.is_alphanumeric(), "_");
-    let filename = format!(
-        "receipt_{:08}_{}_{}.pdf",
-        payload.receipt_number, safe_name, payload.date
-    );
+    let safe_number = payload
+        .receipt_number
+        .replace(|c: char| !c.is_ascii_alphanumeric(), "_");
+    let filename = format!("receipt_{safe_number}_{safe_name}_{}.pdf", payload.date);
     let path = out_dir.join(filename);
 
     pdf::generate_receipt(&payload, &path).map_err(|e| e.to_string())?;
     open::that(&path).map_err(|e| e.to_string())?;
 
     let path_str = path.to_string_lossy().to_string();
-    let receipt_number = request.receipt_number.to_string();
     if let Err(e) = state
         .update_receipt_pdf_path(request.hostel_id, &receipt_number, &path_str)
         .await
@@ -173,7 +165,7 @@ pub async fn generate_and_open_receipt(
 /// `restore_backup`'s containment check: canonicalize both sides and fail
 /// closed rather than pass an unvalidated path through.
 fn validate_logo_path(
-    app: &tauri::AppHandle,
+    paths: &crate::paths::AppPaths,
     hostel_id: i64,
     logo_path: Option<String>,
 ) -> Result<Option<String>, String> {
@@ -181,11 +173,7 @@ fn validate_logo_path(
         return Ok(None);
     };
 
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("could not resolve app data dir: {e}"))?;
-    let logo_dir = data_dir.join("hostels").join(hostel_id.to_string());
+    let logo_dir = paths.logo_dir(hostel_id);
 
     let candidate = std::path::Path::new(&logo_path)
         .canonicalize()
@@ -202,17 +190,16 @@ fn validate_logo_path(
 }
 
 /// List the payments ledger, optionally filtered by date, resident or method.
-#[tauri::command]
 #[instrument(skip(state, license_state), fields(command = "list_payments"))]
 pub async fn list_payments(
     request: ListPaymentsFilter,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<Vec<PaymentRow>, String> {
     info!(hostel_id = request.hostel_id, "list_payments invoked");
-    require_license(&license_state)?;
-    require_session(&auth_state, request.hostel_id)?;
+    require_license(license_state)?;
+    require_session(auth_state, request.hostel_id)?;
     state
         .list_payments(request)
         .await
@@ -222,9 +209,22 @@ pub async fn list_payments(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::test_support::{setup_license_state, temp_db_url};
-    use crate::{commands, AuthState, LicenseState};
-    use tauri::Manager;
+    use crate::commands;
+    use crate::commands::test_support::{setup_license_state, temp_db_url, COUNTER};
+    use crate::AuthState;
+    use std::sync::atomic::Ordering;
+
+    fn test_desk(pool: DbPool, auth: AuthState, license: crate::LicenseState) -> crate::Desk {
+        let index = COUNTER.fetch_add(1, Ordering::Relaxed);
+        crate::Desk::from_parts(
+            pool,
+            auth,
+            license,
+            crate::paths::AppPaths::for_test(
+                std::env::temp_dir().join(format!("hosteldesk_pay_{}_{index}", std::process::id())),
+            ),
+        )
+    }
 
     async fn setup_payment_fixture(pool: &DbPool) -> (i64, i64, i64, i64) {
         let hostel = pool
@@ -283,11 +283,8 @@ mod tests {
         let (hostel_id, _room_id, resident_id, allocation_id) = setup_payment_fixture(&pool).await;
         let license_state = setup_license_state();
 
-        let app = tauri::test::mock_app();
-        app.manage(pool);
-        app.manage(license_state);
-        app.manage(AuthState::new());
-
+        let auth_state = AuthState::new();
+        let desk = test_desk(pool, auth_state, license_state);
         let request = commands::RecordPaymentRequest {
             hostel_id,
             allocation_id,
@@ -299,23 +296,17 @@ mod tests {
             notes: None,
         };
 
-        let result = commands::record_payment_and_generate_receipt(
-            request,
-            app.state::<DbPool>(),
-            app.state::<LicenseState>(),
-            app.state::<AuthState>(),
-        )
-        .await;
+        let result = desk.record_payment_and_generate_receipt(request).await;
         assert!(result.is_err(), "negative amount should be rejected");
 
         let payment_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM payments")
-            .fetch_one(&app.state::<DbPool>().inner)
+            .fetch_one(&desk.db.inner)
             .await
             .expect("count payments");
         assert_eq!(payment_count, 0, "no payment row should be inserted");
 
         let receipt_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM receipts")
-            .fetch_one(&app.state::<DbPool>().inner)
+            .fetch_one(&desk.db.inner)
             .await
             .expect("count receipts");
         assert_eq!(receipt_count, 0, "no receipt row should be inserted");
@@ -328,11 +319,8 @@ mod tests {
         let (hostel_id, _room_id, resident_id, allocation_id) = setup_payment_fixture(&pool).await;
         let license_state = setup_license_state();
 
-        let app = tauri::test::mock_app();
-        app.manage(pool);
-        app.manage(license_state);
-        app.manage(AuthState::new());
-
+        let auth_state = AuthState::new();
+        let desk = test_desk(pool, auth_state, license_state);
         let request = commands::RecordPaymentRequest {
             hostel_id,
             allocation_id,
@@ -344,23 +332,17 @@ mod tests {
             notes: None,
         };
 
-        let result = commands::record_payment_and_generate_receipt(
-            request,
-            app.state::<DbPool>(),
-            app.state::<LicenseState>(),
-            app.state::<AuthState>(),
-        )
-        .await;
+        let result = desk.record_payment_and_generate_receipt(request).await;
         assert!(result.is_err(), "zero amount should be rejected");
 
         let payment_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM payments")
-            .fetch_one(&app.state::<DbPool>().inner)
+            .fetch_one(&desk.db.inner)
             .await
             .expect("count payments");
         assert_eq!(payment_count, 0, "no payment row should be inserted");
 
         let receipt_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM receipts")
-            .fetch_one(&app.state::<DbPool>().inner)
+            .fetch_one(&desk.db.inner)
             .await
             .expect("count receipts");
         assert_eq!(receipt_count, 0, "no receipt row should be inserted");

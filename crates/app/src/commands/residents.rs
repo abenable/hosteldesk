@@ -1,7 +1,6 @@
 use super::support::*;
 use db::{DbPool, ResidentDetail, ResidentSummary};
 use serde::Deserialize;
-use tauri::State;
 use tracing::{info, instrument};
 
 /// Request payload for [`list_residents`].
@@ -11,17 +10,16 @@ pub struct ListResidentsRequest {
 }
 
 /// List every resident in the hostel directory.
-#[tauri::command]
 #[instrument(skip(state, license_state), fields(command = "list_residents"))]
 pub async fn list_residents(
     request: ListResidentsRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<Vec<ResidentSummary>, String> {
     info!(hostel_id = request.hostel_id, "list_residents invoked");
-    require_license(&license_state)?;
-    require_session(&auth_state, request.hostel_id)?;
+    require_license(license_state)?;
+    require_session(auth_state, request.hostel_id)?;
     state
         .list_residents(request.hostel_id)
         .await
@@ -36,21 +34,20 @@ pub struct GetResidentDetailRequest {
 }
 
 /// Return full resident detail or a clear "resident not found" error.
-#[tauri::command]
 #[instrument(skip(state, license_state), fields(command = "get_resident_detail"))]
 pub async fn get_resident_detail(
     request: GetResidentDetailRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<ResidentDetail, String> {
     info!(
         hostel_id = request.hostel_id,
         resident_id = request.resident_id,
         "get_resident_detail invoked"
     );
-    require_license(&license_state)?;
-    require_session(&auth_state, request.hostel_id)?;
+    require_license(license_state)?;
+    require_session(auth_state, request.hostel_id)?;
     state
         .get_resident_detail(request.hostel_id, request.resident_id)
         .await
@@ -78,17 +75,16 @@ pub struct UpdateResidentRequest {
 }
 
 /// Update a resident's contact details.
-#[tauri::command]
 #[instrument(skip(state, license_state), fields(command = "update_resident"))]
 pub async fn update_resident(
     request: UpdateResidentRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<(), String> {
     info!(resident_id = request.resident_id, "update_resident invoked");
-    require_license(&license_state)?;
-    require_session(&auth_state, request.hostel_id)?;
+    require_license(license_state)?;
+    require_session(auth_state, request.hostel_id)?;
     state
         .update_resident(db::UpdateResident {
             hostel_id: request.hostel_id,

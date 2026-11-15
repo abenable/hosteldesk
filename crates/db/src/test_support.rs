@@ -45,10 +45,15 @@ pub(crate) async fn seed_room(
 }
 
 pub(crate) async fn seed_resident(pool: &DbPool, name: &str) -> i64 {
+    let hostel_id: i64 = sqlx::query_scalar("SELECT id FROM hostels ORDER BY id LIMIT 1")
+        .fetch_one(&pool.inner)
+        .await
+        .expect("seed resident requires a hostel");
     let mut tx = pool.inner.begin().await.expect("begin seed resident tx");
     let id = insert_resident(
         &mut tx,
         &NewResident {
+            hostel_id,
             full_name: name.to_string(),
             phone: None,
             email: None,

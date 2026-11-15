@@ -30,6 +30,7 @@ impl DbPool {
                 insert_resident(
                     &mut tx,
                     &NewResident {
+                        hostel_id: check_in.hostel_id,
                         full_name: name.to_string(),
                         phone: check_in.phone.clone(),
                         email: check_in.email.clone(),

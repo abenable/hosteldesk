@@ -52,7 +52,7 @@ pub const PUBLIC_KEY_BASE64: &str = "BA3xuwJ0e/4CPj2FIhK4Aah0U6Q2POZiOfjaAwB2Ut0
 /// `dev-license` feature, so developers can activate the app locally with
 /// [`examples/generate_dev_license.rs`] without holding the production
 /// signing key. Never enabled in a shippable build: gating this on
-/// `debug_assertions` alone would let `cargo tauri build --debug` (or
+/// `debug_assertions` alone would let `cargo build -p app` (or
 /// `RUSTFLAGS=-Cdebug-assertions=on`) produce a binary that accepts licenses
 /// anyone can mint from the repo.
 #[cfg(feature = "dev-license")]

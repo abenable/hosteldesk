@@ -2,8 +2,6 @@ use super::support::*;
 use db::DbPool;
 use serde::Deserialize;
 use sqlx::sqlite::SqliteConnectOptions;
-use tauri::State;
-use tauri::{AppHandle, Manager};
 use tracing::{error, info, instrument};
 
 /// Uses SQLite `VACUUM INTO` to produce a compact, consistent single-file copy
@@ -11,26 +9,21 @@ use tracing::{error, info, instrument};
 /// on the source.
 ///
 /// Returns the absolute path to the created backup file.
-#[tauri::command]
 #[instrument(
-    skip(app, state, license_state, auth_state),
+    skip(paths, state, license_state, auth_state),
     fields(command = "backup_database")
 )]
 pub async fn backup_database(
-    app: AppHandle,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    paths: &crate::paths::AppPaths,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<String, String> {
     info!("backup_database invoked");
-    require_license(&license_state)?;
-    require_admin_current(&auth_state)?;
+    require_license(license_state)?;
+    require_admin_current(auth_state)?;
 
-    let documents_dir = app
-        .path()
-        .document_dir()
-        .map_err(|e| format!("Could not locate Documents folder: {e}"))?;
-    let backup_dir = documents_dir.join("HostelDesk").join("backups");
+    let backup_dir = paths.backups_dir();
     std::fs::create_dir_all(&backup_dir)
         .map_err(|e| format!("Could not create backup directory: {e}"))?;
 
@@ -53,18 +46,17 @@ pub async fn backup_database(
 }
 
 /// List timestamped database backups in `Documents/HostelDesk/backups/`.
-#[tauri::command]
-#[instrument(skip(app, license_state), fields(command = "list_backups"))]
+#[instrument(skip(paths, license_state), fields(command = "list_backups"))]
 pub async fn list_backups(
-    app: AppHandle,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    paths: &crate::paths::AppPaths,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<Vec<String>, String> {
     info!("list_backups invoked");
-    require_license(&license_state)?;
-    require_admin_current(&auth_state)?;
+    require_license(license_state)?;
+    require_admin_current(auth_state)?;
 
-    let backup_dir = documents_hosteldesk_dir(&app)?.join("backups");
+    let backup_dir = paths.backups_dir();
     if !backup_dir.exists() {
         return Ok(Vec::new());
     }
@@ -90,12 +82,12 @@ pub async fn list_backups(
     });
     entries.reverse();
 
-    let paths: Vec<String> = entries
+    let files: Vec<String> = entries
         .into_iter()
         .map(|entry| entry.path().to_string_lossy().to_string())
         .collect();
 
-    Ok(paths)
+    Ok(files)
 }
 
 /// Request payload for [`restore_backup`].
@@ -109,23 +101,22 @@ pub struct RestoreBackupRequest {
 /// The `backup_path` is validated to live inside `Documents/HostelDesk/backups/`
 /// to prevent arbitrary file overwrites. The database pool is closed before the
 /// copy so the replacement is clean.
-#[tauri::command]
 #[instrument(
-    skip(app, state, license_state, auth_state),
+    skip(paths, state, license_state, auth_state),
     fields(command = "restore_backup")
 )]
 pub async fn restore_backup(
     request: RestoreBackupRequest,
-    app: AppHandle,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    paths: &crate::paths::AppPaths,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<(), String> {
     info!(backup_path = %request.backup_path, "restore_backup invoked");
-    require_license(&license_state)?;
-    require_admin_current(&auth_state)?;
+    require_license(license_state)?;
+    require_admin_current(auth_state)?;
 
-    let backup_dir = documents_hosteldesk_dir(&app)?.join("backups");
+    let backup_dir = paths.backups_dir();
     let backup_path = std::path::Path::new(&request.backup_path)
         .canonicalize()
         .map_err(|e| format!("invalid backup path: {e}"))?;
@@ -135,7 +126,7 @@ pub async fn restore_backup(
         return Err("backup file must be inside the HostelDesk backups folder".to_string());
     }
 
-    let db_path = database_path(&app)?;
+    let db_path = paths.database_path();
     let db_path_str = db_path.to_string_lossy().to_string();
     let wal_path = std::path::PathBuf::from(format!("{}-wal", db_path_str));
     let shm_path = std::path::PathBuf::from(format!("{}-shm", db_path_str));
@@ -179,11 +170,11 @@ pub async fn restore_backup(
         let _ = std::fs::remove_file(&shm_path);
 
         info!("database recovered from pre-restore snapshot; restarting application");
-        app.restart();
+        return crate::relaunch();
     }
 
     info!("database restored; restarting application");
-    app.restart();
+    crate::relaunch()
 }
 
 /// Validate that a backup is a readable, consistent SQLite database.
@@ -248,24 +239,6 @@ fn replace_database_files(
     let _ = std::fs::remove_file(wal_path);
     let _ = std::fs::remove_file(shm_path);
     Ok(())
-}
-
-/// Resolve the user's HostelDesk documents directory.
-fn documents_hosteldesk_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    let documents_dir = app
-        .path()
-        .document_dir()
-        .map_err(|e| format!("Could not locate Documents folder: {e}"))?;
-    Ok(documents_dir.join("HostelDesk"))
-}
-
-/// Return the path to the live database file.
-fn database_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("could not resolve app data dir: {e}"))?;
-    Ok(data_dir.join("hosteldesk.db"))
 }
 
 /// Guard app-wide commands that affect the current hostel's database.

@@ -12,8 +12,10 @@ argon2 = "0.5"
 hosteldesk-core = { path = "../core" }
 password-hash = { version = "0.5", features = ["std", "getrandom"] }
 chrono = { workspace = true }
+protocol = { path = "../protocol" }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
+serde_json = "1"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "chrono", "rust_decimal", "migrate"] }
 tokio = { workspace = true }
 tracing = { workspace = true }

@@ -75,7 +75,8 @@ impl DbPool {
                 date_format = excluded.date_format,
                 language = excluded.language,
                 receipt_footer = excluded.receipt_footer,
-                updated_at = excluded.updated_at
+                updated_at = excluded.updated_at,
+                revision = revision + 1
             RETURNING hostel_id, date_format, language, receipt_footer, updated_at
             "#,
         )

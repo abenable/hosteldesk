@@ -38,6 +38,7 @@ pub fn verify_password(password: &str, password_hash: &str) -> anyhow::Result<bo
 
 pub mod model;
 pub use model::*;
+pub use sync::{PendingSync, SyncConflict, SyncState};
 
 mod allocations;
 mod dashboard;
@@ -47,6 +48,7 @@ mod preferences;
 mod residents;
 mod rooms;
 mod support;
+mod sync;
 mod users;
 
 #[cfg(test)]

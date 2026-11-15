@@ -33,6 +33,7 @@ impl DbPool {
              AND a.hostel_id = ?1
             LEFT JOIN rooms rm ON rm.id = a.room_id
             LEFT JOIN payments p ON p.allocation_id = a.id
+            WHERE r.hostel_id = ?1
             GROUP BY r.id, a.id
             ORDER BY r.full_name, r.id, a.id
             "#,
@@ -107,10 +108,7 @@ impl DbPool {
             SELECT id, full_name, phone, email, id_number, next_of_kin, next_of_kin_phone, photo_path, created_at
             FROM residents
             WHERE id = ?1
-              AND EXISTS (
-                  SELECT 1 FROM allocations a
-                  WHERE a.resident_id = residents.id AND a.hostel_id = ?2
-              )
+              AND hostel_id = ?2
             "#,
         )
         .bind(resident_id)
@@ -189,12 +187,10 @@ impl DbPool {
         let rows = sqlx::query(
             r#"
             UPDATE residents
-            SET full_name = ?1, phone = ?2, email = ?3, id_number = ?4, next_of_kin = ?5, next_of_kin_phone = ?6
+            SET full_name = ?1, phone = ?2, email = ?3, id_number = ?4, next_of_kin = ?5, next_of_kin_phone = ?6,
+                revision = revision + 1
             WHERE id = ?7
-              AND EXISTS (
-                  SELECT 1 FROM allocations a
-                  WHERE a.resident_id = residents.id AND a.hostel_id = ?8
-              )
+              AND hostel_id = ?8
             "#,
         )
         .bind(&full_name)
@@ -234,10 +230,11 @@ pub(crate) async fn insert_resident(
 ) -> anyhow::Result<i64> {
     let id = sqlx::query(
         r#"
-        INSERT INTO residents (full_name, phone, email, id_number, next_of_kin, next_of_kin_phone, photo_path)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        INSERT INTO residents (hostel_id, full_name, phone, email, id_number, next_of_kin, next_of_kin_phone, photo_path)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         "#,
     )
+    .bind(resident.hostel_id)
     .bind(&resident.full_name)
     .bind(&resident.phone)
     .bind(&resident.email)
@@ -358,8 +355,7 @@ mod tests {
         assert_eq!(resident.allocation_id, None);
     }
 
-    /// A resident's latest allocation must be scoped to the requested hostel.
-    /// In another hostel the same resident should show as never_allocated.
+    /// A resident belongs to one hostel. Another hostel must not list them.
     #[tokio::test]
     async fn list_residents_isolated_by_hostel_id() {
         let pool = test_pool().await;
@@ -375,11 +371,10 @@ mod tests {
             .any(|r| r.id == resident_id && r.status == "active"));
 
         let rows_b = pool.list_residents(hostel_b.id).await.expect("list b");
-        let in_b = rows_b
-            .iter()
-            .find(|r| r.id == resident_id)
-            .expect("row in hostel b");
-        assert_eq!(in_b.status, "never_allocated");
+        assert!(
+            rows_b.iter().all(|r| r.id != resident_id),
+            "a resident belongs to one hostel and must not appear in another"
+        );
     }
 
     /// Resident names cannot be blanked out.

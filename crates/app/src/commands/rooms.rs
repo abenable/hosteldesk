@@ -2,21 +2,19 @@ use super::support::*;
 use db::{DbPool, NewRoom, Room};
 use hosteldesk_core::currency::parse_positive_money;
 use serde::Deserialize;
-use tauri::State;
 use tracing::{info, instrument};
 
 /// Fetch all rooms for a given hostel.
-#[tauri::command(rename_all = "snake_case")]
 #[instrument(skip(state, license_state), fields(command = "get_rooms"))]
 pub async fn get_rooms(
     hostel_id: i64,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<Vec<Room>, String> {
     info!(hostel_id, "get_rooms invoked");
-    require_license(&license_state)?;
-    require_session(&auth_state, hostel_id)?;
+    require_license(license_state)?;
+    require_session(auth_state, hostel_id)?;
     state
         .get_rooms(hostel_id)
         .await
@@ -38,21 +36,20 @@ pub struct AddRoomRequest {
 }
 
 /// Add a single room and return the generated room id.
-#[tauri::command]
 #[instrument(skip(state, license_state), fields(command = "add_room"))]
 pub async fn add_room(
     request: AddRoomRequest,
-    state: State<'_, DbPool>,
-    license_state: State<'_, crate::LicenseState>,
-    auth_state: State<'_, crate::AuthState>,
+    state: &DbPool,
+    license_state: &crate::LicenseState,
+    auth_state: &crate::AuthState,
 ) -> Result<i64, String> {
     info!(
         hostel_id = request.hostel_id,
         room_number = %request.room_number,
         "add_room invoked"
     );
-    require_license(&license_state)?;
-    require_session(&auth_state, request.hostel_id)?;
+    require_license(license_state)?;
+    require_session(auth_state, request.hostel_id)?;
 
     let semester_rate = parse_positive_money(&request.semester_rate).map_err(|e| e.to_string())?;
     let recess_rate = parse_positive_money(&request.recess_rate).map_err(|e| e.to_string())?;
