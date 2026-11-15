@@ -44,6 +44,9 @@ pub enum ApiError {
     /// No such route.
     #[error("not found")]
     NotFound,
+    /// The account exists but the owner has not approved it yet.
+    #[error("this account is waiting for approval")]
+    NotApproved,
     /// Storage failed. The detail is logged, not returned.
     #[error("storage error: {0}")]
     Storage(String),
@@ -65,6 +68,7 @@ impl From<ApiError> for Reply {
             ApiError::BadRequest(_) => 400,
             ApiError::TooManyRequests => 429,
             ApiError::NotFound => 404,
+            ApiError::NotApproved => 403,
             ApiError::Storage(detail) => {
                 tracing_log(detail);
                 return Reply {

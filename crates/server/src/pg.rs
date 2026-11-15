@@ -157,6 +157,24 @@ impl PgStore {
         .ok_or(ApiError::Unauthorized)
     }
 
+    /// The device's organization, refused while the account awaits approval.
+    async fn approved_org(&self, refresh_token: &str) -> Result<String, ApiError> {
+        let row = self
+            .maybe_row(
+                "SELECT d.org_id, o.approved_at IS NOT NULL FROM devices d \
+                 JOIN organizations o ON o.id = d.org_id \
+                 WHERE d.token_hash = $1 AND d.revoked_at IS NULL",
+                &[(&token_hash(refresh_token), Type::TEXT)],
+            )
+            .await?
+            .ok_or(ApiError::Unauthorized)?;
+        if row.get::<_, bool>(1) {
+            Ok(row.get(0))
+        } else {
+            Err(ApiError::NotApproved)
+        }
+    }
+
     async fn new_session(&self, org_id: &str) -> Result<String, ApiError> {
         let access_token = random_id();
         self.exec(
@@ -476,7 +494,7 @@ impl SyncStore for PgStore {
         refresh_token: &str,
         request: PushRequest,
     ) -> Result<PushResponse, ApiError> {
-        let org_id = self.device_org(refresh_token).await?;
+        let org_id = self.approved_org(refresh_token).await?;
         let refs = BatchRefs::of(&request.commands);
         let hostel = request.hostel_public_id.as_str();
         // `Client::transaction` needs `&mut`. This client is this request's
@@ -519,7 +537,7 @@ impl SyncStore for PgStore {
         refresh_token: &str,
         request: PullRequest,
     ) -> Result<PullResponse, ApiError> {
-        let org_id = self.device_org(refresh_token).await?;
+        let org_id = self.approved_org(refresh_token).await?;
         let hostel = request.hostel_public_id.as_str();
         let owner: Option<String> = self
             .maybe_row(
@@ -571,8 +589,8 @@ impl SyncStore for PgStore {
         let org_id = self.device_org(refresh_token).await?;
         let row = self
             .row(
-                "SELECT name, license_plan, to_char(license_expires_on, 'YYYY-MM-DD') \
-                 FROM organizations WHERE id = $1",
+                "SELECT name, license_plan, to_char(license_expires_on, 'YYYY-MM-DD'), \
+                 approved_at IS NOT NULL FROM organizations WHERE id = $1",
                 &[(&org_id, Type::TEXT)],
             )
             .await?;
@@ -582,6 +600,7 @@ impl SyncStore for PgStore {
             plan: row.get(1),
             expires_on: chrono::NaiveDate::parse_from_str(&expires_on, "%Y-%m-%d")
                 .map_err(|e| ApiError::Storage(e.to_string()))?,
+            approved: row.get(3),
         })
     }
 }

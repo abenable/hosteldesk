@@ -181,6 +181,7 @@ impl Desk {
             plan: status.plan,
             expires_on: status.expires_on,
             checked_on: chrono::Utc::now().date_naive(),
+            approved: status.approved,
         })
     }
 
@@ -199,6 +200,10 @@ impl Desk {
         let mut report = SyncReport::default();
         self.refresh_license(&client, &config.server_url, &token)
             .await?;
+        if !self.license.get().is_some_and(|license| license.approved) {
+            // The server refuses to sync a pending account; nothing to do yet.
+            return Ok(report);
+        }
 
         match self.db.primary_hostel_id().await.map_err(err)? {
             Some(hostel_id) => {
@@ -538,7 +543,7 @@ mod tests {
     /// receipt numbers, and an overbooked bed is flagged instead of undone.
     #[tokio::test]
     async fn existing_hostel_uploads_fresh_desk_joins_and_overbooking_is_flagged() {
-        let (url, _) = memory_server().await;
+        let (url, store) = memory_server().await;
         let root_a = tempfile::tempdir().expect("temp a");
         let desk_a = desk_at(root_a.path()).await;
         let hostel = desk_a
@@ -607,14 +612,20 @@ mod tests {
             .connect_cloud(&url, "a@b.co", "secret-pass", true, "North")
             .await
             .expect("sign up");
+        assert!(
+            desk_a.license_status().is_none(),
+            "a new account waits for the owner's approval"
+        );
+        store.approve("a@b.co").expect("approve");
         let report = desk_a.sync_once().await.expect("sync a");
         assert_eq!(report.issues, 0, "{report:?}");
+        assert!(desk_a.license_status().is_some(), "unlocked once approved");
         assert!(report.pushed >= 5, "{report:?}");
         assert_eq!(desk_a.db.pending_sync_count(hostel.id).await.unwrap(), 0);
         assert_eq!(
             desk_a.license_status().map(|license| license.plan),
             Some("trial".to_string()),
-            "a new account unlocks on its trial"
+            "an approved account unlocks on its trial"
         );
 
         // A desk that already has its own hostel may not join this organization.
@@ -701,9 +712,13 @@ mod tests {
         desk.connect_cloud(&url, "owner@hostel.co", "secret-pass", true, "Sunrise")
             .await
             .expect("sign up");
+        let pending = desk.cached_license().expect("the server answered");
+        assert!(!pending.approved && desk.license_status().is_none());
+        store.approve("owner@hostel.co").expect("approve");
+        desk.sync_once().await.expect("check again");
         let license = desk
             .license_status()
-            .expect("unlocked at sign-up, before any hostel");
+            .expect("unlocked once approved, before any hostel");
         assert_eq!(license.account_name, "Sunrise");
         assert_eq!(license.checked_on, chrono::Utc::now().date_naive());
 

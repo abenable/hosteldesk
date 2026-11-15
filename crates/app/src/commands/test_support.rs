@@ -21,6 +21,7 @@ pub(crate) fn setup_license_state() -> LicenseState {
         plan: "trial".to_string(),
         expires_on: today + chrono::Duration::days(30),
         checked_on: today,
+        approved: true,
     });
     state
 }

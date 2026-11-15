@@ -865,11 +865,7 @@ fn lock_screen(app: &mut HostelApp, ui: &mut egui::Ui) {
                 ui.heading("HostelDesk");
             });
             if enrolled {
-                ui.label(
-                    "This computer's license needs renewing. HostelDesk renews it \
-                     automatically when it can reach the internet; if your account's \
-                     plan has ended, contact HostelDesk to renew it.",
-                );
+                ui.label(lock_reason(app.desk.cached_license()));
                 if ui
                     .add_enabled(!app.busy("sync"), egui::Button::new("Check again"))
                     .clicked()
@@ -887,6 +883,24 @@ fn lock_screen(app: &mut HostelApp, ui: &mut egui::Ui) {
             cloud_connect_form(app, ui);
         });
     });
+}
+
+/// Why a signed-in computer is locked, from the server's last answer.
+fn lock_reason(license: Option<crate::AccountLicense>) -> &'static str {
+    match license {
+        Some(license) if !license.approved => {
+            "Your HostelDesk account is waiting for approval. This computer \
+             unlocks by itself as soon as it is approved."
+        }
+        Some(license) if license.expires_on < chrono::Utc::now().date_naive() => {
+            "Your HostelDesk plan has ended. Contact HostelDesk to renew it; this \
+             computer unlocks by itself once it is renewed."
+        }
+        _ => {
+            "This computer needs to check its license with HostelDesk. Connect it \
+             to the internet; it checks again by itself."
+        }
+    }
 }
 
 fn cloud_connect_form(app: &mut HostelApp, ui: &mut egui::Ui) {
@@ -945,10 +959,9 @@ fn connect_cloud(app: &mut HostelApp, create_account: bool) {
                 app.cloud_form.password.clear();
                 app.last_sync = Some(Instant::now());
                 match sync {
-                    Ok(_) if app.desk.license_status().is_none() => app.fail(
-                        "Signed in, but this account's plan has ended. Contact \
-                         HostelDesk to renew it.",
-                    ),
+                    Ok(_) if app.desk.license_status().is_none() => {
+                        app.fail(lock_reason(app.desk.cached_license()))
+                    }
                     Ok(_) => app.ok("Signed in."),
                     Err(error) => app.fail(format!("Connected. Sync will retry: {error}")),
                 }

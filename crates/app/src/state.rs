@@ -23,14 +23,18 @@ pub struct AccountLicense {
     pub expires_on: NaiveDate,
     /// Day this computer last heard it from the server.
     pub checked_on: NaiveDate,
+    /// The owner has approved the account. A pending account is never active.
+    #[serde(default)]
+    pub approved: bool,
 }
 
 impl AccountLicense {
-    /// Usable on `today`: the plan has not ended, the server confirmed it
-    /// within [`OFFLINE_GRACE_DAYS`], and the clock has not been wound back
-    /// before that confirmation.
+    /// Usable on `today`: the account is approved, the plan has not ended,
+    /// the server confirmed it within [`OFFLINE_GRACE_DAYS`], and the clock
+    /// has not been wound back before that confirmation.
     pub fn is_active(&self, today: NaiveDate) -> bool {
-        today <= self.expires_on
+        self.approved
+            && today <= self.expires_on
             && self.checked_on <= today
             && (today - self.checked_on).num_days() <= OFFLINE_GRACE_DAYS
     }
@@ -157,8 +161,17 @@ mod tests {
             plan: "trial".into(),
             expires_on: day(30),
             checked_on: day(10),
+            approved: true,
         };
         assert!(license.is_active(day(10)));
+        let pending = AccountLicense {
+            approved: false,
+            ..license.clone()
+        };
+        assert!(
+            !pending.is_active(day(10)),
+            "waiting for the owner's approval"
+        );
         assert!(license.is_active(day(24)), "14 days offline is fine");
         assert!(!license.is_active(day(25)), "15 days offline locks");
         assert!(

@@ -31,7 +31,7 @@ env -u CLOUDFLARE_API_TOKEN scripts/deploy-worker.sh   # migrates Neon, then wra
 scripts/smoke-worker.sh https://hosteldesk-sync.ableabenaitwe.workers.dev
 ```
 
-The smoke test creates two throwaway organizations named "Smoke" and "Other". Delete them afterwards if you want a clean database.
+The smoke test creates two throwaway organizations named "Smoke" and "Other", and approves them through `scripts/license-account.sh`. Delete them afterwards if you want a clean database.
 
 **Logs:** run `npx -y wrangler@4 tail hosteldesk-sync`, or open Workers → hosteldesk-sync → Observability in the Cloudflare dashboard.
 
@@ -41,6 +41,8 @@ Licensing has its own script. Run everything else with `psql "$(cat ~/.hosteldes
 
 | Task | SQL |
 |---|---|
+| See accounts waiting for approval | `scripts/license-account.sh pending` |
+| Approve an account | `scripts/license-account.sh <email> approve` |
 | Sell, renew, show or end a license | `scripts/license-account.sh <email> 1-year` (see `LICENSING.md`) |
 | Find an organization by email | `SELECT o.id, o.name, o.license_plan, o.license_expires_on FROM organizations o JOIN accounts a ON a.org_id = o.id WHERE a.email = '<email>'` |
 | Revoke a lost or stolen computer | `UPDATE devices SET revoked_at = now() WHERE device_id = '<id>'` |

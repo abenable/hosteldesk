@@ -62,6 +62,11 @@ impl Desk {
         commands::get_license_status(&self.license)
     }
 
+    /// The server's last answer about this account's license, usable or not.
+    pub fn cached_license(&self) -> Option<crate::state::AccountLicense> {
+        self.license.get()
+    }
+
     /// Cache the server's answer about this account's license.
     pub(crate) fn store_license(
         &self,

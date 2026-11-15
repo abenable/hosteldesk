@@ -74,6 +74,9 @@ pub struct LicenseStatus {
     pub plan: String,
     /// Last day the license is valid.
     pub expires_on: chrono::NaiveDate,
+    /// The owner has approved this account. Until then the desk stays locked
+    /// and the server refuses to sync its data.
+    pub approved: bool,
 }
 
 /// Body of `POST /v1/push`.

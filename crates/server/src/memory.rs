@@ -31,6 +31,7 @@ struct License {
     name: String,
     plan: String,
     expires_on: NaiveDate,
+    approved: bool,
 }
 
 #[derive(Default)]
@@ -82,6 +83,29 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Approve the account that owns `email`, as `scripts/license-account.sh` does.
+    pub fn approve(&self, email: &str) -> Result<(), ApiError> {
+        let mut inner = self.lock()?;
+        let org_id = inner
+            .accounts
+            .get(&normalize_email(email))
+            .map(|account| account.org_id.clone())
+            .ok_or_else(|| ApiError::BadRequest("no such account".into()))?;
+        if let Some(license) = inner.licenses.get_mut(&org_id) {
+            license.approved = true;
+        }
+        Ok(())
+    }
+
+    /// The device's organization, refused while the account awaits approval.
+    fn approved_org(inner: &Inner, refresh_token: &str) -> Result<String, ApiError> {
+        let org_id = Self::device_org(inner, refresh_token)?;
+        match inner.licenses.get(&org_id) {
+            Some(license) if license.approved => Ok(org_id),
+            _ => Err(ApiError::NotApproved),
+        }
+    }
+
     fn lock(&self) -> Result<MutexGuard<'_, Inner>, ApiError> {
         self.inner
             .lock()
@@ -123,6 +147,7 @@ impl SyncStore for MemoryStore {
                 name: request.organization_name.trim().to_string(),
                 plan: "trial".into(),
                 expires_on: chrono::Utc::now().date_naive() + chrono::Duration::days(TRIAL_DAYS),
+                approved: false,
             },
         );
         inner.accounts.insert(
@@ -196,7 +221,7 @@ impl SyncStore for MemoryStore {
         request: PushRequest,
     ) -> Result<PushResponse, ApiError> {
         let mut inner = self.lock()?;
-        let org_id = Self::device_org(&inner, refresh_token)?;
+        let org_id = Self::approved_org(&inner, refresh_token)?;
         let hostel = inner
             .hostels
             .entry(request.hostel_public_id.clone())
@@ -227,7 +252,7 @@ impl SyncStore for MemoryStore {
         request: PullRequest,
     ) -> Result<PullResponse, ApiError> {
         let inner = self.lock()?;
-        let org_id = Self::device_org(&inner, refresh_token)?;
+        let org_id = Self::approved_org(&inner, refresh_token)?;
         let Some(hostel) = inner.hostels.get(&request.hostel_public_id) else {
             return Ok(PullResponse {
                 cursor: request.cursor,
@@ -265,6 +290,7 @@ impl SyncStore for MemoryStore {
             account_name: license.name.clone(),
             plan: license.plan.clone(),
             expires_on: license.expires_on,
+            approved: license.approved,
         })
     }
 }
@@ -404,6 +430,7 @@ mod tests {
         .await;
         assert_eq!(status, 200);
         assert_eq!(device["device_prefix"].as_str().unwrap().len(), 6);
+        app.approve("a@b.co").unwrap();
         (
             auth["organization_id"].as_str().unwrap().to_string(),
             device["refresh_token"].as_str().unwrap().to_string(),
@@ -505,6 +532,7 @@ mod tests {
                 account_name: "North".into(),
                 plan: "trial".into(),
                 expires_on: today + chrono::Duration::days(crate::TRIAL_DAYS),
+                approved: true,
             }
         );
 
@@ -519,6 +547,60 @@ mod tests {
 
         let (status, _) = call(&app, "/v1/license", Some("forged"), serde_json::json!({})).await;
         assert_eq!(status, 401);
+    }
+
+    /// Every account waits for the owner's approval. Until then the server
+    /// reports it as not approved and refuses to sync its data; the trial
+    /// clock is already running from sign-up.
+    #[tokio::test]
+    async fn a_new_account_waits_for_approval_and_cannot_sync() {
+        let app = MemoryStore::new();
+        let (_, auth) = call(
+            &app,
+            "/v1/sign-up",
+            None,
+            serde_json::json!({"organization_name":"South","email":"s@b.co","password":"secret-pass"}),
+        )
+        .await;
+        let token = auth["access_token"].as_str().unwrap();
+        let (status, device) = call(
+            &app,
+            "/v1/devices",
+            Some(token),
+            serde_json::json!({"device_name":"desk"}),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "a pending account may still register a computer"
+        );
+        let refresh = device["refresh_token"].as_str().unwrap();
+
+        let (_, license) = call(&app, "/v1/license", Some(refresh), serde_json::json!({})).await;
+        let license: LicenseStatus = serde_json::from_value(license).unwrap();
+        assert!(!license.approved);
+        let today = chrono::Utc::now().date_naive();
+        assert_eq!(
+            license.expires_on,
+            today + chrono::Duration::days(crate::TRIAL_DAYS)
+        );
+
+        let push = serde_json::json!({"hostel_public_id":"h1","commands":[]});
+        let pull = serde_json::json!({"hostel_public_id":"h1","cursor":0});
+        assert_eq!(
+            call(&app, "/v1/push", Some(refresh), push.clone()).await.0,
+            403
+        );
+        assert_eq!(
+            call(&app, "/v1/pull", Some(refresh), pull.clone()).await.0,
+            403
+        );
+
+        app.approve(" S@B.co ").unwrap();
+        let (_, license) = call(&app, "/v1/license", Some(refresh), serde_json::json!({})).await;
+        assert_eq!(license["approved"], true);
+        assert_eq!(call(&app, "/v1/push", Some(refresh), push).await.0, 200);
+        assert_eq!(call(&app, "/v1/pull", Some(refresh), pull).await.0, 200);
     }
 
     #[tokio::test]
