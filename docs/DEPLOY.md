@@ -21,8 +21,11 @@ The Neon connection string lives only in `~/.hosteldesk/neon_url` (mode 0600). N
    ```sh
    cd crates/server
    env -u CLOUDFLARE_API_TOKEN npx -y wrangler@4 hyperdrive create hosteldesk \
+     --caching-disabled true \
      --connection-string="$(sed 's/?.*//' ~/.hosteldesk/neon_url)"
    ```
+
+   Query caching **must stay off**. With caching on, Hyperdrive serves read queries from a cache for up to a minute. Approvals, plan changes and device revocations then arrive late, and a desk can pull stale changes. The current config (`b80b36213545415cbd9dfe22977ed168`) has caching disabled.
 
 ## Every deploy
 
