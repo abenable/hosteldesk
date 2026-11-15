@@ -16,7 +16,7 @@ command = "cargo install -q worker-build --version ^0.9 && worker-build --releas
 
 [[hyperdrive]]
 binding = "HYPERDRIVE"
-id = "00000000000000000000000000000000"
+id = "b80b36213545415cbd9dfe22977ed168"
 
 [observability]
 enabled = true

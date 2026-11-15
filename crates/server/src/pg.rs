@@ -2,7 +2,12 @@
 //!
 //! The database is Neon Postgres, reached through a Cloudflare Hyperdrive
 //! binding (`HYPERDRIVE`), which pools connections close to Neon. Each request
-//! opens one `tokio-postgres` client over the Hyperdrive socket.
+//! opens one `tokio-postgres` client over a Hyperdrive socket.
+//!
+//! Every query uses the `*_typed` calls: one unnamed Parse/Bind/Execute per
+//! query. Named prepared statements (plain `query`) break under Hyperdrive's
+//! pooling, because the prepare and the execute can reach different Neon
+//! connections.
 //!
 //! A push runs in one transaction that first locks the hostel row
 //! (`SELECT … FOR UPDATE`), so two desks pushing to the same hostel apply one
@@ -21,10 +26,13 @@ use protocol::{
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use tokio_postgres::error::SqlState;
-use tokio_postgres::types::ToSql;
+use tokio_postgres::types::{ToSql, Type};
 use tokio_postgres::Client;
 use worker::postgres_tls::PassthroughTls;
-use worker::{event, Context, Env, Request, Response};
+use worker::{event, Context, Env, Request, Response, SecureTransport, Socket};
+
+/// One typed query parameter.
+type Param<'a> = (&'a (dyn ToSql + Sync), Type);
 
 /// Worker entry: open a Postgres client through Hyperdrive and route the request.
 #[event(fetch)]
@@ -36,6 +44,8 @@ async fn fetch(mut request: Request, env: Env, _ctx: Context) -> worker::Result<
         // compute is not woken by uptime checks.
         return text_response(200, "ok".into());
     }
+    let authorization = request.headers().get("authorization")?;
+    let body = request.bytes().await?;
     let signing_key = env
         .secret("HOSTELDESK_SIGNING_KEY")
         .ok()
@@ -52,8 +62,6 @@ async fn fetch(mut request: Request, env: Env, _ctx: Context) -> worker::Result<
         client,
         signing_key,
     };
-    let authorization = request.headers().get("authorization")?;
-    let body = request.bytes().await?;
     let reply = route(&store, &method, &path, authorization.as_deref(), &body).await;
     let mut response = text_response(reply.status, reply.body)?;
     if reply.status == 200 {
@@ -76,14 +84,19 @@ async fn connect(env: &Env) -> Result<Client, String> {
     let hyperdrive = env.hyperdrive("HYPERDRIVE").map_err(|e| e.to_string())?;
     let config = tokio_postgres::Config::from_str(&hyperdrive.connection_string())
         .map_err(|e| e.to_string())?;
-    let socket = hyperdrive.connect().map_err(|e| e.to_string())?;
+    // StartTls lets `PassthroughTls` upgrade the socket if tokio-postgres
+    // asks for TLS (the Hyperdrive connection string disables it today).
+    let socket = Socket::builder()
+        .secure_transport(SecureTransport::StartTls)
+        .connect(hyperdrive.host(), hyperdrive.port())
+        .map_err(|e| e.to_string())?;
     let (client, connection) = config
         .connect_raw(socket, PassthroughTls)
         .await
         .map_err(|e| e.to_string())?;
     worker::wasm_bindgen_futures::spawn_local(async move {
         if let Err(error) = connection.await {
-            worker::console_error!("postgres connection error: {error}");
+            worker::console_error!("postgres connection error: {error:?}");
         }
     });
     Ok(client)
@@ -95,7 +108,7 @@ struct PgStore {
 }
 
 fn db(error: tokio_postgres::Error) -> ApiError {
-    ApiError::Storage(error.to_string())
+    ApiError::Storage(format!("{error:?}"))
 }
 
 fn is_unique_violation(error: &tokio_postgres::Error) -> bool {
@@ -106,80 +119,101 @@ fn list(set: &HashSet<String>) -> Vec<&str> {
     set.iter().map(String::as_str).collect()
 }
 
-/// Rows of `SELECT body::text`, parsed back into entities.
-async fn bodies(
-    client: &Client,
-    sql: &str,
-    params: &[&(dyn ToSql + Sync)],
-) -> Result<Vec<Entity>, ApiError> {
-    client
-        .query(sql, params)
-        .await
-        .map_err(db)?
-        .iter()
-        .map(|row| {
-            serde_json::from_str::<Entity>(row.get::<_, &str>(0))
-                .map_err(|e| ApiError::Storage(e.to_string()))
-        })
-        .collect()
-}
-
 impl PgStore {
+    async fn rows(
+        &self,
+        sql: &str,
+        params: &[Param<'_>],
+    ) -> Result<Vec<tokio_postgres::Row>, ApiError> {
+        self.client.query_typed(sql, params).await.map_err(db)
+    }
+
+    async fn row(&self, sql: &str, params: &[Param<'_>]) -> Result<tokio_postgres::Row, ApiError> {
+        self.client.query_typed_one(sql, params).await.map_err(db)
+    }
+
+    async fn maybe_row(
+        &self,
+        sql: &str,
+        params: &[Param<'_>],
+    ) -> Result<Option<tokio_postgres::Row>, ApiError> {
+        self.client.query_typed_opt(sql, params).await.map_err(db)
+    }
+
+    async fn exec(&self, sql: &str, params: &[Param<'_>]) -> Result<u64, tokio_postgres::Error> {
+        self.client.execute_typed(sql, params).await
+    }
+
+    /// Rows of `SELECT body::text …`, parsed back into entities.
+    async fn bodies(&self, sql: &str, params: &[Param<'_>]) -> Result<Vec<Entity>, ApiError> {
+        self.rows(sql, params)
+            .await?
+            .iter()
+            .map(|row| {
+                serde_json::from_str::<Entity>(row.get::<_, &str>(0))
+                    .map_err(|e| ApiError::Storage(e.to_string()))
+            })
+            .collect()
+    }
+
     async fn device_org(&self, refresh_token: &str) -> Result<String, ApiError> {
-        self.client
-            .query_opt(
-                "SELECT org_id FROM devices WHERE token_hash = $1 AND revoked_at IS NULL",
-                &[&token_hash(refresh_token)],
-            )
-            .await
-            .map_err(db)?
-            .map(|row| row.get(0))
-            .ok_or(ApiError::Unauthorized)
+        self.maybe_row(
+            "SELECT org_id FROM devices WHERE token_hash = $1 AND revoked_at IS NULL",
+            &[(&token_hash(refresh_token), Type::TEXT)],
+        )
+        .await?
+        .map(|row| row.get(0))
+        .ok_or(ApiError::Unauthorized)
     }
 
     async fn new_session(&self, org_id: &str) -> Result<String, ApiError> {
         let access_token = random_id();
-        self.client
-            .execute(
-                "INSERT INTO sessions (token_hash, org_id, expires_at) \
-                 VALUES ($1, $2, now() + interval '30 days')",
-                &[&token_hash(&access_token), &org_id],
-            )
-            .await
-            .map_err(db)?;
+        self.exec(
+            "INSERT INTO sessions (token_hash, org_id, expires_at) \
+             VALUES ($1, $2, now() + interval '30 days')",
+            &[
+                (&token_hash(&access_token), Type::TEXT),
+                (&org_id, Type::TEXT),
+            ],
+        )
+        .await
+        .map_err(db)?;
         Ok(access_token)
     }
 
     /// Read only the rows `refs` needs. Runs inside the push's `BEGIN`.
     async fn load_scoped(&self, hostel: &str, refs: &BatchRefs) -> Result<(Ledger, i64), ApiError> {
-        let mut entities = bodies(
-            &self.client,
-            "SELECT body::text FROM entities WHERE hostel_public_id = $1 \
-             AND kind IN ('hostel', 'preferences')",
-            &[&hostel],
-        )
-        .await?;
+        let h: Param = (&hostel, Type::TEXT);
+        let mut entities = self
+            .bodies(
+                "SELECT body::text FROM entities WHERE hostel_public_id = $1 \
+                 AND kind IN ('hostel', 'preferences')",
+                std::slice::from_ref(&h),
+            )
+            .await?;
         for (kind, ids) in [
             ("allocation", &refs.allocations),
             ("resident", &refs.residents),
             ("payment", &refs.payments),
         ] {
             entities.extend(
-                bodies(
-                    &self.client,
+                self.bodies(
                     "SELECT body::text FROM entities WHERE hostel_public_id = $1 \
                      AND kind = $2 AND public_id = ANY($3)",
-                    &[&hostel, &kind, &list(ids)],
+                    &[
+                        h.clone(),
+                        (&kind, Type::TEXT),
+                        (&list(ids), Type::TEXT_ARRAY),
+                    ],
                 )
                 .await?,
             );
         }
         entities.extend(
-            bodies(
-                &self.client,
+            self.bodies(
                 "SELECT body::text FROM entities WHERE hostel_public_id = $1 \
                  AND kind = 'receipt' AND lookup_key = ANY($2)",
-                &[&hostel, &list(&refs.receipt_numbers)],
+                &[h.clone(), (&list(&refs.receipt_numbers), Type::TEXT_ARRAY)],
             )
             .await?,
         );
@@ -192,45 +226,43 @@ impl PgStore {
             }
         }
         entities.extend(
-            bodies(
-                &self.client,
+            self.bodies(
                 "SELECT body::text FROM entities WHERE hostel_public_id = $1 AND kind = 'room' \
                  AND (public_id = ANY($2) OR lookup_key = ANY($3))",
-                &[&hostel, &list(&rooms), &list(&refs.room_numbers)],
+                &[
+                    h.clone(),
+                    (&list(&rooms), Type::TEXT_ARRAY),
+                    (&list(&refs.room_numbers), Type::TEXT_ARRAY),
+                ],
             )
             .await?,
         );
         // A stay can come back twice (named, and active in a named room);
         // `Ledger::from_dump` keys rows by id, so that is harmless.
         entities.extend(
-            bodies(
-                &self.client,
+            self.bodies(
                 "SELECT body::text FROM entities WHERE hostel_public_id = $1 \
                  AND kind = 'allocation' AND active AND lookup_key = ANY($2)",
-                &[&hostel, &list(&rooms)],
+                &[h.clone(), (&list(&rooms), Type::TEXT_ARRAY)],
             )
             .await?,
         );
         let applied = self
-            .client
-            .query(
+            .rows(
                 "SELECT idempotency_key FROM applied_commands \
                  WHERE hostel_public_id = $1 AND idempotency_key = ANY($2)",
-                &[&hostel, &list(&refs.idempotency_keys)],
+                &[h.clone(), (&list(&refs.idempotency_keys), Type::TEXT_ARRAY)],
             )
-            .await
-            .map_err(db)?
+            .await?
             .iter()
             .map(|row| row.get(0))
             .collect();
         let next_cursor: i64 = self
-            .client
-            .query_one(
+            .row(
                 "SELECT COALESCE(MAX(cursor), 0) + 1 FROM changes WHERE hostel_public_id = $1",
-                &[&hostel],
+                &[h],
             )
-            .await
-            .map_err(db)?
+            .await?
             .get(0);
         Ok((Ledger::from_dump(dump_from(entities, applied)), next_cursor))
     }
@@ -261,32 +293,42 @@ impl PgStore {
             actives.push(active);
             entity_bodies.push(body);
         }
-        self.client.execute(
+        let h: Param = (&hostel, Type::TEXT);
+        self.exec(
             "INSERT INTO entities (hostel_public_id, kind, public_id, lookup_key, active, body) \
              SELECT $1, k, p, l, a, b::jsonb \
              FROM unnest($2::text[], $3::text[], $4::text[], $5::bool[], $6::text[]) AS t(k, p, l, a, b) \
              ON CONFLICT (hostel_public_id, kind, public_id) DO UPDATE SET \
                  lookup_key = excluded.lookup_key, active = excluded.active, body = excluded.body",
-            &[&hostel, &kinds, &ids, &keys, &actives, &entity_bodies],
+            &[
+                h.clone(),
+                (&kinds, Type::TEXT_ARRAY),
+                (&ids, Type::TEXT_ARRAY),
+                (&keys, Type::TEXT_ARRAY),
+                (&actives, Type::BOOL_ARRAY),
+                (&entity_bodies, Type::TEXT_ARRAY),
+            ],
         )
         .await
         .map_err(db)?;
-        self.client
-            .execute(
-                "INSERT INTO applied_commands (hostel_public_id, idempotency_key) \
+        self.exec(
+            "INSERT INTO applied_commands (hostel_public_id, idempotency_key) \
              SELECT $1, unnest($2::text[])",
-                &[&hostel, &outcome.applied],
-            )
-            .await
-            .map_err(db)?;
-        self.client
-            .execute(
-                "INSERT INTO changes (hostel_public_id, cursor, body) \
+            &[h.clone(), (&outcome.applied, Type::TEXT_ARRAY)],
+        )
+        .await
+        .map_err(db)?;
+        self.exec(
+            "INSERT INTO changes (hostel_public_id, cursor, body) \
              SELECT $1, c, b::jsonb FROM unnest($2::int8[], $3::text[]) AS t(c, b)",
-                &[&hostel, &cursors, &change_bodies],
-            )
-            .await
-            .map_err(db)?;
+            &[
+                h,
+                (&cursors, Type::INT8_ARRAY),
+                (&change_bodies, Type::TEXT_ARRAY),
+            ],
+        )
+        .await
+        .map_err(db)?;
         Ok(())
     }
 }
@@ -295,10 +337,11 @@ impl SyncStore for PgStore {
     async fn sign_up(&self, request: SignUpRequest) -> Result<AuthResponse, ApiError> {
         let email = normalize_email(&request.email);
         let taken = self
-            .client
-            .query_opt("SELECT 1 FROM accounts WHERE email = $1", &[&email])
-            .await
-            .map_err(db)?;
+            .maybe_row(
+                "SELECT 1 FROM accounts WHERE email = $1",
+                &[(&email, Type::TEXT)],
+            )
+            .await?;
         if taken.is_some() {
             return Err(ApiError::BadRequest("email is already registered".into()));
         }
@@ -308,29 +351,27 @@ impl SyncStore for PgStore {
         // One statement, so the organization, account and first session are
         // created together or not at all.
         let result = self
-            .client
-            .execute(
+            .exec(
                 "WITH org AS (INSERT INTO organizations (id, name) VALUES ($1, $2)), \
                       acc AS (INSERT INTO accounts (email, org_id, password_hash) \
                               VALUES ($3, $1, $4)) \
                  INSERT INTO sessions (token_hash, org_id, expires_at) \
                  VALUES ($5, $1, now() + interval '30 days')",
                 &[
-                    &org_id,
-                    &request.organization_name.trim(),
-                    &email,
-                    &password_hash,
-                    &token_hash(&access_token),
+                    (&org_id, Type::TEXT),
+                    (&request.organization_name.trim(), Type::TEXT),
+                    (&email, Type::TEXT),
+                    (&password_hash, Type::TEXT),
+                    (&token_hash(&access_token), Type::TEXT),
                 ],
             )
-            .await
-            .map(|_| ());
+            .await;
         match result {
             Err(error) if is_unique_violation(&error) => {
                 Err(ApiError::BadRequest("email is already registered".into()))
             }
             Err(error) => Err(db(error)),
-            Ok(()) => Ok(AuthResponse {
+            Ok(_) => Ok(AuthResponse {
                 access_token,
                 organization_id: org_id,
             }),
@@ -340,14 +381,12 @@ impl SyncStore for PgStore {
     async fn sign_in(&self, request: SignInRequest) -> Result<AuthResponse, ApiError> {
         let email = normalize_email(&request.email);
         let account = self
-            .client
-            .query_opt(
+            .maybe_row(
                 "SELECT org_id, password_hash, coalesce(locked_until > now(), false) \
                  FROM accounts WHERE email = $1",
-                &[&email],
+                &[(&email, Type::TEXT)],
             )
-            .await
-            .map_err(db)?;
+            .await?;
         let Some(account) = account else {
             verify_password(&request.password, DUMMY_HASH);
             return Err(ApiError::Unauthorized);
@@ -360,26 +399,24 @@ impl SyncStore for PgStore {
         if !verify_password(&request.password, &password_hash) {
             // The fifth failure in a row locks the email for 15 minutes and
             // resets the count. Right-hand sides read the pre-update row.
-            self.client
-                .execute(
-                    "UPDATE accounts SET \
-                     failed_logins = CASE WHEN failed_logins + 1 >= 5 THEN 0 ELSE failed_logins + 1 END, \
-                     locked_until = CASE WHEN failed_logins + 1 >= 5 \
-                         THEN now() + interval '15 minutes' ELSE locked_until END \
-                     WHERE email = $1",
-                    &[&email],
-                )
-                .await
-                .map_err(db)?;
-            return Err(ApiError::Unauthorized);
-        }
-        self.client
-            .execute(
-                "UPDATE accounts SET failed_logins = 0, locked_until = NULL WHERE email = $1",
-                &[&email],
+            self.exec(
+                "UPDATE accounts SET \
+                 failed_logins = CASE WHEN failed_logins + 1 >= 5 THEN 0 ELSE failed_logins + 1 END, \
+                 locked_until = CASE WHEN failed_logins + 1 >= 5 \
+                     THEN now() + interval '15 minutes' ELSE locked_until END \
+                 WHERE email = $1",
+                &[(&email, Type::TEXT)],
             )
             .await
             .map_err(db)?;
+            return Err(ApiError::Unauthorized);
+        }
+        self.exec(
+            "UPDATE accounts SET failed_logins = 0, locked_until = NULL WHERE email = $1",
+            &[(&email, Type::TEXT)],
+        )
+        .await
+        .map_err(db)?;
         let access_token = self.new_session(&org_id).await?;
         Ok(AuthResponse {
             access_token,
@@ -393,13 +430,11 @@ impl SyncStore for PgStore {
         request: EnrollRequest,
     ) -> Result<EnrollResponse, ApiError> {
         let org_id: String = self
-            .client
-            .query_opt(
+            .maybe_row(
                 "SELECT org_id FROM sessions WHERE token_hash = $1 AND expires_at > now()",
-                &[&token_hash(access_token)],
+                &[(&token_hash(access_token), Type::TEXT)],
             )
-            .await
-            .map_err(db)?
+            .await?
             .map(|row| row.get(0))
             .ok_or(ApiError::Unauthorized)?;
         let name: String = request.device_name.trim().chars().take(100).collect();
@@ -408,16 +443,15 @@ impl SyncStore for PgStore {
             let (device_id, device_prefix, refresh_token) =
                 (random_id(), random_device_prefix(), random_id());
             let inserted = self
-                .client
-                .execute(
+                .exec(
                     "INSERT INTO devices (token_hash, device_id, org_id, device_prefix, name) \
                      VALUES ($1, $2, $3, $4, $5)",
                     &[
-                        &token_hash(&refresh_token),
-                        &device_id,
-                        &org_id,
-                        &device_prefix,
-                        &name,
+                        (&token_hash(&refresh_token), Type::TEXT),
+                        (&device_id, Type::TEXT),
+                        (&org_id, Type::TEXT),
+                        (&device_prefix, Type::TEXT),
+                        (&name, Type::TEXT),
                     ],
                 )
                 .await;
@@ -428,13 +462,11 @@ impl SyncStore for PgStore {
             }
         };
         let hostel_public_ids = self
-            .client
-            .query(
+            .rows(
                 "SELECT public_id FROM hostels WHERE org_id = $1 ORDER BY public_id",
-                &[&org_id],
+                &[(&org_id, Type::TEXT)],
             )
-            .await
-            .map_err(db)?
+            .await?
             .iter()
             .map(|row| row.get(0))
             .collect();
@@ -455,25 +487,23 @@ impl SyncStore for PgStore {
         let refs = BatchRefs::of(&request.commands);
         let hostel = request.hostel_public_id.as_str();
         // `Client::transaction` needs `&mut`. This client is this request's
-        // own connection, so a plain BEGIN … COMMIT on it is the same thing.
+        // own connection, and Hyperdrive pins it to one Neon connection from
+        // BEGIN to COMMIT, so a plain BEGIN … COMMIT is the same thing.
         self.client.batch_execute("BEGIN").await.map_err(db)?;
         let result = async {
-            self.client
-                .execute(
-                    "INSERT INTO hostels (public_id, org_id) VALUES ($1, $2) \
+            self.exec(
+                "INSERT INTO hostels (public_id, org_id) VALUES ($1, $2) \
                  ON CONFLICT (public_id) DO NOTHING",
-                    &[&hostel, &org_id],
-                )
-                .await
-                .map_err(db)?;
+                &[(&hostel, Type::TEXT), (&org_id, Type::TEXT)],
+            )
+            .await
+            .map_err(db)?;
             let owner: String = self
-                .client
-                .query_one(
+                .row(
                     "SELECT org_id FROM hostels WHERE public_id = $1 FOR UPDATE",
-                    &[&hostel],
+                    &[(&hostel, Type::TEXT)],
                 )
-                .await
-                .map_err(db)?
+                .await?
                 .get(0);
             if owner != org_id {
                 return Err(ApiError::Unauthorized);
@@ -499,13 +529,11 @@ impl SyncStore for PgStore {
         let org_id = self.device_org(refresh_token).await?;
         let hostel = request.hostel_public_id.as_str();
         let owner: Option<String> = self
-            .client
-            .query_opt(
+            .maybe_row(
                 "SELECT org_id FROM hostels WHERE public_id = $1",
-                &[&hostel],
+                &[(&hostel, Type::TEXT)],
             )
-            .await
-            .map_err(db)?
+            .await?
             .map(|row| row.get(0));
         match owner {
             None => {
@@ -520,14 +548,16 @@ impl SyncStore for PgStore {
             Some(_) => {}
         }
         let rows = self
-            .client
-            .query(
+            .rows(
                 "SELECT cursor, body::text FROM changes WHERE hostel_public_id = $1 \
                  AND cursor > $2 ORDER BY cursor LIMIT $3",
-                &[&hostel, &request.cursor, &(PULL_PAGE_SIZE + 1)],
+                &[
+                    (&hostel, Type::TEXT),
+                    (&request.cursor, Type::INT8),
+                    (&(PULL_PAGE_SIZE + 1), Type::INT8),
+                ],
             )
-            .await
-            .map_err(db)?;
+            .await?;
         let has_more = rows.len() > PULL_PAGE_SIZE as usize;
         let mut cursor = request.cursor;
         let mut changes = Vec::with_capacity(rows.len().min(PULL_PAGE_SIZE as usize));
@@ -541,16 +571,14 @@ impl SyncStore for PgStore {
         let lease = match &self.signing_key {
             Some(key) => {
                 let license = self
-                    .client
-                    .query_one(
+                    .row(
                         "SELECT o.licensed, to_char(current_date + 14, 'YYYY-MM-DD'), \
                          coalesce((SELECT body->>'name' FROM entities \
                                    WHERE hostel_public_id = $2 AND kind = 'hostel'), 'HostelDesk') \
                          FROM organizations o WHERE o.id = $1",
-                        &[&org_id, &hostel],
+                        &[(&org_id, Type::TEXT), (&hostel, Type::TEXT)],
                     )
-                    .await
-                    .map_err(db)?;
+                    .await?;
                 let (licensed, expiry, name): (bool, String, String) =
                     (license.get(0), license.get(1), license.get(2));
                 licensed
