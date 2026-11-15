@@ -7,7 +7,6 @@ This is an all-**Rust** project: an **egui** desktop app plus a sync API that ru
 - `core` — currency parsing shared between `app` and `db` (see `hosteldesk-core`)
 - `db` — local SQLite ledger (sqlx), including the offline sync cache
 - `pdf` — PDF generation
-- `license` — Ed25519 license and offline-lease verification
 - `protocol` — sync wire types and the ledger rules, shared by the desktop and the server
 - `app` — egui shell and the `Desk` application service
 - `server` — the sync API. Built for `wasm32` it is the Cloudflare Worker (workers-rs, Neon Postgres through Hyperdrive, `crates/server/wrangler.toml`); built natively it serves an in-memory store for tests. **No web framework** (no axum/tower/hyper): routing is a `match` on method and path.
@@ -57,7 +56,7 @@ Document **all public Rust structs, enums, and functions** with doc comments (`/
 
 Before completing any task, review the code against these security and quality practices:
 
-- **SQL injection prevention** — use `sqlx::query`/`sqlx::query_as::<_, T>` (desktop) and `tokio-postgres` `query(sql, &[..])` (Worker) with bound (`?N` / `$N`) parameters, never string-interpolated SQL. In the Worker, bind a list as one array parameter (`= ANY($N)`, `unnest($N::text[])`), not one parameter per item, and use only the `*_typed` calls (`query_typed`, `execute_typed`, …): Hyperdrive pools connections per transaction, so the named prepared statements behind plain `query`/`execute` fail intermittently in production (they work against a local Postgres, so tests will not catch it). Prefer the runtime `query_as::<_, T>` form over the `query!`/`query_as!` macros: the macros need a live `DATABASE_URL` (or a committed `.sqlx/` cache) to compile, which this project deliberately avoids so CI never needs a database just to build.
+- **SQL injection prevention** — use `sqlx::query`/`sqlx::query_as::<_, T>` (desktop) and `tokio-postgres` `query(sql, &[..])` (Worker) with bound (`?N` / `$N`) parameters, never string-interpolated SQL. In the Worker, bind a list as one array parameter (`= ANY($N)`, `unnest($N::text[])`), not one parameter per item, and use only the `*_typed` calls (`query_typed`, `execute_typed`, …): Hyperdrive pools connections per transaction, so the named prepared statements behind plain `query`/`execute` fail intermittently in production (they work against a local Postgres, so tests will not catch it). Keep Hyperdrive query caching disabled (`docs/DEPLOY.md`): cached reads made approvals and license changes lag in production. Prefer the runtime `query_as::<_, T>` form over the `query!`/`query_as!` macros: the macros need a live `DATABASE_URL` (or a committed `.sqlx/` cache) to compile, which this project deliberately avoids so CI never needs a database just to build.
 - **Error handling** — use `Result<T, E>` and propagate errors explicitly. Avoid panics in normal control flow.
 - **Money on the wire** — amounts and rates are decimal strings checked with `protocol::validate_money`, which matches the desk's SQLite CHECK constraints, so nothing the server accepts can poison a desk's pull.
 - **No `.unwrap()` in production code** — use `?`, `.context(...)`, `unwrap_or`, `unwrap_or_else`, or explicit `match` instead. `.unwrap()` / `.expect()` are acceptable only in tests.

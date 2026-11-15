@@ -677,14 +677,20 @@ impl HostelApp {
         self.run(
             "sync",
             async move { desk.sync_once().await },
-            |app, result| match result {
-                Ok(report) => {
-                    if !report.summary.is_empty() {
-                        app.ok(report.summary);
-                        app.refresh();
+            |app, result| {
+                match result {
+                    Ok(report) => {
+                        if !report.summary.is_empty() {
+                            app.ok(report.summary);
+                            app.refresh();
+                        }
                     }
+                    Err(error) => app.fail(format!("Sync failed, will retry: {error}")),
                 }
-                Err(error) => app.fail(format!("Sync failed, will retry: {error}")),
+                // A renewed license unlocks a locked desk without a restart.
+                if matches!(app.gate, Gate::Lock) && app.desk.license_status().is_some() {
+                    app.boot();
+                }
             },
         );
     }
@@ -844,62 +850,90 @@ impl HostelApp {
     }
 }
 
+/// HostelDesk is licensed per account: this computer unlocks by signing in.
+/// A computer that already signed in only needs to reach the server again
+/// to confirm the license, which it retries on its own.
 fn lock_screen(app: &mut HostelApp, ui: &mut egui::Ui) {
+    let enrolled = app.desk.cloud_enrolled();
+    if enrolled {
+        app.maybe_sync();
+    }
     egui::CentralPanel::default().show(ui, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(48.0);
                 ui.heading("HostelDesk");
-                ui.label("Activate HostelDesk with the license file for this computer.");
-                if ui.button("Select license file").clicked() {
-                    // The file dialog is modal anyway; it runs on the UI thread.
-                    match app.desk.activate_license_from_file() {
-                        Ok(payload) => {
-                            app.ok(format!(
-                                "Licensed to {} until {}.",
-                                payload.hostel_name, payload.expiry_date
-                            ));
-                            app.boot();
-                        }
-                        Err(error) => app.fail(error),
-                    }
-                }
-                ui.add_space(16.0);
-                ui.separator();
-                ui.label(
-                    "Or connect to your organization's cloud. A licensed organization \
-                     activates this computer on the first sync.",
-                );
             });
+            if enrolled {
+                ui.label(lock_reason(app.desk.cached_license()));
+                if ui
+                    .add_enabled(!app.busy("sync"), egui::Button::new("Check again"))
+                    .clicked()
+                {
+                    app.sync_now();
+                }
+                ui.separator();
+                ui.label("Or sign in with a different account:");
+            } else {
+                ui.label(
+                    "Sign in to your HostelDesk account to use this computer. New to \
+                     HostelDesk? Create an account to start your free trial.",
+                );
+            }
             cloud_connect_form(app, ui);
         });
     });
 }
 
+/// Why a signed-in computer is locked, from the server's last answer.
+fn lock_reason(license: Option<crate::AccountLicense>) -> &'static str {
+    match license {
+        Some(license) if !license.approved => {
+            "Your HostelDesk account is waiting for approval. This computer \
+             unlocks by itself as soon as it is approved."
+        }
+        Some(license) if license.expires_on < chrono::Utc::now().date_naive() => {
+            "Your HostelDesk plan has ended. Contact HostelDesk to renew it; this \
+             computer unlocks by itself once it is renewed."
+        }
+        _ => {
+            "This computer needs to check its license with HostelDesk. Connect it \
+             to the internet; it checks again by itself."
+        }
+    }
+}
+
 fn cloud_connect_form(app: &mut HostelApp, ui: &mut egui::Ui) {
     let f = &mut app.cloud_form;
-    labeled(
-        ui,
-        "Server (blank for HostelDesk Cloud)",
-        &mut f.server,
-        false,
-    );
-    labeled(ui, "Organization (new accounts)", &mut f.org, false);
     labeled(ui, "Email", &mut f.email, false);
     labeled(ui, "Password", &mut f.password, true);
+    labeled(
+        ui,
+        "Hostel or business name (new accounts)",
+        &mut f.org,
+        false,
+    );
+    egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
+        labeled(
+            ui,
+            "Server (blank for HostelDesk Cloud)",
+            &mut f.server,
+            false,
+        );
+    });
     let busy = app.busy("connect");
     ui.horizontal(|ui| {
-        if ui
-            .add_enabled(!busy, egui::Button::new("Create organization"))
-            .clicked()
-        {
-            connect_cloud(app, true);
-        }
         if ui
             .add_enabled(!busy, egui::Button::new("Sign in"))
             .clicked()
         {
             connect_cloud(app, false);
+        }
+        if ui
+            .add_enabled(!busy, egui::Button::new("Create account"))
+            .clicked()
+        {
+            connect_cloud(app, true);
         }
     });
 }
@@ -925,11 +959,10 @@ fn connect_cloud(app: &mut HostelApp, create_account: bool) {
                 app.cloud_form.password.clear();
                 app.last_sync = Some(Instant::now());
                 match sync {
-                    Ok(_) if app.desk.license_status().is_none() => app.fail(
-                        "Connected. This organization has no active license yet: \
-                         activate a license file, or ask HostelDesk to license it.",
-                    ),
-                    Ok(_) => app.ok("Connected to the cloud."),
+                    Ok(_) if app.desk.license_status().is_none() => {
+                        app.fail(lock_reason(app.desk.cached_license()))
+                    }
+                    Ok(_) => app.ok("Signed in."),
                     Err(error) => app.fail(format!("Connected. Sync will retry: {error}")),
                 }
                 if matches!(app.gate, Gate::Lock | Gate::Onboarding | Gate::SignIn) {
@@ -998,9 +1031,6 @@ fn onboarding(app: &mut HostelApp, ui: &mut egui::Ui) {
                     },
                 );
             }
-            ui.separator();
-            ui.label("Joining an organization that already uses HostelDesk Cloud?");
-            cloud_connect_form(app, ui);
         });
     });
 }
@@ -1093,9 +1123,17 @@ fn license_badge(app: &HostelApp, ui: &mut egui::Ui) {
         return;
     };
     let today = chrono::Local::now().date_naive();
-    let days = (license.expiry_date - today).num_days();
-    let text = format!("License: {days} days left");
-    if days <= 14 {
+    let days = (license.expires_on - today).num_days();
+    let plan = match license.plan.as_str() {
+        "trial" => "Free trial",
+        "semester" => "Semester plan",
+        "1-year" => "1-year plan",
+        "3-year" => "3-year plan",
+        "5-year" => "5-year plan",
+        _ => "License",
+    };
+    let text = format!("{plan}: {days} days left");
+    if days <= 7 {
         ui.colored_label(ui.visuals().error_fg_color, text);
     } else if days <= 30 {
         ui.colored_label(ui.visuals().warn_fg_color, text);

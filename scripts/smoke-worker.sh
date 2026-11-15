@@ -7,8 +7,11 @@
 #     "postgres://postgres:devpass@127.0.0.1:55432/hosteldesk?sslmode=disable" npx -y wrangler@4 dev --port 8787 &
 #   scripts/smoke-worker.sh http://127.0.0.1:8787
 #
-# Point it at the deployed URL to smoke-test production (it creates a throwaway org).
+# Point it at the deployed URL to smoke-test production (it creates throwaway
+# orgs). It approves them with scripts/license-account.sh, so it needs the same
+# database access: ~/.hosteldesk/neon_url, or SYNC_DATABASE_URL for a local run.
 set -euo pipefail
+approve() { "$(dirname "${BASH_SOURCE[0]}")/license-account.sh" "$1" approve >/dev/null; }
 
 base="${1:-http://127.0.0.1:8787}"
 run="$(date +%s)-$RANDOM"
@@ -38,6 +41,14 @@ expect 200 "$out" "enroll"
 refresh="$(jq -r .refresh_token <<<"${out#* }")"
 [[ "$(jq -r '.device_prefix | length' <<<"${out#* }")" == 6 ]] || fail "device prefix length"
 
+# A new account waits for the owner's approval: its trial clock runs, but the
+# server will not sync it until it is approved.
+out="$(post /v1/license "$refresh" '{}')"
+expect 200 "$out" "license (pending)"
+jq -e '.approved == false and .plan == "trial"' <<<"${out#* }" >/dev/null || fail "pending: ${out#* }"
+expect 403 "$(post /v1/pull "$refresh" "{\"hostel_public_id\":\"$hostel\",\"cursor\":0}")" "pull while pending"
+approve "$email"
+
 room() { # id number
   echo "{\"idempotency_key\":\"room-$1\",\"command\":{\"type\":\"upsert_room\",\"public_id\":\"$1\",\"hostel_public_id\":\"$hostel\",\"base_revision\":0,\"room_number\":\"$2\",\"room_type\":\"single\",\"capacity\":1,\"floor\":null,\"semester_rate\":\"100\",\"recess_rate\":\"50\",\"status\":\"vacant\"}}"
 }
@@ -64,6 +75,7 @@ expect 200 "$out" "replay"
 # A push in another organization's hostel is refused.
 other="$(post /v1/sign-up "" "{\"organization_name\":\"Other\",\"email\":\"other-$email\",\"password\":\"smoke-pass-1\"}")"
 other_access="$(jq -r .access_token <<<"${other#* }")"
+approve "other-$email"
 other_refresh="$(jq -r .refresh_token <<<"$(post /v1/devices "$other_access" '{"device_name":"x"}' | cut -d' ' -f2-)")"
 out="$(post /v1/pull "$other_refresh" "{\"hostel_public_id\":\"$hostel\",\"cursor\":0}")"
 expect 401 "$out" "cross-org pull"
@@ -83,7 +95,14 @@ done
 out="$(post /v1/pull "$refresh2" "{\"hostel_public_id\":\"$hostel\",\"cursor\":0}")"
 expect 200 "$out" "pull"
 body="${out#* }"
-jq -e '.has_more == false and .lease == null' <<<"$body" >/dev/null || fail "pull flags: $body"
+jq -e '.has_more == false' <<<"$body" >/dev/null || fail "pull flags: $body"
+
+# The account is the license: an approved account is on its trial, which the server reports.
+out="$(post /v1/license "$refresh" '{}')"
+expect 200 "$out" "license"
+jq -e '.approved and .plan == "trial" and .expires_on > (now | strftime("%Y-%m-%d"))' <<<"${out#* }" >/dev/null \
+  || fail "trial license: ${out#* }"
+expect 401 "$(post /v1/license "not-a-token" '{}')" "license with a bad token"
 rooms="$(jq -r '[.changes[] | select(.entity == "room") | .room_number] | unique | join(",")' <<<"$body")"
 [[ "$rooms" == "101,103,104" ]] || fail "pulled rooms: $rooms"
 jq -e '[.changes[] | select(.entity == "payment")] | length == 1 and .[0].payment_date == "2026-11-15T09:30:00Z"' <<<"$body" >/dev/null || fail "pulled payment"

@@ -26,8 +26,6 @@ pub struct SyncState {
     pub device_prefix: Option<String>,
     /// Server the desk syncs with.
     pub server_url: Option<String>,
-    /// Last signed offline lease, whether or not it verified.
-    pub lease_text: Option<String>,
     /// Next sequence number used when `device_prefix` is set.
     pub next_receipt: i64,
 }
@@ -239,7 +237,7 @@ impl DbPool {
     pub async fn sync_state(&self, hostel_id: i64) -> anyhow::Result<Option<SyncState>> {
         let row = sqlx::query_as::<_, SyncState>(
             r#"
-            SELECT hostel_id, cursor, device_id, device_prefix, server_url, lease_text, next_receipt
+            SELECT hostel_id, cursor, device_id, device_prefix, server_url, next_receipt
             FROM sync_state WHERE hostel_id = ?1
             "#,
         )
@@ -247,24 +245,6 @@ impl DbPool {
         .fetch_optional(&self.inner)
         .await?;
         Ok(row)
-    }
-
-    /// Store the lease text from the latest pull.
-    pub async fn save_lease(&self, hostel_id: i64, lease_text: &str) -> anyhow::Result<()> {
-        sqlx::query(
-            r#"
-            INSERT INTO sync_state (hostel_id, lease_text)
-            VALUES (?1, ?2)
-            ON CONFLICT(hostel_id) DO UPDATE SET
-                lease_text = excluded.lease_text,
-                updated_at = CURRENT_TIMESTAMP
-            "#,
-        )
-        .bind(hostel_id)
-        .bind(lease_text)
-        .execute(&self.inner)
-        .await?;
-        Ok(())
     }
 
     /// Apply one pulled page and remember `cursor`, in one transaction, so a

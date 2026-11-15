@@ -15,7 +15,6 @@
 
 ```sh
 cargo run -p app                       # debug window
-cargo run -p app --features dev-license  # accept a dev license (cargo run -p license --example generate_dev_license)
 cargo build --release -p app          # release binary at target/release/hosteldesk
 ```
 
@@ -42,7 +41,6 @@ On Linux, `scripts/install-dev-desktop.sh` installs a `.desktop` entry so the ta
 | `crates/core` (`hosteldesk-core`) | Currency parsing and pure domain helpers |
 | `crates/db` | SQLite schema, migrations, and repositories (sqlx) |
 | `crates/pdf` | PDF receipt generation (printpdf) |
-| `crates/license` | Ed25519 offline license and lease verification |
 | `crates/protocol` | Sync wire types and ledger rules shared by the desk and the Worker |
 | `crates/server` | Sync API: Cloudflare Worker on Neon Postgres via Hyperdrive (wasm32), in-memory store for native tests |
 
@@ -55,7 +53,7 @@ On Linux, `scripts/install-dev-desktop.sh` installs a `.desktop` entry so the ta
 ## Project structure
 
 ```
-crates/          Rust workspace (app, core, db, pdf, license, protocol, server)
+crates/          Rust workspace (app, core, db, pdf, protocol, server)
 packaging/       Linux .deb script and Windows NSIS script
 scripts/         install.ps1, install-dev-desktop.sh, deploy-worker.sh, migrate-sync-db.sh, smoke-worker.sh
 .github/         CI and release workflows

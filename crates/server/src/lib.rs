@@ -15,12 +15,10 @@ use argon2::password_hash::{
     rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
 };
 use argon2::Argon2;
-use base64::Engine;
-use ed25519_dalek::{Signer, SigningKey};
 use protocol::{
     AckStatus, ApplyOutcome, AuthResponse, CommandAck, CommandEnvelope, EnrollRequest,
-    EnrollResponse, Entity, Ledger, PullRequest, PullResponse, PushRequest, PushResponse,
-    SignInRequest, SignUpRequest,
+    EnrollResponse, Entity, Ledger, LicenseStatus, PullRequest, PullResponse, PushRequest,
+    PushResponse, SignInRequest, SignUpRequest,
 };
 use serde::{de::DeserializeOwned, Serialize};
 use sha2::{Digest, Sha256};
@@ -46,6 +44,9 @@ pub enum ApiError {
     /// No such route.
     #[error("not found")]
     NotFound,
+    /// The account exists but the owner has not approved it yet.
+    #[error("this account is waiting for approval")]
+    NotApproved,
     /// Storage failed. The detail is logged, not returned.
     #[error("storage error: {0}")]
     Storage(String),
@@ -67,6 +68,7 @@ impl From<ApiError> for Reply {
             ApiError::BadRequest(_) => 400,
             ApiError::TooManyRequests => 429,
             ApiError::NotFound => 404,
+            ApiError::NotApproved => 403,
             ApiError::Storage(detail) => {
                 tracing_log(detail);
                 return Reply {
@@ -115,6 +117,8 @@ pub(crate) trait SyncStore {
         refresh_token: &str,
         request: PullRequest,
     ) -> Result<PullResponse, ApiError>;
+    /// The license of the account that owns `refresh_token`'s device.
+    async fn license(&self, refresh_token: &str) -> Result<LicenseStatus, ApiError>;
 }
 
 /// What one push did to a ledger.
@@ -276,48 +280,9 @@ pub fn token_hash(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
 
-/// Parse a base64 Ed25519 secret key (the `HOSTELDESK_SIGNING_KEY` secret).
-pub fn signing_key_from_base64(text: &str) -> Option<SigningKey> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(text.trim())
-        .ok()?;
-    let bytes: [u8; 32] = bytes.try_into().ok()?;
-    Some(SigningKey::from_bytes(&bytes))
-}
-
-/// The dev license key, only with the `dev-license` feature.
-pub fn dev_signing_key() -> Option<SigningKey> {
-    #[cfg(feature = "dev-license")]
-    {
-        signing_key_from_base64("KLXBx9s0JhWFbQhtZX2IO34NajBXIy5Kor55yzOIp0E=")
-    }
-    #[cfg(not(feature = "dev-license"))]
-    None
-}
-
-/// Sign an offline lease in the `license` crate's format (`sig:payload`,
-/// both base64) that expires on `expiry`.
-pub fn sign_lease(
-    hostel_name: &str,
-    expiry: chrono::NaiveDate,
-    key: &SigningKey,
-) -> Option<String> {
-    let payload = serde_json::json!({
-        "hostel_name": hostel_name,
-        "expiry_date": expiry,
-        "tier": "sync",
-    });
-    let json = serde_json::to_vec(&payload).ok()?;
-    let signature = key.sign(&json);
-    Some(format!(
-        "{}:{}",
-        base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()),
-        base64::engine::general_purpose::STANDARD.encode(json)
-    ))
-}
-
-/// Days an offline lease stays valid after the last successful pull.
-pub const LEASE_DAYS: i64 = 14;
+/// Free trial every new account starts with. Paid plans are set with
+/// `scripts/license-account.sh`.
+pub const TRIAL_DAYS: i64 = 30;
 
 /// Serve one request. `authorization` is the raw `Authorization` header.
 pub(crate) async fn route(
@@ -369,6 +334,7 @@ async fn dispatch(
             let token = bearer(authorization)?;
             json(&store.pull(token, parse(body)?).await?)
         }
+        ("POST", "/v1/license") => json(&store.license(bearer(authorization)?).await?),
         _ => Err(ApiError::NotFound),
     }
 }

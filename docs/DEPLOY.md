@@ -5,7 +5,7 @@ The sync API (`crates/server`) is a Rust Cloudflare Worker named `hosteldesk-syn
 - **Connection:** the Worker reaches Neon through **Cloudflare Hyperdrive**, which keeps a warm connection pool near the database.
 - **Address:** desks connect to `https://hosteldesk-sync.ableabenaitwe.workers.dev`, the `DEFAULT_SERVER_URL` in `crates/app/src/sync.rs`.
 
-The Neon connection string lives only in `~/.hosteldesk/neon_url` (mode 0600), next to the license signing key. Never commit it.
+The Neon connection string lives only in `~/.hosteldesk/neon_url` (mode 0600). Never commit it. Licensing needs no keys: the Worker answers `POST /v1/license` from the database (see `LICENSING.md`).
 
 ## One-time setup
 
@@ -21,14 +21,11 @@ The Neon connection string lives only in `~/.hosteldesk/neon_url` (mode 0600), n
    ```sh
    cd crates/server
    env -u CLOUDFLARE_API_TOKEN npx -y wrangler@4 hyperdrive create hosteldesk \
+     --caching-disabled true \
      --connection-string="$(sed 's/?.*//' ~/.hosteldesk/neon_url)"
    ```
 
-4. **Signing key secret.** Leases are signed with the production license key. Pipe it in so it never shows on screen or in shell history:
-
-   ```sh
-   env -u CLOUDFLARE_API_TOKEN npx -y wrangler@4 secret put HOSTELDESK_SIGNING_KEY < ~/.hosteldesk/signing_key.b64
-   ```
+   Query caching **must stay off**. With caching on, Hyperdrive serves read queries from a cache for up to a minute. Approvals, plan changes and device revocations then arrive late, and a desk can pull stale changes. The current config (`b80b36213545415cbd9dfe22977ed168`) has caching disabled.
 
 ## Every deploy
 
@@ -37,18 +34,20 @@ env -u CLOUDFLARE_API_TOKEN scripts/deploy-worker.sh   # migrates Neon, then wra
 scripts/smoke-worker.sh https://hosteldesk-sync.ableabenaitwe.workers.dev
 ```
 
-The smoke test creates two throwaway organizations named "Smoke" and "Other". Delete them afterwards if you want a clean database.
+The smoke test creates two throwaway organizations named "Smoke" and "Other", and approves them through `scripts/license-account.sh`. Delete them afterwards if you want a clean database.
 
 **Logs:** run `npx -y wrangler@4 tail hosteldesk-sync`, or open Workers → hosteldesk-sync → Observability in the Cloudflare dashboard.
 
 ## Operations
 
-Run all of these with `psql "$(cat ~/.hosteldesk/neon_url)" -c "…"`:
+Licensing has its own script. Run everything else with `psql "$(cat ~/.hosteldesk/neon_url)" -c "…"`:
 
 | Task | SQL |
 |---|---|
-| License a paying organization | `UPDATE organizations SET licensed = true WHERE id = '<org id>'` |
-| Find an organization by email | `SELECT o.id, o.name, o.licensed FROM organizations o JOIN accounts a ON a.org_id = o.id WHERE a.email = '<email>'` |
+| See accounts waiting for approval | `scripts/license-account.sh pending` |
+| Approve an account | `scripts/license-account.sh <email> approve` |
+| Sell, renew, show or end a license | `scripts/license-account.sh <email> 1-year` (see `LICENSING.md`) |
+| Find an organization by email | `SELECT o.id, o.name, o.license_plan, o.license_expires_on FROM organizations o JOIN accounts a ON a.org_id = o.id WHERE a.email = '<email>'` |
 | Revoke a lost or stolen computer | `UPDATE devices SET revoked_at = now() WHERE device_id = '<id>'` |
 | List an organization's computers | `SELECT device_id, name, device_prefix, created_at, revoked_at FROM devices WHERE org_id = '<org id>'` |
 

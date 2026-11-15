@@ -11,15 +11,9 @@ authors.workspace = true
 # and for the desk's two-desk test, which serves MemoryStore over TCP.
 crate-type = ["cdylib", "rlib"]
 
-[features]
-# Sign leases with the dev license key when no HOSTELDESK_SIGNING_KEY is set. Off by default.
-dev-license = []
-
 [dependencies]
 argon2 = "0.5"
-base64 = "0.22"
 chrono = { workspace = true }
-ed25519-dalek = "2"
 hex = "0.4"
 password-hash = { version = "0.5", features = ["std", "getrandom"] }
 protocol = { path = "../protocol" }

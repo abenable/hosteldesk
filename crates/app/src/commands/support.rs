@@ -1,4 +1,4 @@
-use license::LicensePayload;
+use crate::state::AccountLicense;
 use tracing::error;
 
 /// Convert an internal database error into a frontend-friendly string message.
@@ -7,18 +7,13 @@ pub(crate) fn map_db_error(command: &str, error: anyhow::Error) -> String {
     format!("Something went wrong while processing your request. {error}")
 }
 
-/// Guard commands that require a valid, unexpired license.
+/// Guard commands that require the account's license to be usable today.
 pub(crate) fn require_license(
     license_state: &crate::LicenseState,
-) -> Result<LicensePayload, String> {
-    let payload = license_state
-        .get()
-        .ok_or_else(|| "unlicensed".to_string())?;
-    let today = chrono::Utc::now().date_naive();
-    if payload.expiry_date < today {
-        return Err("unlicensed".to_string());
-    }
-    Ok(payload)
+) -> Result<AccountLicense, String> {
+    license_state
+        .active()
+        .ok_or_else(|| "unlicensed".to_string())
 }
 
 /// Guard commands that require any authenticated session for the target hostel.

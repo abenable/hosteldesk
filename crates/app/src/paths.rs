@@ -57,9 +57,9 @@ impl AppPaths {
         format!("sqlite:{}", self.database_path().display())
     }
 
-    /// Persisted license file inside the app data directory.
+    /// Cached account license (what the server last said) in the app data directory.
     pub fn license_path(&self) -> PathBuf {
-        self.data_dir.join("license.lic")
+        self.data_dir.join("account_license.json")
     }
 
     /// Device registration that is not a secret: server URL, device id, prefix.

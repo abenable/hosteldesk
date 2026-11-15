@@ -14,7 +14,7 @@
   <img alt="Platforms" src="https://img.shields.io/badge/platform-windows%20%7C%20linux-lightgrey.svg">
 </p>
 
-HostelDesk is a native Rust desktop app (egui). The ledger lives in a SQLite database on the machine and receipts are offline PDFs. HostelDesk Cloud, a Rust sync service on Cloudflare Workers, keeps that cache in step across a customer's computers when the network is up; the desk keeps working when it is not.
+HostelDesk is a native Rust desktop app (egui). The ledger lives in a SQLite database on the machine and receipts are offline PDFs. Licensing is per HostelDesk account and checked by the cloud backend: a computer unlocks by signing in once the account is approved, and new accounts start on a free trial. HostelDesk Cloud, a Rust sync service on Cloudflare Workers, keeps that cache in step across a customer's computers when the network is up; the desk keeps working when it is not.
 
 ## Install
 

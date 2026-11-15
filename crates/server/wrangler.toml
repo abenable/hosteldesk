@@ -4,7 +4,6 @@
 # Deploy:  scripts/deploy-worker.sh   (migrates the Neon database, then deploys)
 # Local:   see docs/DEVELOPMENT.md (local Postgres via
 #          CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE)
-# Secret:  HOSTELDESK_SIGNING_KEY (license private key, base64), see docs/DEPLOY.md
 # Needs the Workers Paid plan: Argon2 sign-in exceeds the Free plan's 10 ms CPU limit.
 name = "hosteldesk-sync"
 main = "build/worker/shim.mjs"

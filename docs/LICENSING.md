@@ -2,49 +2,39 @@
 
 HostelDesk is proprietary, closed-source software — see [`LICENSE`](../LICENSE) for the source code's terms and [`EULA.md`](../EULA.md) for the end-user terms governing the compiled application. Contact ableabenaitwe@gmail.com for licensing, purchasing, or support questions.
 
-The app itself is license-gated. On startup it verifies an Ed25519-signed license and shows an activation screen when it is missing, invalid, or expired. Verification is fully offline. Activation is file-based only: the app opens a native file picker and reads the selected `.hdlicense`/`.lic`/`.txt` file — there is no paste-a-key text field.
+## Licenses live on the account, and the server decides
 
-The public key is baked into `crates/license/src/lib.rs`; the matching production signing key lives at `~/.hosteldesk/signing_key.b64` (outside the repository, `chmod 600`) — back it up somewhere durable (a password manager), since losing it means no more licenses can ever be issued against the public key already baked into shipped builds.
+A HostelDesk license belongs to a **HostelDesk Cloud account** (an organization), not to a file or a computer. The cloud backend is the only authority. There are no license files and no signing keys.
 
-## Issuing a license
+- **Plan and end date.** Each account has a plan (`trial`, `semester`, `1-year`, `3-year`, `5-year`) and the day it ends, stored in the sync database (`organizations.license_plan`, `organizations.license_expires_on`).
+- **You approve every account.** A new account is **pending** until you approve it (`organizations.approved_at`). While pending, its computers stay locked with "waiting for approval", and the server refuses to sync its data (HTTP 403).
+- **Activation is signing in.** On a new computer the lock screen asks the user to sign in or create an account. After signing in, the desk asks the server `POST /v1/license` (authenticated by its device token, over HTTPS) and unlocks once the account is approved and while its plan runs.
+- **Re-checks.** The desk asks again on every sync, every 30 seconds while online. A plan you change or end takes effect on the desk's next sync.
+- **Offline.** The desk caches the server's last answer (`account_license.json` in its data directory) and keeps working offline for up to **14 days** after its last successful check (`OFFLINE_GRACE_DAYS`). Past that, or if the clock is set back before the last check, it locks until it reaches the server again. The lock screen retries on its own.
+- **Free trial.** New accounts start on a **30-day free trial** (`TRIAL_DAYS` in `crates/server/src/lib.rs`). The trial is stamped on the account when it is created, and its clock runs from that moment, including while the account waits for approval.
 
-`crates/license/examples/issue_license.rs` mints a license file for one of four fixed plans, each just a duration off the activation date (a semester = 6 months):
+The cache is not signed: a user who edits it can stretch the offline window. The account's plan itself lives only on the server and cannot be changed from a desk.
 
-| Plan | Duration |
-|---|---|
-| `trial` | 1 semester (6 months) |
-| `1-year` | 2 semesters (12 months) |
-| `3-year` | 36 months |
-| `5-year` | 60 months |
-
-```sh
-cargo run --example issue_license -p license -- \
-  --hostel-name "Ocean View Hostel" \
-  --plan 1-year \
-  --key-file ~/.hosteldesk/signing_key.b64
-```
-
-This writes a `<slug>-<plan>.hdlicense` file — send that file to the customer; they pick it on the app's activation screen.
-
-## Development licenses
-
-Builds with the `dev-license` Cargo feature additionally accept a development-only key, so contributors can generate local licenses without the production key:
+## Approving, selling, renewing and ending
 
 ```sh
-cargo run --example generate_dev_license -p license > dev.hdlicense
-cargo run -p app --features dev-license
+scripts/license-account.sh pending                     # accounts waiting for approval
+scripts/license-account.sh owner@hostel.com approve    # let the account in
+scripts/license-account.sh owner@hostel.com show       # approval, plan, end date
+scripts/license-account.sh owner@hostel.com 1-year     # sell a plan
+scripts/license-account.sh owner@hostel.com end        # end the license today
 ```
 
-(or `cargo build -p app --features dev-license` for a debug binary), then pick `dev.hdlicense` on the activation screen. The feature is off by default — including for a plain `cargo build -p app` — so a shippable build can never accept a dev-minted license.
+Approved computers unlock on their own within about 30 seconds.
 
-## Cloud leases
+A sold plan runs from today. If the account's current end date is still ahead, it runs from that date instead, so renewing early never loses days.
 
-A desk connected to HostelDesk Cloud can also be activated by a **lease**: a 14-day license in the same signed format, renewed on every successful sync. The sync Worker signs leases only for organizations marked as licensed, with the production signing key stored as the Worker secret `HOSTELDESK_SIGNING_KEY`, so a lease verifies against the public key already in shipped builds. Signing in to the cloud never unlocks a desk by itself, and a lease never replaces a license file that runs longer.
+## Upgrading from v1.x
 
-To license an organization after a customer pays (find its id in the `organizations` table):
+v1.x license files are no longer read. After upgrading, a computer shows the sign-in screen.
+- **The customer:** creates an account (or signs in). Once you approve it, the computer unlocks on the 30-day trial and uploads its existing hostel data.
+- **You:** if they had already paid, sell their account the matching plan with `scripts/license-account.sh`.
 
-```sh
-psql "$(cat ~/.hosteldesk/neon_url)" -c "UPDATE organizations SET licensed = true WHERE id = '<org id>'"
-```
+## Development
 
-Set `licensed = false` to stop issuing leases; desks keep working until their last lease expires.
+There is no developer shortcut: a desk unlocks only through a server. For local work, run the Worker locally (`docs/DEVELOPMENT.md`). In a debug build, enter `http://127.0.0.1:8787` as the server under **Advanced** on the sign-in screen, then create an account and approve it with `SYNC_DATABASE_URL=<local url> scripts/license-account.sh <email> approve`.

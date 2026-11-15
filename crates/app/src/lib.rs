@@ -16,7 +16,7 @@ mod ui;
 
 pub use desk::Desk;
 pub use paths::AppPaths;
-pub use state::{AuthState, LicenseState, Session};
+pub use state::{AccountLicense, AuthState, LicenseState, Session, OFFLINE_GRACE_DAYS};
 
 /// Process-wide Tokio runtime. The UI spawns work on it and never blocks on it.
 pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {

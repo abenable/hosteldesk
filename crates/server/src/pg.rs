@@ -14,14 +14,14 @@
 //! after the other against current data.
 
 use crate::{
-    apply_batch, dev_signing_key, dump_from, entity_key, hash_password, normalize_email,
-    random_device_prefix, random_id, route, sign_lease, signing_key_from_base64, token_hash,
-    verify_password, ApiError, BatchOutcome, SyncStore, DUMMY_HASH,
+    apply_batch, dump_from, entity_key, hash_password, normalize_email, random_device_prefix,
+    random_id, route, token_hash, verify_password, ApiError, BatchOutcome, SyncStore, DUMMY_HASH,
+    TRIAL_DAYS,
 };
-use ed25519_dalek::SigningKey;
 use protocol::{
-    AuthResponse, BatchRefs, EnrollRequest, EnrollResponse, Entity, Ledger, PullRequest,
-    PullResponse, PushRequest, PushResponse, SignInRequest, SignUpRequest, PULL_PAGE_SIZE,
+    AuthResponse, BatchRefs, EnrollRequest, EnrollResponse, Entity, Ledger, LicenseStatus,
+    PullRequest, PullResponse, PushRequest, PushResponse, SignInRequest, SignUpRequest,
+    PULL_PAGE_SIZE,
 };
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
@@ -46,11 +46,6 @@ async fn fetch(mut request: Request, env: Env, _ctx: Context) -> worker::Result<
     }
     let authorization = request.headers().get("authorization")?;
     let body = request.bytes().await?;
-    let signing_key = env
-        .secret("HOSTELDESK_SIGNING_KEY")
-        .ok()
-        .and_then(|secret| signing_key_from_base64(&secret.to_string()))
-        .or_else(dev_signing_key);
     let client = match connect(&env).await {
         Ok(client) => client,
         Err(error) => {
@@ -58,10 +53,7 @@ async fn fetch(mut request: Request, env: Env, _ctx: Context) -> worker::Result<
             return text_response(503, "database unavailable, try again".into());
         }
     };
-    let store = PgStore {
-        client,
-        signing_key,
-    };
+    let store = PgStore { client };
     let reply = route(&store, &method, &path, authorization.as_deref(), &body).await;
     let mut response = text_response(reply.status, reply.body)?;
     if reply.status == 200 {
@@ -104,7 +96,6 @@ async fn connect(env: &Env) -> Result<Client, String> {
 
 struct PgStore {
     client: Client,
-    signing_key: Option<SigningKey>,
 }
 
 fn db(error: tokio_postgres::Error) -> ApiError {
@@ -164,6 +155,24 @@ impl PgStore {
         .await?
         .map(|row| row.get(0))
         .ok_or(ApiError::Unauthorized)
+    }
+
+    /// The device's organization, refused while the account awaits approval.
+    async fn approved_org(&self, refresh_token: &str) -> Result<String, ApiError> {
+        let row = self
+            .maybe_row(
+                "SELECT d.org_id, o.approved_at IS NOT NULL FROM devices d \
+                 JOIN organizations o ON o.id = d.org_id \
+                 WHERE d.token_hash = $1 AND d.revoked_at IS NULL",
+                &[(&token_hash(refresh_token), Type::TEXT)],
+            )
+            .await?
+            .ok_or(ApiError::Unauthorized)?;
+        if row.get::<_, bool>(1) {
+            Ok(row.get(0))
+        } else {
+            Err(ApiError::NotApproved)
+        }
     }
 
     async fn new_session(&self, org_id: &str) -> Result<String, ApiError> {
@@ -352,7 +361,8 @@ impl SyncStore for PgStore {
         // created together or not at all.
         let result = self
             .exec(
-                "WITH org AS (INSERT INTO organizations (id, name) VALUES ($1, $2)), \
+                "WITH org AS (INSERT INTO organizations (id, name, license_plan, license_expires_on) \
+                              VALUES ($1, $2, 'trial', current_date + $6::int)), \
                       acc AS (INSERT INTO accounts (email, org_id, password_hash) \
                               VALUES ($3, $1, $4)) \
                  INSERT INTO sessions (token_hash, org_id, expires_at) \
@@ -363,6 +373,7 @@ impl SyncStore for PgStore {
                     (&email, Type::TEXT),
                     (&password_hash, Type::TEXT),
                     (&token_hash(&access_token), Type::TEXT),
+                    (&(TRIAL_DAYS as i32), Type::INT4),
                 ],
             )
             .await;
@@ -483,7 +494,7 @@ impl SyncStore for PgStore {
         refresh_token: &str,
         request: PushRequest,
     ) -> Result<PushResponse, ApiError> {
-        let org_id = self.device_org(refresh_token).await?;
+        let org_id = self.approved_org(refresh_token).await?;
         let refs = BatchRefs::of(&request.commands);
         let hostel = request.hostel_public_id.as_str();
         // `Client::transaction` needs `&mut`. This client is this request's
@@ -526,7 +537,7 @@ impl SyncStore for PgStore {
         refresh_token: &str,
         request: PullRequest,
     ) -> Result<PullResponse, ApiError> {
-        let org_id = self.device_org(refresh_token).await?;
+        let org_id = self.approved_org(refresh_token).await?;
         let hostel = request.hostel_public_id.as_str();
         let owner: Option<String> = self
             .maybe_row(
@@ -541,7 +552,6 @@ impl SyncStore for PgStore {
                     cursor: request.cursor,
                     changes: Vec::new(),
                     has_more: false,
-                    lease: None,
                 })
             }
             Some(owner) if owner != org_id => return Err(ApiError::Unauthorized),
@@ -568,31 +578,29 @@ impl SyncStore for PgStore {
                     .map_err(|e| ApiError::Storage(e.to_string()))?,
             );
         }
-        let lease = match &self.signing_key {
-            Some(key) => {
-                let license = self
-                    .row(
-                        "SELECT o.licensed, to_char(current_date + 14, 'YYYY-MM-DD'), \
-                         coalesce((SELECT body->>'name' FROM entities \
-                                   WHERE hostel_public_id = $2 AND kind = 'hostel'), 'HostelDesk') \
-                         FROM organizations o WHERE o.id = $1",
-                        &[(&org_id, Type::TEXT), (&hostel, Type::TEXT)],
-                    )
-                    .await?;
-                let (licensed, expiry, name): (bool, String, String) =
-                    (license.get(0), license.get(1), license.get(2));
-                licensed
-                    .then(|| chrono::NaiveDate::parse_from_str(&expiry, "%Y-%m-%d").ok())
-                    .flatten()
-                    .and_then(|expiry| sign_lease(&name, expiry, key))
-            }
-            None => None,
-        };
         Ok(PullResponse {
             cursor,
             changes,
             has_more,
-            lease,
+        })
+    }
+
+    async fn license(&self, refresh_token: &str) -> Result<LicenseStatus, ApiError> {
+        let org_id = self.device_org(refresh_token).await?;
+        let row = self
+            .row(
+                "SELECT name, license_plan, to_char(license_expires_on, 'YYYY-MM-DD'), \
+                 approved_at IS NOT NULL FROM organizations WHERE id = $1",
+                &[(&org_id, Type::TEXT)],
+            )
+            .await?;
+        let expires_on: String = row.get(2);
+        Ok(LicenseStatus {
+            account_name: row.get(0),
+            plan: row.get(1),
+            expires_on: chrono::NaiveDate::parse_from_str(&expires_on, "%Y-%m-%d")
+                .map_err(|e| ApiError::Storage(e.to_string()))?,
+            approved: row.get(3),
         })
     }
 }
