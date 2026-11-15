@@ -152,6 +152,8 @@ pub struct UpdateUserRequest {
     pub email: String,
     pub role: String,
     pub password: Option<String>,
+    /// Required when `password` changes the signed-in user's own password.
+    pub current_password: Option<String>,
 }
 
 /// Update a staff user's profile and optionally their password.
@@ -186,6 +188,19 @@ pub async fn update_user(
     let password_hash = match request.password {
         Some(ref password) => {
             validate_password(password)?;
+            // Changing your own password proves you know the current one, so
+            // anyone at an unlocked desk cannot take the account over. An
+            // admin resetting someone else's password does not need theirs.
+            if request.user_id == session.user_id {
+                let current = request.current_password.as_deref().unwrap_or_default();
+                let verified = state
+                    .authenticate_user(&target.email, current)
+                    .await
+                    .map_err(|e| map_db_error("update_user", e))?;
+                if verified.is_none() {
+                    return Err("Current password is incorrect.".to_string());
+                }
+            }
             Some(db::hash_password(password).map_err(|e| format!("Could not hash password: {e}"))?)
         }
         None => None,
@@ -427,6 +442,7 @@ mod tests {
                 email: "manager".to_string(),
                 role: "admin".to_string(),
                 password: None,
+                current_password: None,
             })
             .await;
 
@@ -466,7 +482,7 @@ mod tests {
             .await
             .expect("insert hostel");
 
-        let (manager_id, _manager_password) =
+        let (manager_id, manager_password) =
             setup_staff_user(&pool, "Manager", "manager@example.com", "manager").await;
 
         let license_state = setup_license_state();
@@ -474,16 +490,24 @@ mod tests {
         auth_state.set_current_session(manager_id, 1, "manager");
 
         let desk = test_desk(pool, auth_state, license_state);
-        let result = desk
-            .update_user(commands::UpdateUserRequest {
-                user_id: manager_id,
-                full_name: "Manager".to_string(),
-                email: "manager@example.com".to_string(),
-                role: "manager".to_string(),
-                password: Some("a-new-password".to_string()),
-            })
-            .await;
+        let change = |current: Option<&str>| commands::UpdateUserRequest {
+            user_id: manager_id,
+            full_name: "Manager".to_string(),
+            email: "manager@example.com".to_string(),
+            role: "manager".to_string(),
+            password: Some("a-new-password".to_string()),
+            current_password: current.map(str::to_string),
+        };
 
-        result.expect("manager should be able to change their own password");
+        // Someone at an unlocked desk must not be able to take over the account.
+        desk.update_user(change(None))
+            .await
+            .expect_err("own password change needs the current password");
+        desk.update_user(change(Some("not-my-password")))
+            .await
+            .expect_err("wrong current password is refused");
+        desk.update_user(change(Some(&manager_password)))
+            .await
+            .expect("manager should be able to change their own password");
     }
 }

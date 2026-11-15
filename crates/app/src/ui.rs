@@ -1,8 +1,25 @@
-//! Native screens. Each screen calls [`crate::Desk`] and never the database.
+//! Native screens.
+//!
+//! The UI thread only paints. Every [`Desk`] call runs on the Tokio runtime
+//! through [`HostelApp::run`], and its result comes back as a closure applied
+//! at the start of the next frame, so a slow disk, a PDF, or an unreachable
+//! sync server never freezes the window.
+//!
+//! What the signed-in user can see lives in one [`Workspace`], replaced
+//! wholesale on sign-out. Loaded rows and edit forms are separate fields, so a
+//! background refresh never overwrites something the user is typing.
 
-use chrono::Datelike;
+use std::collections::HashSet;
+use std::future::Future;
+use std::str::FromStr;
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use chrono::{Datelike, NaiveDate};
 use db::User;
 use eframe::egui::{self, RichText};
+use rust_decimal::Decimal;
 
 use crate::commands::{
     AddRoomRequest, CheckInRequest, CheckOutRequest, CompleteOnboardingRequest, CreateUserRequest,
@@ -12,20 +29,36 @@ use crate::commands::{
     RestoreBackupRequest, UpdateHostelRequest, UpdateResidentRequest, UpdateUserRequest,
     UploadHostelLogoRequest, UpsertAppPreferencesRequest,
 };
-use crate::runtime;
-use crate::Desk;
+use crate::sync::CloudStatus;
+use crate::{runtime, Desk};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+const SYNC_EVERY: Duration = Duration::from_secs(30);
+const TERMS: [(&str, &str); 3] = [
+    ("semester_1", "Semester 1"),
+    ("semester_2", "Semester 2"),
+    ("recess", "Recess"),
+];
+const METHODS: [(&str, &str); 4] = [
+    ("cash", "Cash"),
+    ("mobile_money", "Mobile money"),
+    ("bank_transfer", "Bank transfer"),
+    ("card", "Card"),
+];
+
+type Update = Box<dyn FnOnce(&mut HostelApp) + Send>;
+
 enum Gate {
     Boot,
+    Failed(String),
     Lock,
     Onboarding,
     SignIn,
     Ready,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum Nav {
+    #[default]
     Dashboard,
     Rooms,
     Residents,
@@ -33,322 +66,667 @@ enum Nav {
     Settings,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum SettingsTab {
+    #[default]
+    Account,
     Business,
     Team,
     Preferences,
     Backup,
-    Account,
     Cloud,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum ResidentTab {
+    #[default]
+    Current,
+    Past,
+    All,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum PaymentTab {
+    #[default]
+    Outstanding,
+    History,
+}
+
+/// An action that waits for the user to confirm it.
+enum Confirm {
+    Restore(String),
+    DeleteUser(User),
+    CheckOut {
+        allocation_id: i64,
+        name: String,
+        balance: String,
+    },
+}
+
+#[derive(Default)]
+struct Status {
+    text: String,
+    error: bool,
+}
+
+struct RoomForm {
+    number: String,
+    kind: String,
+    capacity: String,
+    floor: String,
+    semester: String,
+    recess: String,
+}
+
+impl Default for RoomForm {
+    fn default() -> Self {
+        Self {
+            number: String::new(),
+            kind: "single".into(),
+            capacity: "1".into(),
+            floor: String::new(),
+            semester: String::new(),
+            recess: String::new(),
+        }
+    }
+}
+
+struct CheckInForm {
+    returning: Option<i64>,
+    name: String,
+    phone: String,
+    email: String,
+    id_number: String,
+    kin: String,
+    kin_phone: String,
+    room: Option<i64>,
+    rate: String,
+    term: String,
+    year: String,
+}
+
+impl Default for CheckInForm {
+    fn default() -> Self {
+        Self {
+            returning: None,
+            name: String::new(),
+            phone: String::new(),
+            email: String::new(),
+            id_number: String::new(),
+            kin: String::new(),
+            kin_phone: String::new(),
+            room: None,
+            rate: String::new(),
+            term: "semester_1".into(),
+            year: academic_year(chrono::Local::now().date_naive()),
+        }
+    }
+}
+
+struct PayForm {
+    allocation: Option<i64>,
+    amount: String,
+    method: String,
+    notes: String,
+}
+
+impl Default for PayForm {
+    fn default() -> Self {
+        Self {
+            allocation: None,
+            amount: String::new(),
+            method: "cash".into(),
+            notes: String::new(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct BusinessForm {
+    name: String,
+    address: String,
+    phone: String,
+    currency: String,
+    logo: Option<String>,
+    dirty: bool,
+}
+
+#[derive(Default)]
+struct PrefsForm {
+    date_format: String,
+    footer: String,
+    dirty: bool,
+}
+
+#[derive(Default)]
+struct ResidentForm {
+    name: String,
+    phone: String,
+    email: String,
+    id_number: String,
+    kin: String,
+    kin_phone: String,
+}
+
+struct TeamForm {
+    name: String,
+    email: String,
+    password: String,
+    role: String,
+}
+
+impl Default for TeamForm {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            email: String::new(),
+            password: String::new(),
+            role: "manager".into(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct AccountForm {
+    name: String,
+    email: String,
+    current: String,
+    new: String,
+    confirm: String,
+}
+
+/// Everything that belongs to the signed-in user.
+#[derive(Default)]
+struct Workspace {
+    user: Option<User>,
+    nav: Nav,
+    settings: SettingsTab,
+    resident_tab: ResidentTab,
+    payment_tab: PaymentTab,
+    loaded: bool,
+    refresh_again: bool,
+    profile: Option<db::HostelProfile>,
+    prefs: Option<db::AppPreferences>,
+    stats: Option<db::DashboardStats>,
+    activity: Vec<db::ActivityItem>,
+    rooms: Vec<db::Room>,
+    residents: Vec<db::ResidentSummary>,
+    stays: Vec<db::ActiveAllocation>,
+    payments: Vec<db::PaymentRow>,
+    users: Vec<User>,
+    backups: Vec<String>,
+    cloud: Option<CloudStatus>,
+    room_filter: Option<&'static str>,
+    room_form: RoomForm,
+    check_in: CheckInForm,
+    pay: PayForm,
+    business: BusinessForm,
+    prefs_form: PrefsForm,
+    resident_query: String,
+    detail: Option<db::ResidentDetail>,
+    resident_form: ResidentForm,
+    team: TeamForm,
+    account: AccountForm,
+}
+
+impl Workspace {
+    fn hostel_id(&self) -> Option<i64> {
+        self.user.as_ref().map(|user| user.hostel_id)
+    }
+
+    fn is_admin(&self) -> bool {
+        self.user.as_ref().is_some_and(|user| user.role == "admin")
+    }
+
+    fn stay(&self, allocation_id: i64) -> Option<&db::ActiveAllocation> {
+        self.stays
+            .iter()
+            .find(|stay| stay.allocation_id == allocation_id)
+    }
+
+    fn currency(&self) -> &str {
+        self.profile
+            .as_ref()
+            .map_or("UGX", |profile| profile.currency.as_str())
+    }
+}
+
+#[derive(Default)]
+struct CloudForm {
+    server: String,
+    org: String,
+    email: String,
+    password: String,
+}
+
+#[derive(Default)]
+struct OnboardForm {
+    name: String,
+    address: String,
+    phone: String,
+    admin: String,
+    email: String,
+    password: String,
+    /// The hostel already came down from the cloud; only the admin is missing.
+    hostel_exists: bool,
+}
+
+/// Everything loaded by one [`HostelApp::refresh`].
+struct Loaded {
+    profile: Result<Option<db::HostelProfile>, String>,
+    prefs: Result<db::AppPreferences, String>,
+    stats: Result<db::DashboardStats, String>,
+    activity: Result<Vec<db::ActivityItem>, String>,
+    rooms: Result<Vec<db::Room>, String>,
+    residents: Result<Vec<db::ResidentSummary>, String>,
+    stays: Result<Vec<db::ActiveAllocation>, String>,
+    payments: Result<Vec<db::PaymentRow>, String>,
+    users: Option<Result<Vec<User>, String>>,
+    backups: Option<Result<Vec<String>, String>>,
+    cloud: Result<CloudStatus, String>,
+}
+
+/// Unwraps one loaded result, collecting the error for the status bar.
+struct Taker<'a>(&'a mut Vec<String>);
+
+impl Taker<'_> {
+    fn of<T>(&mut self, result: Result<T, String>, what: &str) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(error) => {
+                self.0
+                    .push(if error == "unauthorized" || error == "unlicensed" {
+                        error
+                    } else {
+                        format!("Could not load {what}: {error}")
+                    });
+                None
+            }
+        }
+    }
 }
 
 /// Top-level egui application.
 pub struct HostelApp {
-    desk: Desk,
+    desk: Arc<Desk>,
+    ctx: egui::Context,
+    tx: Sender<Update>,
+    rx: Receiver<Update>,
+    busy: HashSet<&'static str>,
+    /// Bumped on sign-in and sign-out; results from an older generation are dropped.
+    generation: u64,
     gate: Gate,
-    nav: Nav,
-    settings: SettingsTab,
-    status: String,
-    user: Option<User>,
-    hostel_name: String,
-    hostel_address: String,
-    hostel_phone: String,
-    currency: String,
-    logo_path: Option<String>,
-    onboard_name: String,
-    onboard_address: String,
-    onboard_phone: String,
-    onboard_admin: String,
-    onboard_email: String,
-    onboard_password: String,
-    email: String,
-    password: String,
-    rooms: Vec<db::Room>,
-    room_number: String,
-    room_type: String,
-    room_capacity: String,
-    room_floor: String,
-    semester_rate: String,
-    recess_rate: String,
-    residents: Vec<db::ResidentSummary>,
-    resident_query: String,
-    selected_resident: Option<i64>,
-    detail_name: String,
-    detail_phone: String,
-    detail_email: String,
-    detail_id: String,
-    detail_kin: String,
-    detail_kin_phone: String,
-    detail_balance: String,
-    detail_allocation: Option<i64>,
-    checkin_name: String,
-    checkin_phone: String,
-    checkin_email: String,
-    checkin_id: String,
-    checkin_kin: String,
-    checkin_kin_phone: String,
-    checkin_room: Option<i64>,
-    checkin_rate: String,
-    checkin_term: String,
-    checkin_year: String,
-    allocations: Vec<db::ActiveAllocation>,
-    payments: Vec<db::PaymentRow>,
-    pay_allocation: Option<i64>,
-    pay_amount: String,
-    pay_method: String,
-    pay_notes: String,
-    stats: Option<db::DashboardStats>,
-    activity: Vec<db::ActivityItem>,
-    users: Vec<User>,
-    new_user_name: String,
-    new_user_email: String,
-    new_user_password: String,
-    new_user_role: String,
-    account_name: String,
-    account_email: String,
-    account_password: String,
-    date_format: String,
-    receipt_footer: String,
-    backups: Vec<String>,
-    cloud_server: String,
-    cloud_email: String,
-    cloud_password: String,
-    cloud_org: String,
-    cloud_summary: String,
-    cloud_conflicts: Vec<String>,
-    last_sync: Option<std::time::Instant>,
-    loaded: bool,
+    status: Status,
+    confirm: Option<Confirm>,
+    w: Workspace,
+    cloud_form: CloudForm,
+    onboard: OnboardForm,
+    sign_in_email: String,
+    sign_in_password: String,
+    last_sync: Option<Instant>,
 }
 
 impl HostelApp {
-    /// Start on the lock / onboarding / sign-in gate that matches local state.
-    pub fn new(desk: Desk) -> Self {
+    /// Start on the gate (lock, onboarding, sign-in) that matches local state.
+    pub fn new(desk: Desk, ctx: egui::Context) -> Self {
+        let (tx, rx) = channel();
         let mut app = Self {
-            desk,
+            desk: Arc::new(desk),
+            ctx,
+            tx,
+            rx,
+            busy: HashSet::new(),
+            generation: 0,
             gate: Gate::Boot,
-            nav: Nav::Dashboard,
-            settings: SettingsTab::Business,
-            status: String::new(),
-            user: None,
-            hostel_name: String::new(),
-            hostel_address: String::new(),
-            hostel_phone: String::new(),
-            currency: "UGX".to_string(),
-            logo_path: None,
-            onboard_name: String::new(),
-            onboard_address: String::new(),
-            onboard_phone: String::new(),
-            onboard_admin: String::new(),
-            onboard_email: String::new(),
-            onboard_password: String::new(),
-            email: String::new(),
-            password: String::new(),
-            rooms: Vec::new(),
-            room_number: String::new(),
-            room_type: "single".to_string(),
-            room_capacity: "1".to_string(),
-            room_floor: String::new(),
-            semester_rate: String::new(),
-            recess_rate: String::new(),
-            residents: Vec::new(),
-            resident_query: String::new(),
-            selected_resident: None,
-            detail_name: String::new(),
-            detail_phone: String::new(),
-            detail_email: String::new(),
-            detail_id: String::new(),
-            detail_kin: String::new(),
-            detail_kin_phone: String::new(),
-            detail_balance: String::new(),
-            detail_allocation: None,
-            checkin_name: String::new(),
-            checkin_phone: String::new(),
-            checkin_email: String::new(),
-            checkin_id: String::new(),
-            checkin_kin: String::new(),
-            checkin_kin_phone: String::new(),
-            checkin_room: None,
-            checkin_rate: String::new(),
-            checkin_term: "semester_1".to_string(),
-            checkin_year: default_academic_year(),
-            allocations: Vec::new(),
-            payments: Vec::new(),
-            pay_allocation: None,
-            pay_amount: String::new(),
-            pay_method: "cash".to_string(),
-            pay_notes: String::new(),
-            stats: None,
-            activity: Vec::new(),
-            users: Vec::new(),
-            new_user_name: String::new(),
-            new_user_email: String::new(),
-            new_user_password: String::new(),
-            new_user_role: "manager".to_string(),
-            account_name: String::new(),
-            account_email: String::new(),
-            account_password: String::new(),
-            date_format: "dd/MM/yyyy".to_string(),
-            receipt_footer: String::new(),
-            backups: Vec::new(),
-            cloud_server: String::new(),
-            cloud_email: String::new(),
-            cloud_password: String::new(),
-            cloud_org: String::new(),
-            cloud_summary: String::new(),
-            cloud_conflicts: Vec::new(),
+            status: Status::default(),
+            confirm: None,
+            w: Workspace::default(),
+            cloud_form: CloudForm::default(),
+            onboard: OnboardForm::default(),
+            sign_in_email: String::new(),
+            sign_in_password: String::new(),
             last_sync: None,
-            loaded: false,
         };
         app.boot();
         app
     }
 
+    /// Run `work` on the runtime, then `then` on the UI thread. `key` names the
+    /// action: while one with the same key is in flight a second is refused,
+    /// so a double click never records a payment twice. Returns whether it started.
+    fn run<T, F>(
+        &mut self,
+        key: &'static str,
+        work: F,
+        then: impl FnOnce(&mut HostelApp, T) + Send + 'static,
+    ) -> bool
+    where
+        T: Send + 'static,
+        F: Future<Output = T> + Send + 'static,
+    {
+        if !self.busy.insert(key) {
+            return false;
+        }
+        let (tx, ctx, generation) = (self.tx.clone(), self.ctx.clone(), self.generation);
+        runtime().spawn(async move {
+            let value = work.await;
+            let update: Update = Box::new(move |app: &mut HostelApp| {
+                app.busy.remove(key);
+                if app.generation == generation {
+                    then(app, value);
+                }
+            });
+            let _ = tx.send(update);
+            ctx.request_repaint();
+        });
+        true
+    }
+
+    fn busy(&self, key: &str) -> bool {
+        self.busy.contains(key)
+    }
+
+    fn ok(&mut self, text: impl Into<String>) {
+        self.status = Status {
+            text: text.into(),
+            error: false,
+        };
+    }
+
+    /// Show an error. A lapsed session or license sends the user back to the right gate.
+    fn fail(&mut self, error: impl Into<String>) {
+        let error = error.into();
+        if error == "unauthorized" {
+            self.sign_out();
+            self.status = Status {
+                text: "Your session timed out. Sign in again.".into(),
+                error: true,
+            };
+            return;
+        }
+        if error == "unlicensed" {
+            self.generation += 1;
+            self.w = Workspace::default();
+            self.gate = Gate::Lock;
+        }
+        self.status = Status {
+            text: error,
+            error: true,
+        };
+    }
+
     fn boot(&mut self) {
+        self.gate = Gate::Boot;
         if self.desk.license_status().is_none() {
             self.gate = Gate::Lock;
             return;
         }
-        match runtime().block_on(self.desk.onboarding_status()) {
-            Ok(true) => match runtime().block_on(self.desk.session()) {
-                Ok(Some(user)) => self.enter(user),
-                Ok(None) => self.gate = Gate::SignIn,
-                Err(e) => {
-                    self.status = e;
-                    self.gate = Gate::SignIn;
-                }
+        let desk = self.desk.clone();
+        self.run(
+            "boot",
+            async move {
+                let complete = desk.onboarding_status().await?;
+                let hostel_exists = desk
+                    .db
+                    .primary_hostel_id()
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .is_some();
+                let session = if complete {
+                    desk.session().await?
+                } else {
+                    None
+                };
+                Ok::<_, String>((complete, hostel_exists, session))
             },
-            Ok(false) => self.gate = Gate::Onboarding,
-            Err(e) => {
-                self.status = e;
-                self.gate = Gate::Lock;
-            }
-        }
+            |app, result| match result {
+                Ok((true, _, Some(user))) => app.enter(user),
+                Ok((true, _, None)) => app.gate = Gate::SignIn,
+                Ok((false, hostel_exists, _)) => {
+                    app.onboard.hostel_exists = hostel_exists;
+                    app.gate = Gate::Onboarding;
+                }
+                Err(error) => app.gate = Gate::Failed(error),
+            },
+        );
     }
 
     fn enter(&mut self, user: User) {
-        self.account_name.clone_from(&user.full_name);
-        self.account_email.clone_from(&user.email);
-        self.user = Some(user);
+        self.generation += 1;
+        self.w = Workspace {
+            account: AccountForm {
+                name: user.full_name.clone(),
+                email: user.email.clone(),
+                ..AccountForm::default()
+            },
+            user: Some(user),
+            ..Workspace::default()
+        };
+        self.confirm = None;
         self.gate = Gate::Ready;
-        self.loaded = false;
         self.refresh();
     }
 
-    fn hostel_id(&self) -> Option<i64> {
-        self.user.as_ref().map(|user| user.hostel_id)
+    fn sign_out(&mut self) {
+        self.desk.logout();
+        self.generation += 1;
+        self.w = Workspace::default();
+        self.confirm = None;
+        self.gate = Gate::SignIn;
     }
 
+    /// Reload everything the workspace shows, in one background job.
     fn refresh(&mut self) {
-        let Some(hostel_id) = self.hostel_id() else {
+        let Some(hostel_id) = self.w.hostel_id() else {
             return;
         };
-        if let Ok(Some(profile)) = runtime().block_on(self.desk.hostel_profile(hostel_id)) {
-            self.hostel_name.clone_from(&profile.name);
-            self.hostel_address = profile.address.unwrap_or_default();
-            self.hostel_phone = profile.phone.unwrap_or_default();
-            self.currency.clone_from(&profile.currency);
-            self.logo_path = profile.branding_logo_path;
-        }
-        let today = chrono::Local::now().date_naive();
-        self.stats = runtime()
-            .block_on(
-                self.desk
-                    .dashboard_stats(GetDashboardStatsRequest { hostel_id, today }),
-            )
-            .ok();
-        self.activity = runtime()
-            .block_on(self.desk.recent_activity(ListRecentActivityRequest {
-                hostel_id,
-                limit: 12,
-            }))
-            .unwrap_or_default();
-        self.rooms = runtime()
-            .block_on(self.desk.rooms(hostel_id))
-            .unwrap_or_default();
-        self.residents = runtime()
-            .block_on(self.desk.list_residents(ListResidentsRequest { hostel_id }))
-            .unwrap_or_default();
-        self.allocations = runtime()
-            .block_on(
-                self.desk
-                    .active_allocations(ListActiveAllocationsRequest { hostel_id }),
-            )
-            .unwrap_or_default();
-        self.payments = runtime()
-            .block_on(self.desk.list_payments(db::ListPaymentsFilter {
-                hostel_id,
-                from: None,
-                to: None,
-                resident_id: None,
-                method: None,
-            }))
-            .unwrap_or_default();
-        if let Ok(prefs) = runtime().block_on(
-            self.desk
-                .app_preferences(GetAppPreferencesRequest { hostel_id }),
-        ) {
-            self.date_format = prefs.date_format;
-            self.receipt_footer = prefs.receipt_footer.unwrap_or_default();
-        }
-        if self.user.as_ref().is_some_and(|user| user.role == "admin") {
-            self.users = runtime()
-                .block_on(self.desk.list_users(ListUsersRequest { hostel_id }))
-                .unwrap_or_default();
-            self.backups = runtime()
-                .block_on(self.desk.list_backups())
-                .unwrap_or_default();
-        }
-        if let Ok(cloud) = runtime().block_on(self.desk.cloud_status()) {
-            self.cloud_summary = match &cloud.server_url {
-                Some(url) => format!(
-                    "{url} · prefix {} · cursor {} · {} pending",
-                    cloud.device_prefix.as_deref().unwrap_or("—"),
-                    cloud.cursor,
-                    cloud.pending
-                ),
-                None => "This computer is not enrolled.".to_string(),
-            };
-            self.cloud_conflicts = cloud
-                .issues
-                .into_iter()
-                .map(|issue| {
-                    let kind = if issue.rejected {
-                        "Rejected"
+        let admin = self.w.is_admin();
+        let desk = self.desk.clone();
+        let started = self.run(
+            "refresh",
+            async move {
+                let today = chrono::Local::now().date_naive();
+                Loaded {
+                    profile: desk.hostel_profile(hostel_id).await,
+                    prefs: desk
+                        .app_preferences(GetAppPreferencesRequest { hostel_id })
+                        .await,
+                    stats: desk
+                        .dashboard_stats(GetDashboardStatsRequest { hostel_id, today })
+                        .await,
+                    activity: desk
+                        .recent_activity(ListRecentActivityRequest {
+                            hostel_id,
+                            limit: 12,
+                        })
+                        .await,
+                    rooms: desk.rooms(hostel_id).await,
+                    residents: desk
+                        .list_residents(ListResidentsRequest { hostel_id })
+                        .await,
+                    stays: desk
+                        .active_allocations(ListActiveAllocationsRequest { hostel_id })
+                        .await,
+                    payments: desk
+                        .list_payments(db::ListPaymentsFilter {
+                            hostel_id,
+                            from: None,
+                            to: None,
+                            resident_id: None,
+                            method: None,
+                        })
+                        .await,
+                    users: if admin {
+                        Some(desk.list_users(ListUsersRequest { hostel_id }).await)
                     } else {
-                        "Warning"
-                    };
-                    format!("{kind} · {} · {}", issue.command_type, issue.message)
-                })
-                .collect();
+                        None
+                    },
+                    backups: if admin {
+                        Some(desk.list_backups().await)
+                    } else {
+                        None
+                    },
+                    cloud: desk.cloud_status().await,
+                }
+            },
+            Self::apply_loaded,
+        );
+        if !started {
+            self.w.refresh_again = true;
         }
-        self.loaded = true;
     }
 
-    fn note(&mut self, result: Result<impl std::fmt::Display, String>, ok: &str) {
-        match result {
-            Ok(value) => {
-                let extra = value.to_string();
-                self.status = if extra.is_empty() {
-                    ok.to_string()
-                } else {
-                    format!("{ok} {extra}")
+    fn apply_loaded(&mut self, loaded: Loaded) {
+        let mut errors = Vec::new();
+        let mut take = Taker(&mut errors);
+        let w = &mut self.w;
+        if let Some(profile) = take.of(loaded.profile, "the hostel profile") {
+            if let Some(profile) = &profile {
+                if !w.business.dirty {
+                    w.business = BusinessForm {
+                        name: profile.name.clone(),
+                        address: profile.address.clone().unwrap_or_default(),
+                        phone: profile.phone.clone().unwrap_or_default(),
+                        currency: profile.currency.clone(),
+                        logo: profile.branding_logo_path.clone(),
+                        dirty: false,
+                    };
+                }
+            }
+            w.profile = profile;
+        }
+        if let Some(prefs) = take.of(loaded.prefs, "preferences") {
+            if !w.prefs_form.dirty {
+                w.prefs_form = PrefsForm {
+                    date_format: prefs.date_format.clone(),
+                    footer: prefs.receipt_footer.clone().unwrap_or_default(),
+                    dirty: false,
                 };
             }
-            Err(e) => self.status = e,
+            w.prefs = Some(prefs);
         }
+        if let Some(stats) = take.of(loaded.stats, "dashboard figures") {
+            w.stats = Some(stats);
+        }
+        if let Some(activity) = take.of(loaded.activity, "recent activity") {
+            w.activity = activity;
+        }
+        if let Some(rooms) = take.of(loaded.rooms, "rooms") {
+            w.rooms = rooms;
+        }
+        if let Some(residents) = take.of(loaded.residents, "residents") {
+            w.residents = residents;
+        }
+        if let Some(stays) = take.of(loaded.stays, "active stays") {
+            w.stays = stays;
+        }
+        if let Some(payments) = take.of(loaded.payments, "payments") {
+            w.payments = payments;
+        }
+        if let Some(users) = loaded.users.and_then(|users| take.of(users, "staff")) {
+            w.users = users;
+        }
+        if let Some(backups) = loaded
+            .backups
+            .and_then(|backups| take.of(backups, "backups"))
+        {
+            w.backups = backups;
+        }
+        if let Some(cloud) = take.of(loaded.cloud, "cloud status") {
+            w.cloud = Some(cloud);
+        }
+        w.loaded = true;
+        if let Some(error) = errors.into_iter().next() {
+            self.fail(error);
+        }
+        if std::mem::take(&mut self.w.refresh_again) {
+            self.refresh();
+        }
+    }
+
+    /// Run a write. On success, show `done`, run `after`, and reload.
+    fn write<T: Send + 'static>(
+        &mut self,
+        key: &'static str,
+        work: impl Future<Output = Result<T, String>> + Send + 'static,
+        done: &'static str,
+        after: impl FnOnce(&mut HostelApp, T) + Send + 'static,
+    ) {
+        self.run(key, work, move |app, result| match result {
+            Ok(value) => {
+                app.ok(done);
+                after(app, value);
+                app.refresh();
+            }
+            Err(error) => app.fail(error),
+        });
+    }
+
+    fn maybe_sync(&mut self) {
+        self.ctx.request_repaint_after(SYNC_EVERY);
+        let due = self.last_sync.is_none_or(|at| at.elapsed() >= SYNC_EVERY);
+        if !due || self.busy("sync") || !self.desk.cloud_enrolled() {
+            return;
+        }
+        self.sync_now();
+    }
+
+    fn sync_now(&mut self) {
+        self.last_sync = Some(Instant::now());
+        let desk = self.desk.clone();
+        self.run(
+            "sync",
+            async move { desk.sync_once().await },
+            |app, result| match result {
+                Ok(report) => {
+                    if !report.summary.is_empty() {
+                        app.ok(report.summary);
+                        app.refresh();
+                    }
+                }
+                Err(error) => app.fail(format!("Sync failed, will retry: {error}")),
+            },
+        );
     }
 }
 
 impl eframe::App for HostelApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        while let Ok(update) = self.rx.try_recv() {
+            update(self);
+        }
         egui::Panel::bottom("status").show(ui, |ui| {
-            ui.label(RichText::new(&self.status).small());
+            ui.horizontal(|ui| {
+                if !self.busy.is_empty() {
+                    ui.spinner();
+                }
+                let text = RichText::new(&self.status.text).small();
+                if self.status.error {
+                    ui.colored_label(ui.visuals().error_fg_color, text);
+                } else {
+                    ui.label(text);
+                }
+            });
         });
-
-        match self.gate {
+        self.confirm_dialog(ui);
+        match &self.gate {
             Gate::Boot => {
-                self.boot();
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.centered_and_justified(|ui| ui.spinner());
+                });
+            }
+            Gate::Failed(error) => {
+                let error = error.clone();
+                egui::CentralPanel::default().show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(48.0);
+                        ui.heading("Could not start HostelDesk");
+                        ui.colored_label(ui.visuals().error_fg_color, error);
+                        if ui.button("Try again").clicked() {
+                            self.boot();
+                        }
+                    });
+                });
             }
             Gate::Lock => lock_screen(self, ui),
             Gate::Onboarding => onboarding(self, ui),
@@ -358,213 +736,460 @@ impl eframe::App for HostelApp {
     }
 }
 
-fn lock_screen(app: &mut HostelApp, ui: &mut egui::Ui) {
-    egui::CentralPanel::default().show(ui, |ui| {
-        ui.vertical_centered(|ui| {
-            ui.add_space(48.0);
-            ui.heading("HostelDesk");
-            ui.label("Choose the license file for this computer.");
-            if ui.button("Select license file").clicked() {
-                match app.desk.activate_license_from_file() {
-                    Ok(payload) => {
-                        app.status = format!(
-                            "Licensed {} until {}",
-                            payload.hostel_name, payload.expiry_date
-                        );
-                        app.boot();
-                    }
-                    Err(e) => app.status = e,
-                }
+impl HostelApp {
+    fn confirm_dialog(&mut self, ui: &mut egui::Ui) {
+        let Some(confirm) = &self.confirm else {
+            return;
+        };
+        let (title, body, action) = match confirm {
+            Confirm::Restore(path) => (
+                "Restore this backup?".to_string(),
+                format!(
+                    "{path}\n\nEverything recorded since this backup was made will be \
+                     replaced. This cannot be undone. HostelDesk restarts afterwards."
+                ),
+                "Restore",
+            ),
+            Confirm::DeleteUser(user) => (
+                format!("Remove {}?", user.full_name),
+                format!("{} will no longer be able to sign in.", user.email),
+                "Remove",
+            ),
+            Confirm::CheckOut { name, balance, .. } => {
+                let owes = Decimal::from_str(balance).is_ok_and(|b| b > Decimal::ZERO);
+                let warning = if owes {
+                    format!(
+                        "{name} still owes {} {balance}. Check out anyway?",
+                        self.w.currency()
+                    )
+                } else {
+                    format!("{name} has paid in full.")
+                };
+                (format!("Check out {name}?"), warning, "Check out")
             }
-            ui.separator();
-            ui.label("Or sign in to your organization.");
-            labeled(ui, "Server", &mut app.cloud_server);
-            labeled(ui, "Organization", &mut app.cloud_org);
-            labeled(ui, "Email", &mut app.cloud_email);
-            labeled_password(ui, "Password", &mut app.cloud_password);
+        };
+        let mut decision = None;
+        egui::Modal::new(egui::Id::new("confirm")).show(ui.ctx(), |ui| {
+            ui.heading(title);
+            ui.label(body);
+            ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("Create account").clicked() {
-                    connect_cloud(app, true);
+                if ui.button(action).clicked() {
+                    decision = Some(true);
                 }
-                if ui.button("Sign in").clicked() {
-                    connect_cloud(app, false);
+                if ui.button("Cancel").clicked() {
+                    decision = Some(false);
                 }
             });
+        });
+        match decision {
+            Some(true) => {
+                if let Some(confirm) = self.confirm.take() {
+                    self.confirmed(confirm);
+                }
+            }
+            Some(false) => self.confirm = None,
+            None => {}
+        }
+    }
+
+    fn confirmed(&mut self, confirm: Confirm) {
+        let desk = self.desk.clone();
+        match confirm {
+            Confirm::Restore(backup_path) => self.run(
+                "restore",
+                async move {
+                    desk.restore_backup(RestoreBackupRequest { backup_path })
+                        .await
+                },
+                |app, result| {
+                    if let Err(error) = result {
+                        app.fail(error);
+                    }
+                },
+            ),
+            Confirm::DeleteUser(user) => {
+                self.write(
+                    "delete-user",
+                    async move {
+                        desk.delete_user(DeleteUserRequest { user_id: user.id })
+                            .await
+                    },
+                    "Staff member removed.",
+                    |_, ()| {},
+                );
+                true
+            }
+            Confirm::CheckOut { allocation_id, .. } => {
+                let Some(hostel_id) = self.w.hostel_id() else {
+                    return;
+                };
+                self.write(
+                    "check-out",
+                    async move {
+                        desk.check_out(CheckOutRequest {
+                            hostel_id,
+                            allocation_id,
+                        })
+                        .await
+                    },
+                    "Checked out.",
+                    |app, ()| {
+                        app.w.detail = None;
+                    },
+                );
+                true
+            }
+        };
+    }
+}
+
+fn lock_screen(app: &mut HostelApp, ui: &mut egui::Ui) {
+    egui::CentralPanel::default().show(ui, |ui| {
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space(48.0);
+                ui.heading("HostelDesk");
+                ui.label("Activate HostelDesk with the license file for this computer.");
+                if ui.button("Select license file").clicked() {
+                    // The file dialog is modal anyway; it runs on the UI thread.
+                    match app.desk.activate_license_from_file() {
+                        Ok(payload) => {
+                            app.ok(format!(
+                                "Licensed to {} until {}.",
+                                payload.hostel_name, payload.expiry_date
+                            ));
+                            app.boot();
+                        }
+                        Err(error) => app.fail(error),
+                    }
+                }
+                ui.add_space(16.0);
+                ui.separator();
+                ui.label(
+                    "Or connect to your organization's cloud. A licensed organization \
+                     activates this computer on the first sync.",
+                );
+            });
+            cloud_connect_form(app, ui);
         });
     });
 }
 
-fn connect_cloud(app: &mut HostelApp, create_account: bool) {
-    let result = runtime().block_on(app.desk.connect_cloud(
-        &app.cloud_server,
-        &app.cloud_email,
-        &app.cloud_password,
-        create_account,
-        &app.cloud_org,
-    ));
-    match result {
-        Ok(()) => {
-            app.cloud_password.clear();
-            if let Err(error) = runtime().block_on(app.desk.sync_once()) {
-                app.status = format!("Signed in. Sync will retry. {error}");
-            }
-            app.boot();
+fn cloud_connect_form(app: &mut HostelApp, ui: &mut egui::Ui) {
+    let f = &mut app.cloud_form;
+    labeled(
+        ui,
+        "Server (blank for HostelDesk Cloud)",
+        &mut f.server,
+        false,
+    );
+    labeled(ui, "Organization (new accounts)", &mut f.org, false);
+    labeled(ui, "Email", &mut f.email, false);
+    labeled(ui, "Password", &mut f.password, true);
+    let busy = app.busy("connect");
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(!busy, egui::Button::new("Create organization"))
+            .clicked()
+        {
+            connect_cloud(app, true);
         }
-        Err(error) => app.status = error,
-    }
+        if ui
+            .add_enabled(!busy, egui::Button::new("Sign in"))
+            .clicked()
+        {
+            connect_cloud(app, false);
+        }
+    });
+}
+
+fn connect_cloud(app: &mut HostelApp, create_account: bool) {
+    let f = &app.cloud_form;
+    let (server, email, password, org) = (
+        f.server.clone(),
+        f.email.clone(),
+        f.password.clone(),
+        f.org.clone(),
+    );
+    let desk = app.desk.clone();
+    app.run(
+        "connect",
+        async move {
+            desk.connect_cloud(&server, &email, &password, create_account, &org)
+                .await?;
+            Ok::<_, String>(desk.sync_once().await)
+        },
+        |app, result| match result {
+            Ok(sync) => {
+                app.cloud_form.password.clear();
+                app.last_sync = Some(Instant::now());
+                match sync {
+                    Ok(_) if app.desk.license_status().is_none() => app.fail(
+                        "Connected. This organization has no active license yet: \
+                         activate a license file, or ask HostelDesk to license it.",
+                    ),
+                    Ok(_) => app.ok("Connected to the cloud."),
+                    Err(error) => app.fail(format!("Connected. Sync will retry: {error}")),
+                }
+                if matches!(app.gate, Gate::Lock | Gate::Onboarding | Gate::SignIn) {
+                    app.boot();
+                } else {
+                    app.refresh();
+                }
+            }
+            Err(error) => app.fail(error),
+        },
+    );
 }
 
 fn onboarding(app: &mut HostelApp, ui: &mut egui::Ui) {
     egui::CentralPanel::default().show(ui, |ui| {
-        ui.heading("Set up your hostel");
-        ui.label("Hostel profile");
-        labeled(ui, "Name", &mut app.onboard_name);
-        labeled(ui, "Address", &mut app.onboard_address);
-        labeled(ui, "Phone", &mut app.onboard_phone);
-        ui.separator();
-        ui.label("First administrator");
-        labeled(ui, "Full name", &mut app.onboard_admin);
-        labeled(ui, "Email", &mut app.onboard_email);
-        labeled_password(ui, "Password", &mut app.onboard_password);
-        if ui.button("Create hostel").clicked() {
-            let request = CompleteOnboardingRequest {
-                hostel_name: app.onboard_name.clone(),
-                address: blank(&app.onboard_address),
-                phone: blank(&app.onboard_phone),
-                currency: Some("UGX".to_string()),
-                branding_logo_path: None,
-                admin_name: app.onboard_admin.clone(),
-                email: app.onboard_email.clone(),
-                password: app.onboard_password.clone(),
-            };
-            match runtime().block_on(app.desk.complete_onboarding(request)) {
-                Ok(user) => app.enter(user),
-                Err(e) => app.status = e,
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            let f = &mut app.onboard;
+            if f.hostel_exists {
+                ui.heading("Create the first administrator");
+                ui.label(
+                    "This computer received its hostel from the cloud. Create the account \
+                     you will sign in with here.",
+                );
+            } else {
+                ui.heading("Set up your hostel");
+                labeled(ui, "Hostel name", &mut f.name, false);
+                labeled(ui, "Address", &mut f.address, false);
+                labeled(ui, "Phone", &mut f.phone, false);
+                ui.separator();
+                ui.label("First administrator");
             }
-        }
+            labeled(ui, "Full name", &mut f.admin, false);
+            labeled(ui, "Email", &mut f.email, false);
+            labeled(ui, "Password (8+ characters)", &mut f.password, true);
+            let busy = app.busy("onboard");
+            if ui
+                .add_enabled(!busy, egui::Button::new("Continue"))
+                .clicked()
+            {
+                let f = &app.onboard;
+                if !f.email.contains('@') {
+                    app.fail("Enter a valid email address.");
+                    return;
+                }
+                let request = CompleteOnboardingRequest {
+                    hostel_name: f.name.trim().to_string(),
+                    address: blank(&f.address),
+                    phone: blank(&f.phone),
+                    currency: Some("UGX".to_string()),
+                    branding_logo_path: None,
+                    admin_name: f.admin.trim().to_string(),
+                    email: f.email.trim().to_string(),
+                    password: f.password.clone(),
+                };
+                let desk = app.desk.clone();
+                app.run(
+                    "onboard",
+                    async move { desk.complete_onboarding(request).await },
+                    |app, result| match result {
+                        Ok(user) => {
+                            app.onboard = OnboardForm::default();
+                            app.ok("Your hostel is ready.");
+                            app.enter(user);
+                        }
+                        Err(error) => app.fail(error),
+                    },
+                );
+            }
+            ui.separator();
+            ui.label("Joining an organization that already uses HostelDesk Cloud?");
+            cloud_connect_form(app, ui);
+        });
     });
 }
 
 fn sign_in(app: &mut HostelApp, ui: &mut egui::Ui) {
     egui::CentralPanel::default().show(ui, |ui| {
-        ui.heading("Sign in");
-        labeled(ui, "Email", &mut app.email);
-        labeled_password(ui, "Password", &mut app.password);
-        if ui.button("Sign in").clicked() {
+        ui.vertical_centered(|ui| {
+            ui.add_space(48.0);
+            ui.heading("Sign in");
+        });
+        labeled(ui, "Email", &mut app.sign_in_email, false);
+        let response = labeled(ui, "Password", &mut app.sign_in_password, true);
+        let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let busy = app.busy("sign-in");
+        if (ui
+            .add_enabled(!busy, egui::Button::new("Sign in"))
+            .clicked()
+            || enter)
+            && !busy
+        {
             let request = LoginRequest {
-                email: app.email.clone(),
-                password: app.password.clone(),
+                email: app.sign_in_email.trim().to_string(),
+                password: app.sign_in_password.clone(),
             };
-            match runtime().block_on(app.desk.login(request)) {
-                Ok(user) => {
-                    app.password.clear();
-                    app.enter(user);
-                }
-                Err(e) => app.status = e,
-            }
+            let desk = app.desk.clone();
+            app.run(
+                "sign-in",
+                async move { desk.login(request).await },
+                |app, result| match result {
+                    Ok(user) => {
+                        app.sign_in_password.clear();
+                        app.ok(format!("Welcome, {}.", user.full_name));
+                        app.enter(user);
+                    }
+                    Err(error) => app.fail(error),
+                },
+            );
         }
     });
 }
 
 fn shell(app: &mut HostelApp, ui: &mut egui::Ui) {
-    maybe_sync(app, ui);
-    if !app.loaded {
-        app.refresh();
-    }
+    app.maybe_sync();
     egui::Panel::left("nav").show(ui, |ui| {
         ui.heading("HostelDesk");
-        ui.label(&app.hostel_name);
-        nav_button(ui, app, "Dashboard", Nav::Dashboard);
-        nav_button(ui, app, "Rooms", Nav::Rooms);
-        nav_button(ui, app, "Residents", Nav::Residents);
-        nav_button(ui, app, "Payments", Nav::Payments);
-        nav_button(ui, app, "Settings", Nav::Settings);
-        ui.separator();
-        if let Some(user) = &app.user {
-            ui.label(&user.full_name);
-            ui.label(user.role.as_str());
+        if let Some(profile) = &app.w.profile {
+            ui.label(&profile.name);
         }
-        if ui.button("Sign out").clicked() {
-            app.desk.logout();
-            app.user = None;
-            app.gate = Gate::SignIn;
-            app.loaded = false;
-        }
-        ui.label(format!("v{}", app.desk.app_version()));
-    });
-    egui::CentralPanel::default().show(ui, |ui| match app.nav {
-        Nav::Dashboard => dashboard(app, ui),
-        Nav::Rooms => rooms(app, ui),
-        Nav::Residents => residents(app, ui),
-        Nav::Payments => payments(app, ui),
-        Nav::Settings => settings(app, ui),
-    });
-}
-
-fn maybe_sync(app: &mut HostelApp, ui: &mut egui::Ui) {
-    ui.ctx()
-        .request_repaint_after(std::time::Duration::from_secs(30));
-    if !app.desk.cloud_enrolled() {
-        return;
-    }
-    let due = app
-        .last_sync
-        .map(|at| at.elapsed() >= std::time::Duration::from_secs(30))
-        .unwrap_or(true);
-    if !due {
-        return;
-    }
-    app.last_sync = Some(std::time::Instant::now());
-    match runtime().block_on(app.desk.sync_once()) {
-        Ok(report) => {
-            if !report.summary.is_empty() {
-                app.status = report.summary;
-                app.loaded = false;
+        ui.add_space(8.0);
+        for (label, nav) in [
+            ("Dashboard", Nav::Dashboard),
+            ("Rooms", Nav::Rooms),
+            ("Residents", Nav::Residents),
+            ("Payments", Nav::Payments),
+            ("Settings", Nav::Settings),
+        ] {
+            if ui.selectable_label(app.w.nav == nav, label).clicked() {
+                app.w.nav = nav;
             }
         }
-        Err(error) => app.status = format!("Sync failed: {error}"),
+        ui.separator();
+        if let Some(user) = &app.w.user {
+            ui.label(&user.full_name);
+            ui.label(RichText::new(&user.role).small());
+        }
+        if ui.button("Sign out").clicked() {
+            app.sign_out();
+            app.ok("Signed out.");
+            return;
+        }
+        ui.separator();
+        license_badge(app, ui);
+        ui.label(RichText::new(format!("v{}", app.desk.app_version())).small());
+    });
+    egui::CentralPanel::default().show(ui, |ui| {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| match app.w.nav {
+                Nav::Dashboard => dashboard(app, ui),
+                Nav::Rooms => rooms(app, ui),
+                Nav::Residents => residents(app, ui),
+                Nav::Payments => payments(app, ui),
+                Nav::Settings => settings(app, ui),
+            });
+    });
+}
+
+fn license_badge(app: &HostelApp, ui: &mut egui::Ui) {
+    let Some(license) = app.desk.license_status() else {
+        return;
+    };
+    let today = chrono::Local::now().date_naive();
+    let days = (license.expiry_date - today).num_days();
+    let text = format!("License: {days} days left");
+    if days <= 14 {
+        ui.colored_label(ui.visuals().error_fg_color, text);
+    } else if days <= 30 {
+        ui.colored_label(ui.visuals().warn_fg_color, text);
+    } else {
+        ui.label(RichText::new(text).small());
     }
 }
 
-fn nav_button(ui: &mut egui::Ui, app: &mut HostelApp, label: &str, nav: Nav) {
-    if ui.selectable_label(app.nav == nav, label).clicked() {
-        app.nav = nav;
-    }
-}
-
-fn dashboard(app: &HostelApp, ui: &mut egui::Ui) {
+fn dashboard(app: &mut HostelApp, ui: &mut egui::Ui) {
     ui.heading("Dashboard");
-    if let Some(stats) = &app.stats {
-        ui.label(format!(
-            "Rooms {} · occupied {} · vacant {} · maintenance {}",
-            stats.total_rooms, stats.occupied, stats.vacant, stats.maintenance
-        ));
-        ui.label(format!("Check-ins today: {}", stats.check_ins_today));
-        ui.label(format!(
-            "Revenue today: {} {}",
-            app.currency, stats.revenue_today
-        ));
-        ui.label(format!(
-            "Revenue this month: {} {}",
-            app.currency, stats.revenue_month
-        ));
-        ui.label(format!(
-            "Outstanding: {} {}",
-            app.currency, stats.outstanding_total
-        ));
+    let currency = app.w.currency().to_string();
+    if let Some(stats) = &app.w.stats {
+        let occupancy = if stats.total_rooms > 0 {
+            stats.occupied * 100 / stats.total_rooms
+        } else {
+            0
+        };
+        egui::Grid::new("stats").num_columns(2).show(ui, |ui| {
+            for (label, value) in [
+                (
+                    "Rooms",
+                    format!(
+                        "{} · {} occupied · {} vacant · {} maintenance",
+                        stats.total_rooms, stats.occupied, stats.vacant, stats.maintenance
+                    ),
+                ),
+                ("Occupancy", format!("{occupancy}%")),
+                ("Check-ins today", stats.check_ins_today.to_string()),
+                (
+                    "Revenue today",
+                    format!("{currency} {}", stats.revenue_today),
+                ),
+                (
+                    "Revenue this month",
+                    format!("{currency} {}", stats.revenue_month),
+                ),
+                (
+                    "Outstanding",
+                    format!("{currency} {}", stats.outstanding_total),
+                ),
+            ] {
+                ui.label(label);
+                ui.strong(value);
+                ui.end_row();
+            }
+        });
+    } else if !app.w.loaded {
+        ui.spinner();
     }
+    ui.horizontal(|ui| {
+        if ui.button("New check-in").clicked() {
+            app.w.nav = Nav::Residents;
+        }
+        if ui.button("Record payment").clicked() {
+            app.w.nav = Nav::Payments;
+        }
+    });
     ui.separator();
-    ui.label("Recent activity");
-    for item in &app.activity {
+    ui.strong("Active stays");
+    let stays = app.w.stays.clone();
+    if stays.is_empty() {
+        ui.label("No one is checked in.");
+    }
+    egui::Grid::new("active-stays")
+        .striped(true)
+        .show(ui, |ui| {
+            for stay in stays {
+                ui.label(&stay.resident_name);
+                ui.label(format!("Room {}", stay.room_number));
+                ui.label(format!("Balance {currency} {}", stay.balance));
+                if ui.small_button("Check out").clicked() {
+                    app.confirm = Some(Confirm::CheckOut {
+                        allocation_id: stay.allocation_id,
+                        name: stay.resident_name.clone(),
+                        balance: stay.balance.clone(),
+                    });
+                }
+                ui.end_row();
+            }
+        });
+    ui.separator();
+    ui.strong("Recent activity");
+    for item in &app.w.activity {
         let amount = item
             .amount
             .as_ref()
-            .map(|amount| format!(" {amount}"))
+            .map(|amount| format!(" · {currency} {amount}"))
             .unwrap_or_default();
         ui.label(format!(
-            "{} {} · {} · room {}{amount}",
-            item.at.format("%Y-%m-%d %H:%M"),
-            item.kind,
+            "{} · {} · {} · room {}{amount}",
+            item.at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M"),
+            item.kind.replace('_', " "),
             item.resident_name,
             item.room_number
         ));
@@ -573,72 +1198,185 @@ fn dashboard(app: &HostelApp, ui: &mut egui::Ui) {
 
 fn rooms(app: &mut HostelApp, ui: &mut egui::Ui) {
     ui.heading("Rooms");
+    let count = |status: &str| app.w.rooms.iter().filter(|r| r.status == status).count();
+    let filters = [
+        (None, format!("All ({})", app.w.rooms.len())),
+        (Some("vacant"), format!("Vacant ({})", count("vacant"))),
+        (
+            Some("occupied"),
+            format!("Occupied ({})", count("occupied")),
+        ),
+        (
+            Some("maintenance"),
+            format!("Maintenance ({})", count("maintenance")),
+        ),
+    ];
+    ui.horizontal(|ui| {
+        for (filter, label) in filters {
+            if ui
+                .selectable_label(app.w.room_filter == filter, label)
+                .clicked()
+            {
+                app.w.room_filter = filter;
+            }
+        }
+    });
+    let currency = app.w.currency().to_string();
     egui::Grid::new("rooms").striped(true).show(ui, |ui| {
-        ui.label("Number");
-        ui.label("Type");
-        ui.label("Beds");
-        ui.label("Occupied");
-        ui.label("Semester");
-        ui.label("Recess");
-        ui.label("Status");
+        for heading in [
+            "Room", "Floor", "Type", "Beds", "Free", "Semester", "Recess", "Status",
+        ] {
+            ui.strong(heading);
+        }
         ui.end_row();
-        for room in &app.rooms {
+        for room in app
+            .w
+            .rooms
+            .iter()
+            .filter(|room| app.w.room_filter.is_none_or(|f| room.status == f))
+        {
             ui.label(&room.room_number);
+            ui.label(room.floor.map(|f| f.to_string()).unwrap_or_default());
             ui.label(&room.room_type);
             ui.label(room.capacity.to_string());
-            ui.label(room.occupied_beds.to_string());
-            ui.label(&room.semester_rate);
-            ui.label(&room.recess_rate);
+            ui.label((room.capacity - room.occupied_beds).max(0).to_string());
+            ui.label(format!("{currency} {}", room.semester_rate));
+            ui.label(format!("{currency} {}", room.recess_rate));
             ui.label(&room.status);
             ui.end_row();
         }
     });
+    if !app.w.is_admin() {
+        return;
+    }
     ui.separator();
-    ui.label("Add a room");
-    labeled(ui, "Number", &mut app.room_number);
+    ui.strong("Add a room");
+    let f = &mut app.w.room_form;
+    labeled(ui, "Room number", &mut f.number, false);
     combo(
         ui,
         "Type",
-        &mut app.room_type,
-        &["single", "double", "dorm"],
+        &mut f.kind,
+        &[("single", "Single"), ("double", "Double"), ("dorm", "Dorm")],
     );
-    labeled(ui, "Capacity", &mut app.room_capacity);
-    labeled(ui, "Floor", &mut app.room_floor);
-    labeled(ui, "Semester rate", &mut app.semester_rate);
-    labeled(ui, "Recess rate", &mut app.recess_rate);
-    if ui.button("Add room").clicked() {
-        let Some(hostel_id) = app.hostel_id() else {
-            return;
-        };
-        let capacity = app.room_capacity.parse().unwrap_or(0);
-        let floor = blank(&app.room_floor).and_then(|value| value.parse().ok());
-        let request = AddRoomRequest {
-            hostel_id,
-            room_number: app.room_number.clone(),
-            room_type: app.room_type.clone(),
-            capacity,
-            floor,
-            semester_rate: app.semester_rate.clone(),
-            recess_rate: app.recess_rate.clone(),
-        };
-        let result = runtime().block_on(app.desk.add_room(request));
-        app.note(result, "Room added.");
-        app.refresh();
+    labeled(ui, "Beds", &mut f.capacity, false);
+    labeled(ui, "Floor (number, optional)", &mut f.floor, false);
+    labeled(ui, "Semester rate", &mut f.semester, false);
+    labeled(ui, "Recess rate", &mut f.recess, false);
+    let busy = app.busy("add-room");
+    if ui
+        .add_enabled(!busy, egui::Button::new("Add room"))
+        .clicked()
+    {
+        add_room(app);
     }
+}
+
+fn add_room(app: &mut HostelApp) {
+    let Some(hostel_id) = app.w.hostel_id() else {
+        return;
+    };
+    let f = &app.w.room_form;
+    let Ok(capacity) = f.capacity.trim().parse::<i32>() else {
+        app.fail("Beds must be a whole number.");
+        return;
+    };
+    if capacity < 1 {
+        app.fail("A room needs at least one bed.");
+        return;
+    }
+    let floor = match blank(&f.floor).map(|floor| floor.parse::<i32>()) {
+        None => None,
+        Some(Ok(floor)) => Some(floor),
+        Some(Err(_)) => {
+            app.fail("Floor must be a whole number, or left blank.");
+            return;
+        }
+    };
+    let bad_rate = [("Semester rate", &f.semester), ("Recess rate", &f.recess)]
+        .into_iter()
+        .find(|(label, rate)| protocol::validate_money(label, rate.trim()).is_err())
+        .map(|(label, _)| label);
+    if let Some(label) = bad_rate {
+        app.fail(format!(
+            "{label} must be an amount above zero, like 450000."
+        ));
+        return;
+    }
+    let request = AddRoomRequest {
+        hostel_id,
+        room_number: f.number.trim().to_string(),
+        room_type: f.kind.clone(),
+        capacity,
+        floor,
+        semester_rate: f.semester.trim().to_string(),
+        recess_rate: f.recess.trim().to_string(),
+    };
+    let desk = app.desk.clone();
+    app.write(
+        "add-room",
+        async move { desk.add_room(request).await },
+        "Room added.",
+        |app, _| {
+            let kind = std::mem::take(&mut app.w.room_form.kind);
+            app.w.room_form = RoomForm {
+                kind,
+                ..RoomForm::default()
+            };
+        },
+    );
 }
 
 fn residents(app: &mut HostelApp, ui: &mut egui::Ui) {
     ui.heading("Residents");
-    labeled(ui, "Search", &mut app.resident_query);
-    let query = app.resident_query.to_lowercase();
-    let rows: Vec<_> = app
+    let current = app
+        .w
         .residents
         .iter()
-        .filter(|resident| {
+        .filter(|r| r.status == "active")
+        .count();
+    let past = app
+        .w
+        .residents
+        .iter()
+        .filter(|r| r.status == "checked_out")
+        .count();
+    ui.horizontal(|ui| {
+        for (tab, label) in [
+            (ResidentTab::Current, format!("Current ({current})")),
+            (ResidentTab::Past, format!("Past ({past})")),
+            (ResidentTab::All, format!("All ({})", app.w.residents.len())),
+        ] {
+            if ui
+                .selectable_label(app.w.resident_tab == tab, label)
+                .clicked()
+            {
+                app.w.resident_tab = tab;
+            }
+        }
+    });
+    labeled(
+        ui,
+        "Search name, phone, or room",
+        &mut app.w.resident_query,
+        false,
+    );
+    let query = app.w.resident_query.trim().to_lowercase();
+    let tab = app.w.resident_tab;
+    let rows: Vec<db::ResidentSummary> = app
+        .w
+        .residents
+        .iter()
+        .filter(|r| match tab {
+            ResidentTab::Current => r.status == "active",
+            ResidentTab::Past => r.status == "checked_out",
+            ResidentTab::All => true,
+        })
+        .filter(|r| {
             query.is_empty()
-                || resident.full_name.to_lowercase().contains(&query)
-                || resident
-                    .phone
+                || r.full_name.to_lowercase().contains(&query)
+                || r.phone.as_deref().unwrap_or("").contains(&query)
+                || r.room_number
                     .as_deref()
                     .unwrap_or("")
                     .to_lowercase()
@@ -646,331 +1384,735 @@ fn residents(app: &mut HostelApp, ui: &mut egui::Ui) {
         })
         .cloned()
         .collect();
-    for resident in rows {
-        let label = format!(
-            "{} · {} · {} · balance {}",
-            resident.full_name,
-            resident.room_number.as_deref().unwrap_or("—"),
-            resident.status,
-            resident.balance
-        );
+    let currency = app.w.currency().to_string();
+    let selected = app.w.detail.as_ref().map(|d| d.resident.id);
+    egui::Grid::new("residents").striped(true).show(ui, |ui| {
+        for resident in rows {
+            let label = format!(
+                "{} · room {} · {}",
+                resident.full_name,
+                resident.room_number.as_deref().unwrap_or("—"),
+                resident.status.replace('_', " ")
+            );
+            if ui
+                .selectable_label(selected == Some(resident.id), label)
+                .clicked()
+            {
+                load_resident(app, resident.id);
+            }
+            ui.label(format!("Balance {currency} {}", resident.balance));
+            ui.end_row();
+        }
+    });
+    ui.separator();
+    resident_detail(app, ui);
+    ui.separator();
+    check_in_form(app, ui);
+}
+
+fn load_resident(app: &mut HostelApp, resident_id: i64) {
+    let Some(hostel_id) = app.w.hostel_id() else {
+        return;
+    };
+    let desk = app.desk.clone();
+    app.run(
+        "resident",
+        async move {
+            desk.resident_detail(GetResidentDetailRequest {
+                hostel_id,
+                resident_id,
+            })
+            .await
+        },
+        |app, result| match result {
+            Ok(detail) => {
+                let r = &detail.resident;
+                app.w.resident_form = ResidentForm {
+                    name: r.full_name.clone(),
+                    phone: r.phone.clone().unwrap_or_default(),
+                    email: r.email.clone().unwrap_or_default(),
+                    id_number: r.id_number.clone().unwrap_or_default(),
+                    kin: r.next_of_kin.clone().unwrap_or_default(),
+                    kin_phone: r.next_of_kin_phone.clone().unwrap_or_default(),
+                };
+                app.w.detail = Some(detail);
+            }
+            Err(error) => app.fail(error),
+        },
+    );
+}
+
+fn resident_detail(app: &mut HostelApp, ui: &mut egui::Ui) {
+    let Some(detail) = app.w.detail.clone() else {
+        ui.label("Select a resident to see their stays and payments.");
+        return;
+    };
+    let currency = app.w.currency().to_string();
+    ui.horizontal(|ui| {
+        ui.strong(&detail.resident.full_name);
+        ui.label(format!("· balance {currency} {}", detail.balance));
+        if ui.small_button("Close").clicked() {
+            app.w.detail = None;
+        }
+    });
+    let f = &mut app.w.resident_form;
+    labeled(ui, "Name", &mut f.name, false);
+    labeled(ui, "Phone", &mut f.phone, false);
+    labeled(ui, "Email", &mut f.email, false);
+    labeled(ui, "ID number", &mut f.id_number, false);
+    labeled(ui, "Next of kin", &mut f.kin, false);
+    labeled(ui, "Next-of-kin phone", &mut f.kin_phone, false);
+    let active = detail
+        .allocations
+        .iter()
+        .find(|stay| stay.status == "active")
+        .cloned();
+    ui.horizontal(|ui| {
         if ui
-            .selectable_label(app.selected_resident == Some(resident.id), label)
+            .add_enabled(
+                !app.busy("save-resident"),
+                egui::Button::new("Save details"),
+            )
             .clicked()
         {
-            app.selected_resident = Some(resident.id);
-            load_resident(app, resident.id);
+            save_resident(app, detail.resident.id);
         }
+        if let Some(stay) = &active {
+            if ui.button("Record payment").clicked() {
+                start_payment(app, stay.id);
+            }
+            if ui.button("Check out").clicked() {
+                let balance = app
+                    .w
+                    .stay(stay.id)
+                    .map_or_else(|| detail.balance.clone(), |s| s.balance.clone());
+                app.confirm = Some(Confirm::CheckOut {
+                    allocation_id: stay.id,
+                    name: detail.resident.full_name.clone(),
+                    balance,
+                });
+            }
+        } else if ui.button("Check in again").clicked() {
+            app.w.check_in = CheckInForm {
+                returning: Some(detail.resident.id),
+                ..CheckInForm::default()
+            };
+        }
+    });
+    ui.strong("Stays");
+    egui::Grid::new("stays").striped(true).show(ui, |ui| {
+        for stay in &detail.allocations {
+            ui.label(format!("Room {}", stay.room_number));
+            ui.label(format!("{} {}", term_label(&stay.term), stay.academic_year));
+            ui.label(format!("{currency} {}", stay.rate_agreed));
+            ui.label(stay.status.replace('_', " "));
+            ui.label(
+                stay.created_at
+                    .with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d")
+                    .to_string(),
+            );
+            ui.end_row();
+        }
+    });
+    ui.strong("Payments");
+    if detail.payments.is_empty() {
+        ui.label("No payments yet.");
     }
-    ui.separator();
-    if app.selected_resident.is_some() {
-        ui.label(format!("Balance {}", app.detail_balance));
-        labeled(ui, "Name", &mut app.detail_name);
-        labeled(ui, "Phone", &mut app.detail_phone);
-        labeled(ui, "Email", &mut app.detail_email);
-        labeled(ui, "ID number", &mut app.detail_id);
-        labeled(ui, "Next of kin", &mut app.detail_kin);
-        labeled(ui, "Kin phone", &mut app.detail_kin_phone);
-        if ui.button("Save resident").clicked() {
-            save_resident(app);
-        }
-        if app.detail_allocation.is_some() && ui.button("Check out").clicked() {
-            check_out(app);
-        }
-    }
-    ui.separator();
-    ui.label("Check in");
-    labeled(ui, "Full name", &mut app.checkin_name);
-    labeled(ui, "Phone", &mut app.checkin_phone);
-    labeled(ui, "Email", &mut app.checkin_email);
-    labeled(ui, "ID number", &mut app.checkin_id);
-    labeled(ui, "Next of kin", &mut app.checkin_kin);
-    labeled(ui, "Kin phone", &mut app.checkin_kin_phone);
-    room_picker(ui, &app.rooms, &mut app.checkin_room);
-    labeled(ui, "Rate agreed", &mut app.checkin_rate);
-    combo(
-        ui,
-        "Term",
-        &mut app.checkin_term,
-        &["semester_1", "semester_2", "recess"],
+    egui::Grid::new("resident-payments")
+        .striped(true)
+        .show(ui, |ui| {
+            for payment in &detail.payments {
+                ui.label(
+                    payment
+                        .payment_date
+                        .with_timezone(&chrono::Local)
+                        .format("%Y-%m-%d")
+                        .to_string(),
+                );
+                ui.label(format!("{currency} {}", payment.amount));
+                ui.label(method_label(&payment.payment_method));
+                ui.end_row();
+            }
+        });
+}
+
+fn save_resident(app: &mut HostelApp, resident_id: i64) {
+    let Some(hostel_id) = app.w.hostel_id() else {
+        return;
+    };
+    let f = &app.w.resident_form;
+    let request = UpdateResidentRequest {
+        hostel_id,
+        resident_id,
+        full_name: f.name.trim().to_string(),
+        phone: blank(&f.phone),
+        email: blank(&f.email),
+        id_number: blank(&f.id_number),
+        next_of_kin: blank(&f.kin),
+        next_of_kin_phone: blank(&f.kin_phone),
+    };
+    let desk = app.desk.clone();
+    app.write(
+        "save-resident",
+        async move { desk.update_resident(request).await },
+        "Resident saved.",
+        move |app, ()| load_resident(app, resident_id),
     );
-    labeled(ui, "Academic year", &mut app.checkin_year);
-    if ui.button("Check in").clicked() {
+}
+
+fn check_in_form(app: &mut HostelApp, ui: &mut egui::Ui) {
+    ui.strong("Check in");
+    let returning_label = app
+        .w
+        .check_in
+        .returning
+        .and_then(|id| app.w.residents.iter().find(|r| r.id == id))
+        .map_or_else(|| "New resident".to_string(), |r| r.full_name.clone());
+    let returning_choices: Vec<(i64, String)> = app
+        .w
+        .residents
+        .iter()
+        .filter(|r| r.status != "active")
+        .map(|r| (r.id, r.full_name.clone()))
+        .collect();
+    let f = &mut app.w.check_in;
+    egui::ComboBox::from_label("Resident")
+        .selected_text(returning_label)
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut f.returning, None, "New resident");
+            for (id, name) in &returning_choices {
+                ui.selectable_value(&mut f.returning, Some(*id), name);
+            }
+        });
+    if f.returning.is_none() {
+        labeled(ui, "Full name", &mut f.name, false);
+        labeled(ui, "Phone", &mut f.phone, false);
+        labeled(ui, "Email", &mut f.email, false);
+        labeled(ui, "ID number", &mut f.id_number, false);
+        labeled(ui, "Next of kin", &mut f.kin, false);
+        labeled(ui, "Next-of-kin phone", &mut f.kin_phone, false);
+    }
+    let free: Vec<&db::Room> = app
+        .w
+        .rooms
+        .iter()
+        .filter(|room| room.status != "maintenance" && room.occupied_beds < room.capacity)
+        .collect();
+    let room_text = f
+        .room
+        .and_then(|id| free.iter().find(|room| room.id == id))
+        .map_or_else(|| "Choose a room".to_string(), |room| room_choice(room));
+    let before = (f.room, f.term.clone());
+    egui::ComboBox::from_label("Room")
+        .selected_text(room_text)
+        .show_ui(ui, |ui| {
+            for room in &free {
+                ui.selectable_value(&mut f.room, Some(room.id), room_choice(room));
+            }
+        });
+    combo(ui, "Term", &mut f.term, &TERMS);
+    if (f.room, f.term.clone()) != before {
+        if let Some(room) = f.room.and_then(|id| free.iter().find(|room| room.id == id)) {
+            f.rate = rate_for_term(room, &f.term).to_string();
+        }
+    }
+    if free.is_empty() {
+        ui.colored_label(ui.visuals().warn_fg_color, "No room has a free bed.");
+    }
+    labeled(ui, "Rate agreed", &mut f.rate, false);
+    labeled(ui, "Academic year", &mut f.year, false);
+    if ui
+        .add_enabled(!app.busy("check-in"), egui::Button::new("Check in"))
+        .clicked()
+    {
         check_in(app);
     }
 }
 
-fn load_resident(app: &mut HostelApp, resident_id: i64) {
-    let Some(hostel_id) = app.hostel_id() else {
-        return;
-    };
-    match runtime().block_on(app.desk.resident_detail(GetResidentDetailRequest {
-        hostel_id,
-        resident_id,
-    })) {
-        Ok(detail) => {
-            app.detail_name.clone_from(&detail.resident.full_name);
-            app.detail_phone = detail.resident.phone.unwrap_or_default();
-            app.detail_email = detail.resident.email.unwrap_or_default();
-            app.detail_id = detail.resident.id_number.unwrap_or_default();
-            app.detail_kin = detail.resident.next_of_kin.unwrap_or_default();
-            app.detail_kin_phone = detail.resident.next_of_kin_phone.unwrap_or_default();
-            app.detail_balance = detail.balance;
-            app.detail_allocation = detail
-                .allocations
-                .iter()
-                .find(|allocation| allocation.status == "active")
-                .map(|allocation| allocation.id);
-        }
-        Err(e) => app.status = e,
-    }
-}
-
-fn save_resident(app: &mut HostelApp) {
-    let Some(hostel_id) = app.hostel_id() else {
-        return;
-    };
-    let Some(resident_id) = app.selected_resident else {
-        return;
-    };
-    let result = runtime().block_on(app.desk.update_resident(UpdateResidentRequest {
-        hostel_id,
-        resident_id,
-        full_name: app.detail_name.clone(),
-        phone: blank(&app.detail_phone),
-        email: blank(&app.detail_email),
-        id_number: blank(&app.detail_id),
-        next_of_kin: blank(&app.detail_kin),
-        next_of_kin_phone: blank(&app.detail_kin_phone),
-    }));
-    app.note(result.map(|()| String::new()), "Resident saved.");
-    app.refresh();
-}
-
-fn check_out(app: &mut HostelApp) {
-    let Some(hostel_id) = app.hostel_id() else {
-        return;
-    };
-    let Some(allocation_id) = app.detail_allocation else {
-        return;
-    };
-    let result = runtime().block_on(app.desk.check_out(CheckOutRequest {
-        hostel_id,
-        allocation_id,
-    }));
-    app.note(result.map(|()| String::new()), "Checked out.");
-    app.detail_allocation = None;
-    app.refresh();
-}
-
 fn check_in(app: &mut HostelApp) {
-    let Some(hostel_id) = app.hostel_id() else {
+    let Some(hostel_id) = app.w.hostel_id() else {
         return;
     };
-    let Some(room_id) = app.checkin_room else {
-        app.status = "Choose a room.".to_string();
+    let f = &app.w.check_in;
+    let Some(room_id) = f.room else {
+        app.fail("Choose a room.");
         return;
     };
-    let result = runtime().block_on(app.desk.check_in(CheckInRequest {
+    if f.returning.is_none() && f.name.trim().is_empty() {
+        app.fail("Enter the resident's full name.");
+        return;
+    }
+    if protocol::validate_money("Rate", f.rate.trim()).is_err() {
+        app.fail("Rate must be an amount above zero, like 450000.");
+        return;
+    }
+    let new = f.returning.is_none();
+    let request = CheckInRequest {
         hostel_id,
         room_id,
-        resident_id: None,
-        full_name: blank(&app.checkin_name),
-        phone: blank(&app.checkin_phone),
-        email: blank(&app.checkin_email),
-        id_number: blank(&app.checkin_id),
-        next_of_kin: blank(&app.checkin_kin),
-        next_of_kin_phone: blank(&app.checkin_kin_phone),
+        resident_id: f.returning,
+        full_name: if new { blank(&f.name) } else { None },
+        phone: if new { blank(&f.phone) } else { None },
+        email: if new { blank(&f.email) } else { None },
+        id_number: if new { blank(&f.id_number) } else { None },
+        next_of_kin: if new { blank(&f.kin) } else { None },
+        next_of_kin_phone: if new { blank(&f.kin_phone) } else { None },
         photo_path: None,
-        rate_agreed: app.checkin_rate.clone(),
-        term: app.checkin_term.clone(),
-        academic_year: app.checkin_year.clone(),
-    }));
-    app.note(result, "Checked in. Allocation");
-    app.refresh();
+        rate_agreed: f.rate.trim().to_string(),
+        term: f.term.clone(),
+        academic_year: f.year.trim().to_string(),
+    };
+    let desk = app.desk.clone();
+    app.write(
+        "check-in",
+        async move { desk.check_in(request).await },
+        "Checked in.",
+        |app, _| {
+            let f = &mut app.w.check_in;
+            let (term, year) = (std::mem::take(&mut f.term), std::mem::take(&mut f.year));
+            *f = CheckInForm {
+                term,
+                year,
+                ..CheckInForm::default()
+            };
+        },
+    );
 }
 
 fn payments(app: &mut HostelApp, ui: &mut egui::Ui) {
     ui.heading("Payments");
-    for payment in &app.payments {
-        ui.label(format!(
-            "{} · {} · {} {} · {} · receipt {}",
-            payment.payment_date.format("%Y-%m-%d"),
-            payment.resident_name,
-            app.currency,
-            payment.amount,
-            payment.payment_method,
-            payment.receipt_number.as_deref().unwrap_or("—")
-        ));
+    ui.horizontal(|ui| {
+        for (tab, label) in [
+            (PaymentTab::Outstanding, "Outstanding"),
+            (PaymentTab::History, "History"),
+        ] {
+            if ui
+                .selectable_label(app.w.payment_tab == tab, label)
+                .clicked()
+            {
+                app.w.payment_tab = tab;
+            }
+        }
+    });
+    let currency = app.w.currency().to_string();
+    match app.w.payment_tab {
+        PaymentTab::Outstanding => {
+            let stays = app.w.stays.clone();
+            egui::Grid::new("outstanding").striped(true).show(ui, |ui| {
+                for heading in ["Resident", "Room", "Term", "Rate", "Paid", "Balance", ""] {
+                    ui.strong(heading);
+                }
+                ui.end_row();
+                for stay in &stays {
+                    ui.label(&stay.resident_name);
+                    ui.label(&stay.room_number);
+                    ui.label(format!("{} {}", term_label(&stay.term), stay.academic_year));
+                    ui.label(format!("{currency} {}", stay.rate_agreed));
+                    ui.label(format!("{currency} {}", stay.total_paid));
+                    ui.strong(format!("{currency} {}", stay.balance));
+                    if ui.small_button("Take payment").clicked() {
+                        start_payment(app, stay.allocation_id);
+                    }
+                    ui.end_row();
+                }
+            });
+        }
+        PaymentTab::History => {
+            let rows = app.w.payments.clone();
+            egui::Grid::new("history").striped(true).show(ui, |ui| {
+                for heading in [
+                    "Date", "Receipt", "Resident", "Room", "Amount", "Method", "",
+                ] {
+                    ui.strong(heading);
+                }
+                ui.end_row();
+                for row in rows {
+                    ui.label(
+                        row.payment_date
+                            .with_timezone(&chrono::Local)
+                            .format("%Y-%m-%d")
+                            .to_string(),
+                    );
+                    ui.label(row.receipt_number.clone().unwrap_or_else(|| "—".into()));
+                    ui.label(&row.resident_name);
+                    ui.label(&row.room_number);
+                    ui.label(format!("{currency} {}", row.amount));
+                    ui.label(method_label(&row.payment_method));
+                    if row.receipt_number.is_some()
+                        && ui
+                            .add_enabled(!app.busy("receipt"), egui::Button::new("Open receipt"))
+                            .clicked()
+                    {
+                        reopen_receipt(app, row);
+                    }
+                    ui.end_row();
+                }
+            });
+        }
     }
     ui.separator();
-    ui.label("Record a payment");
-    allocation_picker(ui, &app.allocations, &mut app.pay_allocation);
-    labeled(ui, "Amount", &mut app.pay_amount);
-    combo(
-        ui,
-        "Method",
-        &mut app.pay_method,
-        &["cash", "mobile_money", "bank_transfer", "card"],
-    );
-    labeled(ui, "Notes", &mut app.pay_notes);
-    if ui.button("Record payment and open receipt").clicked() {
+    pay_form(app, ui);
+}
+
+/// Select `allocation_id` in the payment form and pre-fill its balance.
+fn start_payment(app: &mut HostelApp, allocation_id: i64) {
+    app.w.nav = Nav::Payments;
+    app.w.pay.allocation = Some(allocation_id);
+    app.w.pay.amount = app
+        .w
+        .stay(allocation_id)
+        .map(|stay| stay.balance.clone())
+        .filter(|balance| Decimal::from_str(balance).is_ok_and(|b| b > Decimal::ZERO))
+        .unwrap_or_default();
+}
+
+fn pay_form(app: &mut HostelApp, ui: &mut egui::Ui) {
+    ui.strong("Record a payment");
+    let current = app
+        .w
+        .pay
+        .allocation
+        .and_then(|id| app.w.stay(id))
+        .map_or_else(
+            || "Choose a stay".to_string(),
+            |stay| format!("{} · room {}", stay.resident_name, stay.room_number),
+        );
+    let choices: Vec<(i64, String)> = app
+        .w
+        .stays
+        .iter()
+        .map(|stay| {
+            (
+                stay.allocation_id,
+                format!(
+                    "{} · room {} · owes {}",
+                    stay.resident_name, stay.room_number, stay.balance
+                ),
+            )
+        })
+        .collect();
+    let mut chosen = app.w.pay.allocation;
+    egui::ComboBox::from_label("Stay")
+        .selected_text(current)
+        .show_ui(ui, |ui| {
+            for (id, label) in &choices {
+                ui.selectable_value(&mut chosen, Some(*id), label);
+            }
+        });
+    if chosen != app.w.pay.allocation {
+        if let Some(id) = chosen {
+            start_payment(app, id);
+        }
+    }
+    let f = &mut app.w.pay;
+    labeled(ui, "Amount", &mut f.amount, false);
+    combo(ui, "Method", &mut f.method, &METHODS);
+    labeled(ui, "Notes", &mut f.notes, false);
+    if ui
+        .add_enabled(
+            !app.busy("pay"),
+            egui::Button::new("Record payment and print receipt"),
+        )
+        .clicked()
+    {
         record_payment(app);
     }
 }
 
 fn record_payment(app: &mut HostelApp) {
-    let Some(hostel_id) = app.hostel_id() else {
+    let Some(hostel_id) = app.w.hostel_id() else {
         return;
     };
-    let Some(allocation_id) = app.pay_allocation else {
-        app.status = "Choose an active stay.".to_string();
+    let f = &app.w.pay;
+    let Some(stay) = f.allocation.and_then(|id| app.w.stay(id)).cloned() else {
+        app.fail("Choose an active stay.");
         return;
     };
-    let Some(stay) = app
-        .allocations
-        .iter()
-        .find(|allocation| allocation.allocation_id == allocation_id)
-        .cloned()
-    else {
-        app.status = "That stay is no longer active.".to_string();
+    let amount = f.amount.trim().to_string();
+    let Ok(paid) = protocol::validate_money("Amount", &amount) else {
+        app.fail("Amount must be above zero, like 150000.");
         return;
     };
-    let recorded = runtime().block_on(app.desk.record_payment_and_generate_receipt(
-        RecordPaymentRequest {
-            hostel_id,
-            allocation_id,
-            resident_id: stay.resident_id,
-            amount: app.pay_amount.clone(),
-            payment_method: app.pay_method.clone(),
-            period_start: None,
-            period_end: None,
-            notes: blank(&app.pay_notes),
-        },
-    ));
-    let (_payment_id, receipt_number) = match recorded {
-        Ok(pair) => pair,
-        Err(e) => {
-            app.status = e;
-            return;
-        }
+    let (Some(profile), Some(prefs)) = (app.w.profile.clone(), app.w.prefs.clone()) else {
+        app.fail("The hostel profile has not loaded yet. Try again in a moment.");
+        return;
     };
-    let opened = runtime().block_on(app.desk.generate_and_open_receipt(GenerateReceiptRequest {
+    let method = f.method.clone();
+    let notes = blank(&f.notes);
+    let request = RecordPaymentRequest {
         hostel_id,
-        hostel_name: app.hostel_name.clone(),
-        hostel_address: blank(&app.hostel_address),
-        hostel_phone: blank(&app.hostel_phone),
-        receipt_number: receipt_number.clone(),
-        resident_name: stay.resident_name,
-        room_number: stay.room_number,
-        amount: app.pay_amount.clone(),
-        date: chrono::Local::now().date_naive(),
-        balance: stay.balance,
-        payment_method: app.pay_method.clone(),
-        notes: blank(&app.pay_notes),
-        currency_code: app.currency.clone(),
-        footer_text: blank(&app.receipt_footer),
-        logo_path: app.logo_path.clone(),
-    }));
-    match opened {
-        Ok(path) => app.status = format!("Receipt {receipt_number} opened: {path}"),
-        Err(e) => app.status = format!("Payment recorded. Receipt file failed: {e}"),
+        allocation_id: stay.allocation_id,
+        resident_id: stay.resident_id,
+        amount: amount.clone(),
+        payment_method: method.clone(),
+        period_start: None,
+        period_end: None,
+        notes: notes.clone(),
+    };
+    let balance = balance_after(&stay.balance, paid);
+    let desk = app.desk.clone();
+    app.run(
+        "pay",
+        async move {
+            let (_, receipt_number) = desk.record_payment_and_generate_receipt(request).await?;
+            let receipt = GenerateReceiptRequest {
+                hostel_id,
+                hostel_name: profile.name,
+                hostel_address: profile.address,
+                hostel_phone: profile.phone,
+                receipt_number: receipt_number.clone(),
+                resident_name: stay.resident_name,
+                room_number: stay.room_number,
+                amount,
+                date: chrono::Local::now().date_naive(),
+                balance,
+                payment_method: method,
+                notes,
+                currency_code: profile.currency,
+                footer_text: prefs.receipt_footer,
+                logo_path: profile.branding_logo_path,
+            };
+            let printed = desk.generate_and_open_receipt(receipt).await;
+            Ok::<_, String>((receipt_number, printed))
+        },
+        |app, result| match result {
+            Ok((receipt_number, printed)) => {
+                app.w.pay = PayForm::default();
+                match printed {
+                    Ok(_) => app.ok(format!(
+                        "Payment recorded. Receipt {receipt_number} opened."
+                    )),
+                    Err(error) => app.fail(format!(
+                        "Payment recorded as receipt {receipt_number}, but the PDF failed: {error}"
+                    )),
+                }
+                app.refresh();
+            }
+            Err(error) => app.fail(error),
+        },
+    );
+}
+
+/// Open a printed receipt again, or print it from the ledger when this desk
+/// has no PDF for it (for example a payment taken on another desk).
+fn reopen_receipt(app: &mut HostelApp, row: db::PaymentRow) {
+    let (Some(hostel_id), Some(profile), Some(prefs)) = (
+        app.w.hostel_id(),
+        app.w.profile.clone(),
+        app.w.prefs.clone(),
+    ) else {
+        return;
+    };
+    if let Some(path) = row
+        .pdf_path
+        .as_deref()
+        .filter(|p| std::path::Path::new(p).exists())
+    {
+        match open::that(path) {
+            Ok(()) => app.ok("Receipt opened."),
+            Err(error) => app.fail(format!("Could not open the receipt: {error}")),
+        }
+        return;
     }
-    app.refresh();
+    let desk = app.desk.clone();
+    app.run(
+        "receipt",
+        async move {
+            let detail = desk
+                .resident_detail(GetResidentDetailRequest {
+                    hostel_id,
+                    resident_id: row.resident_id,
+                })
+                .await?;
+            let balance = balance_at_payment(&detail, row.allocation_id, row.id)?;
+            desk.generate_and_open_receipt(GenerateReceiptRequest {
+                hostel_id,
+                hostel_name: profile.name,
+                hostel_address: profile.address,
+                hostel_phone: profile.phone,
+                receipt_number: row.receipt_number.unwrap_or_default(),
+                resident_name: row.resident_name,
+                room_number: row.room_number,
+                amount: row.amount,
+                date: row.payment_date.with_timezone(&chrono::Local).date_naive(),
+                balance,
+                payment_method: row.payment_method,
+                notes: row.notes,
+                currency_code: profile.currency,
+                footer_text: prefs.receipt_footer,
+                logo_path: profile.branding_logo_path,
+            })
+            .await
+        },
+        |app, result| match result {
+            Ok(_) => app.ok("Receipt opened."),
+            Err(error) => app.fail(error),
+        },
+    );
 }
 
 fn settings(app: &mut HostelApp, ui: &mut egui::Ui) {
     ui.heading("Settings");
+    let tabs: &[(SettingsTab, &str)] = if app.w.is_admin() {
+        &[
+            (SettingsTab::Account, "Account"),
+            (SettingsTab::Business, "Business"),
+            (SettingsTab::Team, "Team"),
+            (SettingsTab::Preferences, "Receipts"),
+            (SettingsTab::Backup, "Backup"),
+            (SettingsTab::Cloud, "Cloud"),
+        ]
+    } else {
+        &[
+            (SettingsTab::Account, "Account"),
+            (SettingsTab::Cloud, "Cloud"),
+        ]
+    };
+    if !tabs.iter().any(|(tab, _)| *tab == app.w.settings) {
+        app.w.settings = SettingsTab::Account;
+    }
     ui.horizontal(|ui| {
-        tab(ui, app, "Business", SettingsTab::Business);
-        tab(ui, app, "Team", SettingsTab::Team);
-        tab(ui, app, "Preferences", SettingsTab::Preferences);
-        tab(ui, app, "Backup", SettingsTab::Backup);
-        tab(ui, app, "Account", SettingsTab::Account);
-        tab(ui, app, "Cloud", SettingsTab::Cloud);
+        for (tab, label) in tabs {
+            if ui
+                .selectable_label(app.w.settings == *tab, *label)
+                .clicked()
+            {
+                app.w.settings = *tab;
+            }
+        }
     });
     ui.separator();
-    match app.settings {
+    match app.w.settings {
+        SettingsTab::Account => account(app, ui),
         SettingsTab::Business => business(app, ui),
         SettingsTab::Team => team(app, ui),
         SettingsTab::Preferences => preferences(app, ui),
         SettingsTab::Backup => backup(app, ui),
-        SettingsTab::Account => account(app, ui),
         SettingsTab::Cloud => cloud(app, ui),
     }
 }
 
-fn cloud(app: &mut HostelApp, ui: &mut egui::Ui) {
-    ui.label(&app.cloud_summary);
-    if ui.button("Sync now").clicked() {
-        app.last_sync = None;
-        match runtime().block_on(app.desk.sync_once()) {
-            Ok(report) => {
-                app.status = if report.summary.is_empty() {
-                    "Already up to date.".to_string()
-                } else {
-                    report.summary
-                };
-                app.loaded = false;
+fn account(app: &mut HostelApp, ui: &mut egui::Ui) {
+    let f = &mut app.w.account;
+    labeled(ui, "Name", &mut f.name, false);
+    labeled(ui, "Email", &mut f.email, false);
+    ui.add_space(8.0);
+    ui.label("Change password (leave blank to keep it)");
+    labeled(ui, "Current password", &mut f.current, true);
+    labeled(ui, "New password", &mut f.new, true);
+    labeled(ui, "Repeat new password", &mut f.confirm, true);
+    if !ui
+        .add_enabled(!app.busy("account"), egui::Button::new("Save account"))
+        .clicked()
+    {
+        return;
+    }
+    let Some(user) = app.w.user.clone() else {
+        return;
+    };
+    let f = &app.w.account;
+    let password = blank(&f.new);
+    if password.is_some() && f.new != f.confirm {
+        app.fail("The new passwords do not match.");
+        return;
+    }
+    let request = UpdateUserRequest {
+        user_id: user.id,
+        full_name: f.name.trim().to_string(),
+        email: f.email.trim().to_string(),
+        role: user.role.clone(),
+        current_password: password.as_ref().map(|_| f.current.clone()),
+        password,
+    };
+    let desk = app.desk.clone();
+    app.run(
+        "account",
+        async move { desk.update_user(request).await },
+        |app, result| match result {
+            Ok(updated) => {
+                let f = &mut app.w.account;
+                f.current.clear();
+                f.new.clear();
+                f.confirm.clear();
+                app.w.user = Some(updated);
+                app.ok("Account saved.");
             }
-            Err(error) => app.status = format!("Sync failed: {error}"),
-        }
-    }
-    if !app.cloud_conflicts.is_empty() {
-        ui.separator();
-        ui.label("Needs attention");
-        for conflict in &app.cloud_conflicts {
-            ui.label(conflict);
-        }
-    }
-}
-
-fn tab(ui: &mut egui::Ui, app: &mut HostelApp, label: &str, tab: SettingsTab) {
-    if ui.selectable_label(app.settings == tab, label).clicked() {
-        app.settings = tab;
-    }
+            Err(error) => app.fail(error),
+        },
+    );
 }
 
 fn business(app: &mut HostelApp, ui: &mut egui::Ui) {
-    labeled(ui, "Name", &mut app.hostel_name);
-    labeled(ui, "Address", &mut app.hostel_address);
-    labeled(ui, "Phone", &mut app.hostel_phone);
-    labeled(ui, "Currency", &mut app.currency);
-    if let Some(path) = &app.logo_path {
-        ui.label(format!("Logo: {path}"));
-    }
-    if ui.button("Choose logo").clicked() {
-        upload_logo(app);
-    }
-    if ui.button("Save business profile").clicked() {
-        save_business(app);
-    }
-    if let Some(license) = app.desk.license_status() {
-        ui.label(format!(
-            "License {} · {} · expires {}",
-            license.tier, license.hostel_name, license.expiry_date
-        ));
+    let loaded = app.w.profile.is_some();
+    let f = &mut app.w.business;
+    let mut changed = false;
+    changed |= labeled(ui, "Hostel name", &mut f.name, false).changed();
+    changed |= labeled(ui, "Address", &mut f.address, false).changed();
+    changed |= labeled(ui, "Phone", &mut f.phone, false).changed();
+    changed |= labeled(ui, "Currency (3 letters)", &mut f.currency, false).changed();
+    f.dirty |= changed;
+    ui.label(match &f.logo {
+        Some(path) => format!("Logo: {path}"),
+        None => "No logo.".to_string(),
+    });
+    let dirty = f.dirty;
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                loaded && !app.busy("logo"),
+                egui::Button::new("Choose logo"),
+            )
+            .clicked()
+        {
+            upload_logo(app);
+        }
+        if ui
+            .add_enabled(
+                loaded && dirty && !app.busy("business"),
+                egui::Button::new("Save business profile"),
+            )
+            .clicked()
+        {
+            save_business(app);
+        }
+        if dirty && ui.button("Discard changes").clicked() {
+            app.w.business.dirty = false;
+            app.refresh();
+        }
+    });
+    if !loaded {
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            "The saved profile has not loaded, so it cannot be edited yet.",
+        );
     }
 }
 
 fn save_business(app: &mut HostelApp) {
-    let Some(hostel_id) = app.hostel_id() else {
+    let Some(hostel_id) = app.w.hostel_id() else {
         return;
     };
-    let result = runtime().block_on(app.desk.update_hostel(UpdateHostelRequest {
+    let f = &app.w.business;
+    let request = UpdateHostelRequest {
         hostel_id,
-        name: app.hostel_name.clone(),
-        address: blank(&app.hostel_address),
-        phone: blank(&app.hostel_phone),
-        currency: app.currency.trim().to_string(),
-        branding_logo_path: app.logo_path.clone(),
-    }));
-    app.note(result.map(|hostel| hostel.name), "Saved");
-    app.refresh();
+        name: f.name.trim().to_string(),
+        address: blank(&f.address),
+        phone: blank(&f.phone),
+        currency: f.currency.trim().to_uppercase(),
+        branding_logo_path: f.logo.clone(),
+    };
+    let desk = app.desk.clone();
+    app.write(
+        "business",
+        async move { desk.update_hostel(request).await },
+        "Business profile saved.",
+        |app, _| app.w.business.dirty = false,
+    );
 }
 
 fn upload_logo(app: &mut HostelApp) {
-    let Some(hostel_id) = app.hostel_id() else {
+    let Some(hostel_id) = app.w.hostel_id() else {
         return;
     };
     let Some(path) = rfd::FileDialog::new()
@@ -980,209 +2122,351 @@ fn upload_logo(app: &mut HostelApp) {
     else {
         return;
     };
-    let data = match std::fs::read(&path) {
-        Ok(data) => data,
-        Err(e) => {
-            app.status = format!("could not read logo: {e}");
-            return;
-        }
-    };
-    let filename = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("logo.png")
-        .to_string();
-    match runtime().block_on(app.desk.upload_hostel_logo(UploadHostelLogoRequest {
-        hostel_id,
-        data,
-        filename,
-    })) {
-        Ok(stored) => {
-            app.logo_path = Some(stored);
-            save_business(app);
-        }
-        Err(e) => app.status = e,
-    }
+    let desk = app.desk.clone();
+    app.run(
+        "logo",
+        async move {
+            let data = tokio::fs::read(&path)
+                .await
+                .map_err(|e| format!("Could not read the logo: {e}"))?;
+            let filename = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("logo.png")
+                .to_string();
+            desk.upload_hostel_logo(UploadHostelLogoRequest {
+                hostel_id,
+                data,
+                filename,
+            })
+            .await
+        },
+        |app, result| match result {
+            Ok(stored) => {
+                app.w.business.logo = Some(stored);
+                app.w.business.dirty = true;
+                save_business(app);
+            }
+            Err(error) => app.fail(error),
+        },
+    );
 }
 
 fn team(app: &mut HostelApp, ui: &mut egui::Ui) {
-    for user in &app.users {
-        ui.label(format!(
-            "{} · {} · {}",
-            user.full_name, user.email, user.role
-        ));
-        if ui.button(format!("Remove {}", user.email)).clicked() {
-            let result =
-                runtime().block_on(app.desk.delete_user(DeleteUserRequest { user_id: user.id }));
-            app.note(result.map(|()| String::new()), "Removed.");
-            app.refresh();
-            return;
+    let me = app.w.user.as_ref().map(|user| user.id);
+    egui::Grid::new("team").striped(true).show(ui, |ui| {
+        for user in app.w.users.clone() {
+            ui.label(&user.full_name);
+            ui.label(&user.email);
+            ui.label(&user.role);
+            if Some(user.id) == me {
+                ui.label(RichText::new("you").small());
+            } else if ui.small_button("Remove").clicked() {
+                app.confirm = Some(Confirm::DeleteUser(user));
+            }
+            ui.end_row();
         }
-    }
+    });
     ui.separator();
-    ui.label("Add staff");
-    labeled(ui, "Name", &mut app.new_user_name);
-    labeled(ui, "Email", &mut app.new_user_email);
-    labeled_password(ui, "Password", &mut app.new_user_password);
-    combo(ui, "Role", &mut app.new_user_role, &["admin", "manager"]);
-    if ui.button("Create staff account").clicked() {
-        let Some(hostel_id) = app.hostel_id() else {
-            return;
-        };
-        let result = runtime().block_on(app.desk.create_user(CreateUserRequest {
-            hostel_id,
-            full_name: app.new_user_name.clone(),
-            email: app.new_user_email.clone(),
-            password: app.new_user_password.clone(),
-            role: app.new_user_role.clone(),
-        }));
-        app.note(result, "Staff id");
-        app.new_user_password.clear();
-        app.refresh();
+    ui.strong("Add staff");
+    let f = &mut app.w.team;
+    labeled(ui, "Name", &mut f.name, false);
+    labeled(ui, "Email", &mut f.email, false);
+    labeled(ui, "Password (8+ characters)", &mut f.password, true);
+    combo(
+        ui,
+        "Role",
+        &mut f.role,
+        &[("manager", "Manager"), ("admin", "Admin")],
+    );
+    if !ui
+        .add_enabled(
+            !app.busy("add-user"),
+            egui::Button::new("Create staff account"),
+        )
+        .clicked()
+    {
+        return;
     }
+    let Some(hostel_id) = app.w.hostel_id() else {
+        return;
+    };
+    let f = &app.w.team;
+    let request = CreateUserRequest {
+        hostel_id,
+        full_name: f.name.trim().to_string(),
+        email: f.email.trim().to_string(),
+        password: f.password.clone(),
+        role: f.role.clone(),
+    };
+    let desk = app.desk.clone();
+    app.write(
+        "add-user",
+        async move { desk.create_user(request).await },
+        "Staff account created.",
+        |app, _| app.w.team = TeamForm::default(),
+    );
 }
 
 fn preferences(app: &mut HostelApp, ui: &mut egui::Ui) {
+    let loaded = app.w.prefs.is_some();
+    let f = &mut app.w.prefs_form;
+    let before = f.date_format.clone();
     combo(
         ui,
         "Date format",
-        &mut app.date_format,
-        &["dd/MM/yyyy", "MM/dd/yyyy", "yyyy-MM-dd"],
+        &mut f.date_format,
+        &[
+            ("dd/MM/yyyy", "dd/MM/yyyy"),
+            ("MM/dd/yyyy", "MM/dd/yyyy"),
+            ("yyyy-MM-dd", "yyyy-MM-dd"),
+        ],
     );
-    labeled(ui, "Receipt footer", &mut app.receipt_footer);
-    if ui.button("Save preferences").clicked() {
-        let Some(hostel_id) = app.hostel_id() else {
-            return;
-        };
-        let result = runtime().block_on(app.desk.update_app_preferences(
-            UpsertAppPreferencesRequest {
-                hostel_id,
-                date_format: app.date_format.clone(),
-                language: "en".to_string(),
-                receipt_footer: blank(&app.receipt_footer),
-            },
-        ));
-        app.note(result.map(|_| String::new()), "Preferences saved.");
+    let changed = before != f.date_format;
+    f.dirty |= changed | labeled(ui, "Receipt footer", &mut f.footer, false).changed();
+    let dirty = f.dirty;
+    if !ui
+        .add_enabled(
+            loaded && dirty && !app.busy("prefs"),
+            egui::Button::new("Save receipt settings"),
+        )
+        .clicked()
+    {
+        return;
     }
+    let Some(hostel_id) = app.w.hostel_id() else {
+        return;
+    };
+    let f = &app.w.prefs_form;
+    let request = UpsertAppPreferencesRequest {
+        hostel_id,
+        date_format: f.date_format.clone(),
+        language: "en".to_string(),
+        receipt_footer: blank(&f.footer),
+    };
+    let desk = app.desk.clone();
+    app.write(
+        "prefs",
+        async move { desk.update_app_preferences(request).await },
+        "Receipt settings saved.",
+        |app, _| app.w.prefs_form.dirty = false,
+    );
 }
 
 fn backup(app: &mut HostelApp, ui: &mut egui::Ui) {
-    if ui.button("Back up database").clicked() {
-        let result = runtime().block_on(app.desk.backup_database());
-        app.note(result, "Backup written:");
-        app.refresh();
+    if ui
+        .add_enabled(!app.busy("backup"), egui::Button::new("Back up now"))
+        .clicked()
+    {
+        let desk = app.desk.clone();
+        app.write(
+            "backup",
+            async move { desk.backup_database().await },
+            "Backup written.",
+            |_, _| {},
+        );
     }
-    for path in app.backups.clone() {
-        ui.label(&path);
-        if ui.button(format!("Restore {path}")).clicked() {
-            let result = runtime().block_on(
-                app.desk
-                    .restore_backup(RestoreBackupRequest { backup_path: path }),
+    let enrolled = app.w.cloud.as_ref().is_some_and(|c| c.server_url.is_some());
+    if enrolled {
+        ui.label("This computer syncs with the cloud, which keeps your data. Restoring is off.");
+    }
+    ui.separator();
+    if app.w.backups.is_empty() {
+        ui.label("No backups yet.");
+    }
+    for path in app.w.backups.clone() {
+        ui.horizontal(|ui| {
+            ui.label(&path);
+            if !enrolled && ui.small_button("Restore").clicked() {
+                app.confirm = Some(Confirm::Restore(path.clone()));
+            }
+        });
+    }
+}
+
+fn cloud(app: &mut HostelApp, ui: &mut egui::Ui) {
+    let Some(status) = app.w.cloud.clone() else {
+        ui.spinner();
+        return;
+    };
+    match &status.server_url {
+        None => {
+            ui.label(
+                "This computer is not connected to the cloud. Connecting uploads this \
+                 hostel so other computers in your organization can share it.",
             );
-            if let Err(e) = result {
-                app.status = e;
+            if app.w.is_admin() {
+                cloud_connect_form(app, ui);
             }
             return;
+        }
+        Some(url) => {
+            egui::Grid::new("cloud").num_columns(2).show(ui, |ui| {
+                ui.label("Server");
+                ui.label(url);
+                ui.end_row();
+                ui.label("Receipt prefix");
+                ui.label(status.device_prefix.as_deref().unwrap_or("—"));
+                ui.end_row();
+                ui.label("Waiting to send");
+                ui.label(status.pending.to_string());
+                ui.end_row();
+            });
+        }
+    }
+    if ui
+        .add_enabled(!app.busy("sync"), egui::Button::new("Sync now"))
+        .clicked()
+    {
+        app.sync_now();
+    }
+    if !status.issues.is_empty() {
+        ui.separator();
+        ui.strong("Needs attention");
+        for issue in &status.issues {
+            let text = format!(
+                "{} · {} · {}",
+                issue.created_at,
+                issue.command_type.replace('_', " "),
+                issue.message
+            );
+            if issue.rejected {
+                ui.colored_label(ui.visuals().error_fg_color, format!("Not accepted: {text}"));
+            } else {
+                ui.colored_label(ui.visuals().warn_fg_color, text);
+            }
         }
     }
 }
 
-fn account(app: &mut HostelApp, ui: &mut egui::Ui) {
-    labeled(ui, "Name", &mut app.account_name);
-    labeled(ui, "Email", &mut app.account_email);
-    labeled_password(ui, "New password", &mut app.account_password);
-    if ui.button("Save account").clicked() {
-        let Some(user) = app.user.clone() else {
-            return;
-        };
-        let password = blank(&app.account_password);
-        let result = runtime().block_on(app.desk.update_user(UpdateUserRequest {
-            user_id: user.id,
-            full_name: app.account_name.clone(),
-            email: app.account_email.clone(),
-            role: user.role.clone(),
-            password,
-        }));
-        match result {
-            Ok(updated) => {
-                app.account_password.clear();
-                app.user = Some(updated);
-                app.status = "Account saved.".to_string();
-            }
-            Err(e) => app.status = e,
-        }
-    }
-}
-
-fn room_picker(ui: &mut egui::Ui, rooms: &[db::Room], selected: &mut Option<i64>) {
-    let current = rooms
-        .iter()
-        .find(|room| Some(room.id) == *selected)
-        .map(|room| room.room_number.as_str())
-        .unwrap_or("Choose a room");
-    egui::ComboBox::from_label("Room")
-        .selected_text(current)
-        .show_ui(ui, |ui| {
-            for room in rooms {
-                ui.selectable_value(selected, Some(room.id), &room.room_number);
-            }
-        });
-}
-
-fn allocation_picker(ui: &mut egui::Ui, rows: &[db::ActiveAllocation], selected: &mut Option<i64>) {
-    let current = rows
-        .iter()
-        .find(|row| Some(row.allocation_id) == *selected)
-        .map(|row| format!("{} · room {}", row.resident_name, row.room_number))
-        .unwrap_or_else(|| "Choose a stay".to_string());
-    egui::ComboBox::from_label("Stay")
-        .selected_text(current)
-        .show_ui(ui, |ui| {
-            for row in rows {
-                ui.selectable_value(
-                    selected,
-                    Some(row.allocation_id),
-                    format!("{} · {}", row.resident_name, row.room_number),
-                );
-            }
-        });
-}
-
-fn labeled(ui: &mut egui::Ui, label: &str, value: &mut String) {
+fn labeled(ui: &mut egui::Ui, label: &str, value: &mut String, password: bool) -> egui::Response {
     ui.horizontal(|ui| {
         ui.label(label);
-        ui.text_edit_singleline(value);
-    });
+        ui.add(egui::TextEdit::singleline(value).password(password))
+    })
+    .inner
 }
 
-fn labeled_password(ui: &mut egui::Ui, label: &str, value: &mut String) {
-    ui.horizontal(|ui| {
-        ui.label(label);
-        ui.add(egui::TextEdit::singleline(value).password(true));
-    });
-}
-
-fn combo(ui: &mut egui::Ui, label: &str, value: &mut String, options: &[&str]) {
+fn combo(ui: &mut egui::Ui, label: &str, value: &mut String, options: &[(&str, &str)]) {
+    let current = options
+        .iter()
+        .find(|(key, _)| key == value)
+        .map_or(value.as_str(), |(_, text)| *text)
+        .to_string();
     egui::ComboBox::from_label(label)
-        .selected_text(value.as_str())
+        .selected_text(current)
         .show_ui(ui, |ui| {
-            for option in options {
-                ui.selectable_value(value, (*option).to_string(), *option);
+            for (key, text) in options {
+                ui.selectable_value(value, (*key).to_string(), *text);
             }
         });
+}
+
+fn room_choice(room: &db::Room) -> String {
+    format!(
+        "{} · {} · {} of {} beds free",
+        room.room_number,
+        room.room_type,
+        room.capacity - room.occupied_beds,
+        room.capacity
+    )
+}
+
+fn term_label(term: &str) -> &str {
+    TERMS
+        .iter()
+        .find(|(key, _)| *key == term)
+        .map_or(term, |(_, label)| label)
+}
+
+fn method_label(method: &str) -> &str {
+    METHODS
+        .iter()
+        .find(|(key, _)| *key == method)
+        .map_or(method, |(_, label)| label)
 }
 
 fn blank(value: &str) -> Option<String> {
     let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Academic years run August to July: March 2027 is still `2026/2027`.
+fn academic_year(today: NaiveDate) -> String {
+    let start = if today.month() >= 8 {
+        today.year()
     } else {
-        Some(trimmed.to_string())
+        today.year() - 1
+    };
+    format!("{start}/{}", start + 1)
+}
+
+/// The room's rate for `term`: recess has its own rate.
+fn rate_for_term<'a>(room: &'a db::Room, term: &str) -> &'a str {
+    if term == "recess" {
+        &room.recess_rate
+    } else {
+        &room.semester_rate
     }
 }
 
-fn default_academic_year() -> String {
-    let today = chrono::Local::now().date_naive();
-    let year = today.year();
-    format!("{year}/{}", year + 1)
+/// What is still owed once `paid` comes off `balance`, never below zero.
+fn balance_after(balance: &str, paid: Decimal) -> String {
+    let owed = Decimal::from_str(balance.trim()).unwrap_or(Decimal::ZERO);
+    (owed - paid).max(Decimal::ZERO).to_string()
+}
+
+/// Balance left on `allocation_id` right after payment `payment_id`, from the
+/// resident's ledger: the stay's rate minus that payment and every earlier one.
+fn balance_at_payment(
+    detail: &db::ResidentDetail,
+    allocation_id: i64,
+    payment_id: i64,
+) -> Result<String, String> {
+    let stay = detail
+        .allocations
+        .iter()
+        .find(|stay| stay.id == allocation_id)
+        .ok_or("That stay is no longer on record.")?;
+    let rate = Decimal::from_str(&stay.rate_agreed).map_err(|e| e.to_string())?;
+    let target = detail
+        .payments
+        .iter()
+        .find(|p| p.id == payment_id)
+        .ok_or("That payment is no longer on record.")?;
+    let mut paid = Decimal::ZERO;
+    for payment in detail.payments.iter().filter(|p| {
+        p.allocation_id == allocation_id
+            && (p.payment_date, p.id) <= (target.payment_date, target.id)
+    }) {
+        paid += Decimal::from_str(&payment.amount).map_err(|e| e.to_string())?;
+    }
+    Ok((rate - paid).max(Decimal::ZERO).to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn academic_year_turns_over_in_august() {
+        let day = |y, m| NaiveDate::from_ymd_opt(y, m, 1).unwrap();
+        assert_eq!(academic_year(day(2027, 3)), "2026/2027");
+        assert_eq!(academic_year(day(2027, 7)), "2026/2027");
+        assert_eq!(academic_year(day(2027, 8)), "2027/2028");
+    }
+
+    #[test]
+    fn receipt_balance_is_what_remains_after_this_payment() {
+        assert_eq!(balance_after("500000", Decimal::from(200_000)), "300000");
+        assert_eq!(
+            balance_after("100.50", Decimal::from_str("0.50").unwrap()),
+            "100.00"
+        );
+        assert_eq!(
+            balance_after("50", Decimal::from(80)),
+            "0",
+            "never negative"
+        );
+    }
 }

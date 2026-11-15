@@ -18,7 +18,7 @@ pub use desk::Desk;
 pub use paths::AppPaths;
 pub use state::{AuthState, LicenseState, Session};
 
-/// Process-wide Tokio runtime. The UI thread drives it with `block_on`.
+/// Process-wide Tokio runtime. The UI spawns work on it and never blocks on it.
 pub(crate) fn runtime() -> &'static tokio::runtime::Runtime {
     static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
     RUNTIME.get_or_init(|| {
@@ -77,7 +77,7 @@ pub fn run() {
     if let Err(e) = eframe::run_native(
         "HostelDesk",
         options,
-        Box::new(move |_cc| Ok(Box::new(ui::HostelApp::new(desk)))),
+        Box::new(move |cc| Ok(Box::new(ui::HostelApp::new(desk, cc.egui_ctx.clone())))),
     ) {
         fail_startup(&e.to_string());
     }

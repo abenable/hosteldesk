@@ -312,6 +312,8 @@ pub struct PaymentRow {
     pub payment_date: DateTime<Utc>,
     pub receipt_number: Option<String>,
     pub notes: Option<String>,
+    /// PDF written when the receipt was first printed on this desk.
+    pub pdf_path: Option<String>,
 }
 
 /// Filter criteria for the payments ledger.

@@ -152,7 +152,7 @@ impl DbPool {
             SELECT
                 p.id, p.resident_id, r.full_name AS resident_name,
                 p.allocation_id, rm.room_number, p.amount, p.payment_method,
-                p.payment_date, rc.receipt_number, p.notes
+                p.payment_date, rc.receipt_number, p.notes, rc.pdf_path
             FROM payments p
             JOIN residents r ON r.id = p.resident_id
             JOIN allocations a ON a.id = p.allocation_id
