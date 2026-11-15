@@ -1,6 +1,6 @@
 # Releasing
 
-1. Bump `version` in every `crates/*/Cargo.toml` to the same value, then run `cargo check` so `Cargo.lock` picks it up.
+1. Bump `version` under `[workspace.package]` in the root `Cargo.toml` (every crate inherits it), then run `cargo check` so `Cargo.lock` picks it up. If the release needs Worker changes, deploy the Worker first (`scripts/deploy-worker.sh`, see `DEPLOY.md`).
 2. Tag and push:
 
    ```sh

@@ -3,6 +3,8 @@ members = ["crates/app", "crates/core", "crates/db", "crates/license", "crates/p
 resolver = "2"
 
 [workspace.package]
+version = "2.0.0"
+edition = "2021"
 license-file = "LICENSE"
 repository = "https://github.com/abenable/hosteldesk"
 authors = ["Able Abenaitwe <ableabenaitwe@gmail.com>"]

@@ -21,7 +21,8 @@ jobs:
         uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
           toolchain: '1.94.0'
-          components: clippy
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
 
       - name: Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -37,8 +38,20 @@ jobs:
             libwayland-dev \
             libssl-dev
 
+      - name: cargo fmt
+        run: cargo fmt --all --check
+
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: cargo clippy (sync Worker, wasm32)
+        run: cargo clippy -p server --target wasm32-unknown-unknown -- -D warnings
+
       - name: cargo test
         run: cargo test --workspace
+
+      - name: Windows installer script compiles
+        run: |
+          sudo apt-get install -y nsis
+          mkdir -p target/release && : > target/release/hosteldesk.exe
+          makensis -NOCD -DVERSION=0.0.0 -DOUTFILE="$RUNNER_TEMP/installer-check.exe" packaging/windows/hosteldesk.nsi

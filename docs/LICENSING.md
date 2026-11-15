@@ -36,3 +36,17 @@ cargo run -p app --features dev-license
 ```
 
 (or `cargo build -p app --features dev-license` for a debug binary), then pick `dev.hdlicense` on the activation screen. The feature is off by default — including for a plain `cargo build -p app` — so a shippable build can never accept a dev-minted license.
+
+## Cloud leases
+
+A desk connected to HostelDesk Cloud can also be activated by a **lease**: a 14-day license in the same signed format, renewed on every successful sync. The sync Worker signs leases only for organizations marked as licensed, with the production signing key stored as the Worker secret `HOSTELDESK_SIGNING_KEY`, so a lease verifies against the public key already in shipped builds. Signing in to the cloud never unlocks a desk by itself, and a lease never replaces a license file that runs longer.
+
+To license an organization after a customer pays (find its id in the `organizations` table):
+
+```sh
+cd crates/server
+npx -y wrangler@4 d1 execute hosteldesk --remote \
+  --command "UPDATE organizations SET licensed = 1 WHERE id = '<org id>'"
+```
+
+Set `licensed = 0` to stop issuing leases; desks keep working until their last lease expires.

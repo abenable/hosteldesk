@@ -99,10 +99,12 @@ jobs:
         run: |
           version="${RELEASE_TAG#v}"
           outfile="$RUNNER_TEMP/HostelDesk_${version}_x64-setup.exe"
-          makensis \
+          # -NOCD keeps the repo root as the base for relative paths
+          # (makensis otherwise changes into the script's folder).
+          makensis -NOCD \
             -DVERSION="$version" \
-            -DOUTFILE="$outfile" \
-            -DBINARY="target/release/hosteldesk.exe" \
+            -DOUTFILE="$(cygpath -w "$outfile")" \
+            -DBINARY=target/release/hosteldesk.exe \
             packaging/windows/hosteldesk.nsi
           echo "ARTIFACT=$outfile" >> "$GITHUB_ENV"
 
