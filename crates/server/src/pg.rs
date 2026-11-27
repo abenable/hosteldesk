@@ -176,7 +176,7 @@ impl PgStore {
     }
 
     async fn new_session(&self, org_id: &str) -> Result<String, ApiError> {
-        let access_token = random_id();
+        let access_token = random_id()?;
         self.exec(
             "INSERT INTO sessions (token_hash, org_id, expires_at) \
              VALUES ($1, $2, now() + interval '30 days')",
@@ -355,8 +355,8 @@ impl SyncStore for PgStore {
             return Err(ApiError::BadRequest("email is already registered".into()));
         }
         let password_hash = hash_password(&request.password)?;
-        let org_id = random_id();
-        let access_token = random_id();
+        let org_id = random_id()?;
+        let access_token = random_id()?;
         // One statement, so the organization, account and first session are
         // created together or not at all.
         let result = self
@@ -452,7 +452,7 @@ impl SyncStore for PgStore {
         let mut attempt = 0;
         let (device_id, device_prefix, refresh_token) = loop {
             let (device_id, device_prefix, refresh_token) =
-                (random_id(), random_device_prefix(), random_id());
+                (random_id()?, random_device_prefix()?, random_id()?);
             let inserted = self
                 .exec(
                     "INSERT INTO devices (token_hash, device_id, org_id, device_prefix, name) \

@@ -2,8 +2,80 @@ use super::support::*;
 use chrono::NaiveDate;
 use db::{DbPool, ListPaymentsFilter, NewPayment, PaymentRow};
 use hosteldesk_core::currency::{parse_money, parse_positive_money};
-use serde::Deserialize;
+use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use tracing::{debug, error, info, instrument};
+
+/// Payload for [`crate::Desk::take_payment`]: everything else (resident, room,
+/// balance, hostel details for the receipt) is looked up in Rust.
+#[derive(Debug, Deserialize)]
+pub struct TakePaymentRequest {
+    /// Hostel of the signed-in session.
+    pub hostel_id: i64,
+    /// Active stay the payment is for.
+    pub allocation_id: i64,
+    /// Decimal string typed by staff, e.g. `"150000"`. Checked with
+    /// `protocol::validate_money`.
+    pub amount: String,
+    /// `cash`, `mobile_money`, `bank_transfer`, or `card`.
+    pub payment_method: String,
+    /// Optional note; blank is stored as none.
+    pub notes: Option<String>,
+}
+
+/// Outcome of [`crate::Desk::take_payment`]. The payment is recorded whenever
+/// this is returned; only the PDF may have failed.
+#[derive(Debug, Clone, Serialize)]
+pub struct TakePaymentResult {
+    /// Receipt number allocated to the payment.
+    pub receipt_number: String,
+    /// Why the receipt PDF could not be written or opened, if it failed.
+    pub pdf_error: Option<String>,
+}
+
+/// Payload for [`crate::Desk::open_receipt`].
+#[derive(Debug, Deserialize)]
+pub struct OpenReceiptRequest {
+    /// Hostel of the signed-in session.
+    pub hostel_id: i64,
+    /// Payment whose receipt to open or print.
+    pub payment_id: i64,
+}
+
+/// What is still owed once `paid` comes off `balance`, never below zero.
+pub(crate) fn balance_after(balance: &str, paid: Decimal) -> String {
+    let owed = Decimal::from_str(balance.trim()).unwrap_or(Decimal::ZERO);
+    (owed - paid).max(Decimal::ZERO).to_string()
+}
+
+/// Balance left on `allocation_id` right after payment `payment_id`, from the
+/// resident's ledger: the stay's rate minus that payment and every earlier one.
+pub(crate) fn balance_at_payment(
+    detail: &db::ResidentDetail,
+    allocation_id: i64,
+    payment_id: i64,
+) -> Result<String, String> {
+    let stay = detail
+        .allocations
+        .iter()
+        .find(|stay| stay.id == allocation_id)
+        .ok_or("That stay is no longer on record.")?;
+    let rate = Decimal::from_str(&stay.rate_agreed).map_err(|e| e.to_string())?;
+    let target = detail
+        .payments
+        .iter()
+        .find(|p| p.id == payment_id)
+        .ok_or("That payment is no longer on record.")?;
+    let mut paid = Decimal::ZERO;
+    for payment in detail.payments.iter().filter(|p| {
+        p.allocation_id == allocation_id
+            && (p.payment_date, p.id) <= (target.payment_date, target.id)
+    }) {
+        paid += Decimal::from_str(&payment.amount).map_err(|e| e.to_string())?;
+    }
+    Ok((rate - paid).max(Decimal::ZERO).to_string())
+}
 
 /// Payload for recording a payment.
 #[derive(Debug, Deserialize)]
@@ -346,6 +418,68 @@ mod tests {
             .await
             .expect("count receipts");
         assert_eq!(receipt_count, 0, "no receipt row should be inserted");
+    }
+
+    #[test]
+    fn receipt_balance_is_what_remains_after_this_payment() {
+        assert_eq!(balance_after("500000", Decimal::from(200_000)), "300000");
+        assert_eq!(
+            balance_after("100.50", Decimal::from_str("0.50").unwrap()),
+            "100.00"
+        );
+        assert_eq!(
+            balance_after("50", Decimal::from(80)),
+            "0",
+            "never negative"
+        );
+    }
+
+    #[tokio::test]
+    async fn reprinted_receipt_shows_the_balance_right_after_that_payment() {
+        let pool = DbPool::open(&temp_db_url()).await.expect("open database");
+        let (hostel_id, _room_id, resident_id, allocation_id) = setup_payment_fixture(&pool).await;
+        let mut ids = Vec::new();
+        for amount in ["30.00", "45.50", "60"] {
+            let (payment_id, _) = pool
+                .record_payment_and_receipt(NewPayment {
+                    hostel_id,
+                    allocation_id,
+                    resident_id,
+                    amount: amount.to_string(),
+                    payment_method: "cash".to_string(),
+                    period_start: None,
+                    period_end: None,
+                    notes: None,
+                })
+                .await
+                .expect("pay");
+            ids.push(payment_id);
+        }
+        let detail = pool
+            .get_resident_detail(hostel_id, resident_id)
+            .await
+            .expect("detail");
+
+        // The stay's rate is 100.00; payments in the same second order by id.
+        assert_eq!(
+            balance_at_payment(&detail, allocation_id, ids[0]).unwrap(),
+            "70.00"
+        );
+        assert_eq!(
+            balance_at_payment(&detail, allocation_id, ids[1]).unwrap(),
+            "24.50"
+        );
+        assert_eq!(
+            balance_at_payment(&detail, allocation_id, ids[2]).unwrap(),
+            "0",
+            "an overpayment never shows a negative balance"
+        );
+        assert!(balance_at_payment(&detail, allocation_id, ids[2] + 1)
+            .unwrap_err()
+            .contains("no longer on record"));
+        assert!(balance_at_payment(&detail, allocation_id + 1, ids[0])
+            .unwrap_err()
+            .contains("no longer on record"));
     }
 
     #[tokio::test]

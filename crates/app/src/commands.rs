@@ -9,7 +9,7 @@ pub mod residents;
 pub mod rooms;
 mod support;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 pub mod users;
 
 pub use allocations::*;

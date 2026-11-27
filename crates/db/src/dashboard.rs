@@ -136,7 +136,7 @@ impl DbPool {
         rows.extend(check_ins);
         rows.extend(check_outs);
         rows.extend(payments);
-        rows.sort_by(|a, b| b.at.cmp(&a.at));
+        rows.sort_by_key(|row| std::cmp::Reverse(row.at));
         rows.truncate(limit as usize);
         Ok(rows)
     }

@@ -49,7 +49,8 @@ pub async fn add_room(
         "add_room invoked"
     );
     require_license(license_state)?;
-    require_session(auth_state, request.hostel_id)?;
+    // Rooms and their rates are hostel setup, which only an administrator changes.
+    require_admin(auth_state, request.hostel_id)?;
 
     let semester_rate = parse_positive_money(&request.semester_rate).map_err(|e| e.to_string())?;
     let recess_rate = parse_positive_money(&request.recess_rate).map_err(|e| e.to_string())?;
@@ -71,7 +72,25 @@ pub async fn add_room(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::test_support::temp_db_url;
+    use crate::commands::test_support::{setup_license_state, temp_db_url};
+
+    #[tokio::test]
+    async fn only_an_admin_can_add_a_room() {
+        let pool = DbPool::open(&temp_db_url()).await.expect("open database");
+        let auth = crate::AuthState::new();
+        auth.set_current_session(7, 1, "manager");
+        let request = AddRoomRequest {
+            hostel_id: 1,
+            room_number: "A01".to_string(),
+            room_type: "single".to_string(),
+            capacity: 1,
+            floor: None,
+            semester_rate: "450000".to_string(),
+            recess_rate: "200000".to_string(),
+        };
+        let result = add_room(request, &pool, &setup_license_state(), &auth).await;
+        assert_eq!(result, Err("forbidden".to_string()));
+    }
 
     #[tokio::test]
     async fn get_rooms_returns_empty_for_unknown_hostel() {

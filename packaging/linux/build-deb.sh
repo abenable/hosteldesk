@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Assemble a .deb from the release binary. Run from the repo root after
-# `cargo build --release -p app`.
+# `npm --prefix frontend ci && npm --prefix frontend run build` and
+# `cargo build --release -p app --features custom-protocol` (without the
+# feature the binary loads http://localhost:5173 instead of its embedded UI).
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -27,7 +29,7 @@ Section: utils
 Priority: optional
 Architecture: amd64
 Maintainer: Able Abenaitwe <ableabenaitwe@gmail.com>
-Depends: libgtk-3-0, libxkbcommon0, libx11-6, libxcb1
+Depends: libwebkit2gtk-4.1-0, libgtk-3-0
 Description: Hostel desk for rooms, residents, payments, and receipts
  Local-first desktop app. Each computer keeps a SQLite cache and can sync
  with the hosted ledger when a network is available.

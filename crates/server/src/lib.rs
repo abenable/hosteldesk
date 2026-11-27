@@ -11,10 +11,7 @@
 #[cfg(target_arch = "wasm32")]
 mod pg;
 
-use argon2::password_hash::{
-    rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
-};
-use argon2::Argon2;
+use argon2::{Argon2, PasswordHasher, PasswordVerifier};
 use protocol::{
     AckStatus, ApplyOutcome, AuthResponse, CommandAck, CommandEnvelope, EnrollRequest,
     EnrollResponse, Entity, Ledger, LicenseStatus, PullRequest, PullResponse, PushRequest,
@@ -239,40 +236,35 @@ pub fn validate_sign_up(request: &SignUpRequest) -> Result<(), ApiError> {
 
 /// Argon2id hash with a random salt.
 pub fn hash_password(password: &str) -> Result<String, ApiError> {
-    let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password(password.as_bytes())
         .map(|hash| hash.to_string())
         .map_err(|e| ApiError::Storage(e.to_string()))
 }
 
 /// True when `password` matches `password_hash`. A malformed hash never matches.
 pub fn verify_password(password: &str, password_hash: &str) -> bool {
-    PasswordHash::new(password_hash)
-        .map(|parsed| {
-            Argon2::default()
-                .verify_password(password.as_bytes(), &parsed)
-                .is_ok()
-        })
-        .unwrap_or(false)
+    Argon2::default()
+        .verify_password(password.as_bytes(), password_hash)
+        .is_ok()
 }
 
 /// Hash verified when the email is unknown, so timing does not reveal which emails exist.
 pub const DUMMY_HASH: &str =
     "$argon2id$v=19$m=19456,t=2,p=1$dUTZ/yeSMQlV7a3m/Fl6dg$c3e1mge9bB8E/jomvoijodaCH200x8hfZ8jY+iKIBUM";
 
-/// 128-bit random hex id, used for ids and bearer tokens.
-pub fn random_id() -> String {
-    use argon2::password_hash::rand_core::RngCore;
+/// 128-bit random hex id, used for ids and bearer tokens. Fails only when
+/// the platform's secure random source does.
+pub fn random_id() -> Result<String, ApiError> {
     let mut bytes = [0u8; 16];
-    OsRng.fill_bytes(&mut bytes);
-    hex::encode(bytes)
+    getrandom::fill(&mut bytes).map_err(|e| ApiError::Storage(e.to_string()))?;
+    Ok(hex::encode(bytes))
 }
 
 /// Six upper-case hex characters for receipt numbers. Stores retry on a
 /// collision within the organization.
-pub fn random_device_prefix() -> String {
-    random_id()[..6].to_uppercase()
+pub fn random_device_prefix() -> Result<String, ApiError> {
+    Ok(random_id()?[..6].to_uppercase())
 }
 
 /// Tokens are stored only as SHA-256 hashes.

@@ -1,9 +1,9 @@
 use chrono::NaiveDate;
-use printpdf::path::PaintMode;
-use printpdf::{BuiltinFont, Color, Line, Mm, PdfDocument, Point, Rect, Rgb};
+use printpdf::{
+    BuiltinFont, Color, Line, LinePoint, Mm, Op, PaintMode, PdfDocument, PdfFontHandle, PdfPage,
+    PdfSaveOptions, Point, Pt, RawImage, Rect, Rgb, TextItem, XObjectTransform,
+};
 use rust_decimal::Decimal;
-use std::fs::File;
-use std::io::BufWriter;
 use std::path::Path;
 
 /// Data required to render a payment receipt.
@@ -206,23 +206,16 @@ fn display_receipt_number(number: &str) -> String {
 ///
 /// Overwrites any existing file at the path. The page size is fixed at A4.
 pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> anyhow::Result<()> {
-    let file = File::create(path.as_ref())?;
-    let mut writer = BufWriter::new(file);
-
-    let (doc, page, layer) = PdfDocument::new(
-        format!("Receipt {}", payload.receipt_number),
-        Mm(210.0),
-        Mm(297.0),
-        "Layer 1",
-    );
-    let l = doc.get_page(page).get_layer(layer);
-    let regular = doc.add_builtin_font(BuiltinFont::Helvetica)?;
-    let bold = doc.add_builtin_font(BuiltinFont::HelveticaBold)?;
+    let mut doc = PdfDocument::new(&format!("Receipt {}", payload.receipt_number));
+    let regular = BuiltinFont::Helvetica;
+    let bold = BuiltinFont::HelveticaBold;
 
     let black = Color::Rgb(Rgb::new(0.0, 0.0, 0.0, None));
-    l.set_fill_color(black.clone());
-    l.set_outline_color(black);
-    l.set_outline_thickness(0.8);
+    let mut l = vec![
+        Op::SetFillColor { col: black.clone() },
+        Op::SetOutlineColor { col: black },
+        Op::SetOutlineThickness { pt: Pt(0.8) },
+    ];
 
     let margin_x: f32 = 20.0;
     let right_x: f32 = 190.0;
@@ -234,7 +227,8 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
     let header_top = 277.0;
     if let Some(logo_path) = &payload.logo_path {
         if draw_logo(
-            &l,
+            &mut doc,
+            &mut l,
             logo_path,
             margin_x,
             header_top - logo_box,
@@ -247,146 +241,148 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
         }
     }
 
-    l.use_text(
+    text(
+        &mut l,
         &payload.hostel_name,
         16.0,
-        Mm(text_x),
-        Mm(header_top - 6.0),
-        &bold,
+        text_x,
+        header_top - 6.0,
+        bold,
     );
     let mut header_y = header_top - 12.0;
     if let Some(address) = &payload.hostel_address {
         if !address.trim().is_empty() {
-            l.use_text(address, 9.0, Mm(text_x), Mm(header_y), &regular);
+            text(&mut l, address, 9.0, text_x, header_y, regular);
             header_y -= 5.0;
         }
     }
     if let Some(phone) = &payload.hostel_phone {
         if !phone.trim().is_empty() {
-            l.use_text(
+            text(
+                &mut l,
                 format!("Tel: {phone}"),
                 9.0,
-                Mm(text_x),
-                Mm(header_y),
-                &regular,
+                text_x,
+                header_y,
+                regular,
             );
         }
     }
 
     // Divider under the header.
     let divider_y = header_top - logo_box - 4.0;
-    hline(&l, margin_x, right_x, divider_y);
+    hline(&mut l, margin_x, right_x, divider_y);
 
     // Title box, receipt number and date.
     let title = "PAYMENT RECEIPT";
     let title_y = divider_y - 12.0;
     let box_w = title.len() as f32 * 3.0 + 16.0;
-    l.add_rect(
-        Rect::new(
-            Mm(page_center - box_w / 2.0),
-            Mm(title_y - 3.0),
-            Mm(page_center + box_w / 2.0),
-            Mm(title_y + 6.0),
-        )
-        .with_mode(PaintMode::Stroke),
+    stroke_rect(
+        &mut l,
+        page_center - box_w / 2.0,
+        title_y - 3.0,
+        page_center + box_w / 2.0,
+        title_y + 6.0,
     );
-    l.use_text(
+    text(
+        &mut l,
         title,
         12.0,
-        Mm(page_center - (title.len() as f32 * 1.55)),
-        Mm(title_y),
-        &bold,
+        page_center - (title.len() as f32 * 1.55),
+        title_y,
+        bold,
     );
-    l.use_text(
+    text(
+        &mut l,
         format!("No. {}", display_receipt_number(&payload.receipt_number)),
         11.0,
-        Mm(margin_x),
-        Mm(title_y),
-        &bold,
+        margin_x,
+        title_y,
+        bold,
     );
-    l.use_text(
+    text(
+        &mut l,
         format!("Date: {}", payload.date.format("%d/%m/%Y")),
         11.0,
-        Mm(right_x - 35.0),
-        Mm(title_y),
-        &regular,
+        right_x - 35.0,
+        title_y,
+        regular,
     );
 
     // Body fields.
     let mut y = title_y - 16.0;
     let line_gap = 9.0;
-    l.use_text(
+    text(
+        &mut l,
         format!("Received with thanks from: {}", payload.resident_name),
         11.0,
-        Mm(margin_x),
-        Mm(y),
-        &regular,
+        margin_x,
+        y,
+        regular,
     );
     y -= line_gap;
 
-    l.use_text(
+    text(
+        &mut l,
         format!(
             "The Sum of {}: {}",
             payload.currency_code,
             amount_in_words(payload.amount)
         ),
         11.0,
-        Mm(margin_x),
-        Mm(y),
-        &regular,
+        margin_x,
+        y,
+        regular,
     );
     y -= line_gap;
 
-    l.use_text(
+    text(
+        &mut l,
         format!("Being payment for: {}", payload.being_payment_for()),
         11.0,
-        Mm(margin_x),
-        Mm(y),
-        &regular,
+        margin_x,
+        y,
+        regular,
     );
     y -= line_gap;
 
-    l.use_text(
+    text(
+        &mut l,
         format!("Payment method: {}", payload.payment_method_label()),
         11.0,
-        Mm(margin_x),
-        Mm(y),
-        &regular,
+        margin_x,
+        y,
+        regular,
     );
-    l.use_text(
+    text(
+        &mut l,
         format!("Balance: {}", payload.format_amount(payload.balance)),
         11.0,
-        Mm(right_x - 60.0),
-        Mm(y),
-        &regular,
+        right_x - 60.0,
+        y,
+        regular,
     );
     y -= line_gap + 4.0;
 
     // Boxed total amount.
     let box_top = y;
     let box_bottom = y - 12.0;
-    l.add_rect(
-        Rect::new(
-            Mm(margin_x),
-            Mm(box_bottom),
-            Mm(margin_x + 60.0),
-            Mm(box_top),
-        )
-        .with_mode(PaintMode::Stroke),
-    );
-    l.use_text(
+    stroke_rect(&mut l, margin_x, box_bottom, margin_x + 60.0, box_top);
+    text(
+        &mut l,
         payload.format_amount(payload.amount),
         13.0,
-        Mm(margin_x + 4.0),
-        Mm(box_bottom + 4.0),
-        &bold,
+        margin_x + 4.0,
+        box_bottom + 4.0,
+        bold,
     );
-    l.use_text(
+    text(
+        &mut l,
         "With thanks.",
         10.0,
-        Mm(margin_x + 66.0),
-        Mm(box_bottom + 4.0),
-        &regular,
+        margin_x + 66.0,
+        box_bottom + 4.0,
+        regular,
     );
 
     // Footer note.
@@ -395,39 +391,80 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
         .footer_text
         .clone()
         .unwrap_or_else(|| "The amount paid is non-refundable.".to_string());
-    l.use_text(footer_text, 9.0, Mm(margin_x), Mm(footer_y), &regular);
+    text(&mut l, footer_text, 9.0, margin_x, footer_y, regular);
 
     // Signature.
     let sign_y = 35.0;
-    hline(&l, right_x - 55.0, right_x, sign_y);
-    l.use_text("Sign", 9.0, Mm(right_x - 55.0), Mm(sign_y - 5.0), &regular);
-    l.use_text(
+    hline(&mut l, right_x - 55.0, right_x, sign_y);
+    text(&mut l, "Sign", 9.0, right_x - 55.0, sign_y - 5.0, regular);
+    text(
+        &mut l,
         format!("For: {}", payload.hostel_name),
         9.0,
-        Mm(right_x - 55.0),
-        Mm(sign_y + 2.0),
-        &regular,
+        right_x - 55.0,
+        sign_y + 2.0,
+        regular,
     );
 
-    doc.save(&mut writer)?;
+    let bytes = doc
+        .with_pages(vec![PdfPage::new(Mm(210.0), Mm(297.0), l)])
+        .save(&PdfSaveOptions::default(), &mut Vec::new());
+    std::fs::write(path.as_ref(), bytes)?;
     Ok(())
 }
 
-fn hline(layer: &printpdf::PdfLayerReference, x1: f32, x2: f32, y: f32) {
-    let line = Line {
-        points: vec![
-            (Point::new(Mm(x1), Mm(y)), false),
-            (Point::new(Mm(x2), Mm(y)), false),
-        ],
-        is_closed: false,
+/// One line of `text` in a built-in font, with its baseline starting at
+/// `(x, y)` mm.
+fn text(ops: &mut Vec<Op>, text: impl Into<String>, size: f32, x: f32, y: f32, font: BuiltinFont) {
+    ops.extend([
+        Op::StartTextSection,
+        Op::SetFont {
+            font: PdfFontHandle::Builtin(font),
+            size: Pt(size),
+        },
+        Op::SetTextCursor {
+            pos: Point::new(Mm(x), Mm(y)),
+        },
+        Op::ShowText {
+            items: vec![TextItem::Text(text.into())],
+        },
+        Op::EndTextSection,
+    ]);
+}
+
+/// Outline of the rectangle from `(x1, y1)` (bottom left) to `(x2, y2)` (top right), in mm.
+fn stroke_rect(ops: &mut Vec<Op>, x1: f32, y1: f32, x2: f32, y2: f32) {
+    ops.push(Op::DrawRectangle {
+        rectangle: Rect {
+            mode: Some(PaintMode::Stroke),
+            ..Rect::from_xywh(
+                Mm(x1).into(),
+                Mm(y1).into(),
+                Mm(x2 - x1).into(),
+                Mm(y2 - y1).into(),
+            )
+        },
+    });
+}
+
+fn hline(ops: &mut Vec<Op>, x1: f32, x2: f32, y: f32) {
+    let point = |x| LinePoint {
+        p: Point::new(Mm(x), Mm(y)),
+        bezier: false,
     };
-    layer.add_line(line);
+    ops.push(Op::DrawLine {
+        line: Line {
+            points: vec![point(x1), point(x2)],
+            is_closed: false,
+        },
+    });
 }
 
 /// Decode and place a logo image so it fits within `max_w` x `max_h` mm, with
 /// its top-left corner at `(x, y + max_h)`.
 fn draw_logo(
-    layer: &printpdf::PdfLayerReference,
+    doc: &mut PdfDocument,
+    ops: &mut Vec<Op>,
     logo_path: &str,
     x: f32,
     y: f32,
@@ -435,8 +472,8 @@ fn draw_logo(
     max_h: f32,
 ) -> anyhow::Result<()> {
     let bytes = std::fs::read(logo_path)?;
-    let dynamic_image = image::load_from_memory(&bytes)?;
-    let (px_w, px_h) = (dynamic_image.width() as f32, dynamic_image.height() as f32);
+    let image = RawImage::decode_from_bytes(&bytes, &mut Vec::new()).map_err(anyhow::Error::msg)?;
+    let (px_w, px_h) = (image.width as f32, image.height as f32);
     if px_w == 0.0 || px_h == 0.0 {
         anyhow::bail!("logo image has zero dimensions");
     }
@@ -446,16 +483,16 @@ fn draw_logo(
     let dpi = dpi_w.max(dpi_h);
     let rendered_h = px_h * 25.4 / dpi;
 
-    let image = printpdf::Image::from_dynamic_image(&dynamic_image);
-    image.add_to_layer(
-        layer.clone(),
-        printpdf::ImageTransform {
-            translate_x: Some(Mm(x)),
-            translate_y: Some(Mm(y + max_h - rendered_h)),
+    let id = doc.add_image(&image);
+    ops.push(Op::UseXobject {
+        id,
+        transform: XObjectTransform {
+            translate_x: Some(Mm(x).into()),
+            translate_y: Some(Mm(y + max_h - rendered_h).into()),
             dpi: Some(dpi),
             ..Default::default()
         },
-    );
+    });
     Ok(())
 }
 
@@ -540,6 +577,40 @@ mod tests {
         let mut payload = sample_payload();
         payload.notes = Some("June rent".to_string());
         assert_eq!(payload.being_payment_for(), "Room A01 - June rent");
+    }
+
+    #[test]
+    fn places_a_png_logo() {
+        // A logo that fails to decode is skipped silently, so check it decodes.
+        let pixel = printpdf::RawImage {
+            pixels: printpdf::RawImageData::U8(vec![255, 0, 0, 0, 255, 0]),
+            width: 2,
+            height: 1,
+            data_format: printpdf::RawImageFormat::RGB8,
+            tag: Vec::new(),
+        };
+        let (png, _) = pixel
+            .encode_to_bytes(&[printpdf::OutputImageFormat::Png])
+            .expect("encode png");
+        let path =
+            std::env::temp_dir().join(format!("hosteldesk_logo_test_{}.png", std::process::id()));
+        std::fs::write(&path, png).expect("write png");
+
+        let mut doc = PdfDocument::new("logo");
+        let mut ops = Vec::new();
+        let placed = draw_logo(
+            &mut doc,
+            &mut ops,
+            path.to_str().expect("utf-8 path"),
+            20.0,
+            255.0,
+            22.0,
+            22.0,
+        );
+        let _ = std::fs::remove_file(&path);
+
+        placed.expect("logo placed");
+        assert!(matches!(ops.as_slice(), [Op::UseXobject { .. }]));
     }
 
     #[test]

@@ -1,4 +1,3 @@
-use argon2::password_hash::{rand_core::OsRng, SaltString};
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::SqlitePool;
@@ -19,10 +18,8 @@ const DUMMY_PASSWORD_HASH: &str =
 ///
 /// Returns a PHC-encoded string suitable for storage in `users.password_hash`.
 pub fn hash_password(password: &str) -> anyhow::Result<String> {
-    let salt = SaltString::generate(&mut OsRng);
-    let argon2 = Argon2::default();
-    Ok(argon2
-        .hash_password(password.as_bytes(), &salt)
+    Ok(Argon2::default()
+        .hash_password(password.as_bytes())
         .map(|h| h.to_string())?)
 }
 
@@ -90,6 +87,17 @@ impl DbPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Made by argon2 0.5.3, as v2.0.x stored staff passwords. A newer argon2
+    /// must still accept every hash already sitting in desks' databases.
+    const V2_0_HASH: &str =
+        "$argon2id$v=19$m=19456,t=2,p=1$mXMACv9T3slx0r2D/9sZqQ$++CkGCuIPbmFDDWSaPnGZxckIzo5fsJPcLh7+wFrZfs";
+
+    #[test]
+    fn hashes_from_earlier_releases_still_verify() {
+        assert!(verify_password("v201-secret-pass", V2_0_HASH).expect("parse old hash"));
+        assert!(!verify_password("wrong", V2_0_HASH).expect("parse old hash"));
+    }
 
     #[test]
     fn password_hash_and_verify_round_trip() {
@@ -172,6 +180,8 @@ mod tests {
     #[tokio::test]
     async fn v1_residents_keep_their_hostel_after_upgrade() {
         use sqlx::migrate::Migrate;
+        // sqlx's default migrations table, the one `migrator.run` uses below.
+        const MIGRATIONS_TABLE: &str = "_sqlx_migrations";
         let options = SqliteConnectOptions::from_str("sqlite::memory:")
             .expect("url")
             .foreign_keys(true);
@@ -183,9 +193,13 @@ mod tests {
         let migrator = sqlx::migrate!("./migrations");
         {
             let mut conn = pool.acquire().await.expect("conn");
-            conn.ensure_migrations_table().await.expect("table");
+            conn.ensure_migrations_table(MIGRATIONS_TABLE)
+                .await
+                .expect("table");
             for migration in migrator.iter().filter(|m| m.version < 20261115000000) {
-                conn.apply(migration).await.expect("v1 migration");
+                conn.apply(MIGRATIONS_TABLE, migration)
+                    .await
+                    .expect("v1 migration");
             }
             sqlx::raw_sql(
                 "INSERT INTO hostels (name) VALUES ('North');

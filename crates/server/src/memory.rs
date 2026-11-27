@@ -112,15 +112,15 @@ impl MemoryStore {
             .map_err(|e| ApiError::Storage(e.to_string()))
     }
 
-    fn session(inner: &mut Inner, org_id: String) -> AuthResponse {
-        let access_token = random_id();
+    fn session(inner: &mut Inner, org_id: String) -> Result<AuthResponse, ApiError> {
+        let access_token = random_id()?;
         inner
             .sessions
             .insert(token_hash(&access_token), org_id.clone());
-        AuthResponse {
+        Ok(AuthResponse {
             access_token,
             organization_id: org_id,
-        }
+        })
     }
 
     fn device_org(inner: &Inner, refresh_token: &str) -> Result<String, ApiError> {
@@ -140,7 +140,7 @@ impl SyncStore for MemoryStore {
         if inner.accounts.contains_key(&email) {
             return Err(ApiError::BadRequest("email is already registered".into()));
         }
-        let org_id = random_id();
+        let org_id = random_id()?;
         inner.licenses.insert(
             org_id.clone(),
             License {
@@ -157,7 +157,7 @@ impl SyncStore for MemoryStore {
                 password_hash,
             },
         );
-        Ok(Self::session(&mut inner, org_id))
+        Self::session(&mut inner, org_id)
     }
 
     async fn sign_in(&self, request: SignInRequest) -> Result<AuthResponse, ApiError> {
@@ -171,7 +171,7 @@ impl SyncStore for MemoryStore {
             return Err(ApiError::Unauthorized);
         }
         let org_id = account.org_id.clone();
-        Ok(Self::session(&mut inner, org_id))
+        Self::session(&mut inner, org_id)
     }
 
     async fn enroll(
@@ -186,7 +186,7 @@ impl SyncStore for MemoryStore {
             .cloned()
             .ok_or(ApiError::Unauthorized)?;
         let device_prefix = loop {
-            let prefix = random_device_prefix();
+            let prefix = random_device_prefix()?;
             if !inner
                 .devices
                 .values()
@@ -195,7 +195,7 @@ impl SyncStore for MemoryStore {
                 break prefix;
             }
         };
-        let refresh_token = random_id();
+        let refresh_token = random_id()?;
         inner.devices.insert(
             token_hash(&refresh_token),
             (org_id.clone(), device_prefix.clone()),
@@ -208,7 +208,7 @@ impl SyncStore for MemoryStore {
             .collect();
         hostel_public_ids.sort();
         Ok(EnrollResponse {
-            device_id: random_id(),
+            device_id: random_id()?,
             device_prefix,
             refresh_token,
             hostel_public_ids,
@@ -354,6 +354,15 @@ async fn answer(stream: tokio::net::TcpStream, store: &MemoryStore) -> std::io::
 mod tests {
     use super::*;
     use protocol::{AckStatus, CommandEnvelope, LicenseStatus, SyncCommand};
+
+    /// Made by argon2 0.5.3, as v2.0.x stored account passwords in Neon. A newer
+    /// argon2 must still accept them, or every existing account is locked out.
+    #[test]
+    fn hashes_from_earlier_releases_still_verify() {
+        let old = "$argon2id$v=19$m=19456,t=2,p=1$mXMACv9T3slx0r2D/9sZqQ$++CkGCuIPbmFDDWSaPnGZxckIzo5fsJPcLh7+wFrZfs";
+        assert!(verify_password("v201-secret-pass", old));
+        assert!(!verify_password("wrong", old));
+    }
 
     async fn call(
         app: &MemoryStore,

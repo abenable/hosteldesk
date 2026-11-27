@@ -2,19 +2,20 @@
 
 ## 1. Architecture
 
-This is an all-**Rust** project: an **egui** desktop app plus a sync API that runs as a **Cloudflare Worker**, organized as a **Cargo workspace** with the following members:
+This is a **Rust** project with a **React** frontend: a **Tauri v2** desktop app (Rust backend in `crates/app`, React + TypeScript UI in `frontend/`) plus a sync API that runs as a **Cloudflare Worker**, organized as a **Cargo workspace** with the following members:
 
 - `core` — currency parsing shared between `app` and `db` (see `hosteldesk-core`)
 - `db` — local SQLite ledger (sqlx), including the offline sync cache
 - `pdf` — PDF generation
 - `protocol` — sync wire types and the ledger rules, shared by the desktop and the server
-- `app` — egui shell and the `Desk` application service
+- `app` — Tauri v2 shell (`src/lib.rs`), IPC commands (`src/ipc.rs`, one thin `#[tauri::command]` per `Desk` method the UI calls; register no others), the `Desk` application service, and the desktop sync client. Release builds embed `frontend/dist` only with `--features custom-protocol` (`cargo tauri build` turns it on); without it the binary would load the dev server at `http://localhost:5173`, so `src/lib.rs` refuses to compile a release build without it.
 - `server` — the sync API. Built for `wasm32` it is the Cloudflare Worker (workers-rs, Neon Postgres through Hyperdrive, `crates/server/wrangler.toml`); built natively it serves an in-memory store for tests. **No web framework** (no axum/tower/hyper): routing is a `match` on method and path.
 
 ## 2. Tech Stack
 
 - **Rust**
-- **egui / eframe**
+- **Tauri v2** (WebKitGTK 4.1 on Linux, WebView2 on Windows)
+- **React + TypeScript + Vite + Tailwind CSS v4** (`frontend/`, HyperUI blocks)
 - **sqlx** (SQLite on the desktop)
 - **workers-rs** + **tokio-postgres** over **Cloudflare Hyperdrive** to **Neon Postgres** (the sync Worker)
 - **rust_decimal**
@@ -38,6 +39,7 @@ Follow **Test-Driven Development (TDD)**:
 After **every significant change**, run the following and do **not** proceed if any of them produce warnings or errors:
 
 ```sh
+cd frontend && npm run lint && npm run build && cd ..   # oxlint + tsc + vite; the Rust build embeds frontend/dist
 cargo check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy -p server --target wasm32-unknown-unknown -- -D warnings

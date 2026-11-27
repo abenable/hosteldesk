@@ -15,8 +15,12 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
 rust_decimal = "1.36"
-thiserror = "1"
+thiserror = "2"
 tracing = "0.1"
+# One sqlx for crates/db and crates/app: both link libsqlite3-sys, which allows one version.
+sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio"] }
+argon2 = "0.6"
+getrandom = "0.4"
 
 [profile.release]
 opt-level = 3

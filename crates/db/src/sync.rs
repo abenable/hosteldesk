@@ -8,7 +8,6 @@
 //! an outbox, and [`DbPool::link_device`] queues a full snapshot instead.
 
 use crate::DbPool;
-use argon2::password_hash::rand_core::{OsRng, RngCore};
 use protocol::{AckStatus, Entity, SyncCommand};
 use sqlx::{Row, SqliteConnection};
 use tracing::{error, instrument};
@@ -42,7 +41,7 @@ pub struct PendingSync {
 }
 
 /// A pushed command staff should look at: rejected, or accepted with a warning.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncIssue {
     /// What kind of change it was, for example `check_in`.
     pub command_type: String,
@@ -395,7 +394,7 @@ async fn enqueue(
         "#,
     )
     .bind(hostel_id)
-    .bind(new_idempotency_key())
+    .bind(new_idempotency_key()?)
     .bind(command_type(command))
     .bind(serde_json::to_string(command)?)
     .execute(&mut *conn)
@@ -703,10 +702,10 @@ fn command_type(command: &SyncCommand) -> &'static str {
     }
 }
 
-fn new_idempotency_key() -> String {
+fn new_idempotency_key() -> anyhow::Result<String> {
     let mut bytes = [0u8; 16];
-    OsRng.fill_bytes(&mut bytes);
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    getrandom::fill(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 async fn apply_one(

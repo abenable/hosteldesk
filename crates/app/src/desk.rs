@@ -1,13 +1,15 @@
-//! Application service used by the egui shell.
+//! Application service behind the Tauri IPC commands.
 //!
-//! Each method is the behavior that used to live behind a Tauri command.
-//! Widgets call [`Desk`] and do not touch the database or decide permissions.
+//! Each public method is one command (`crate::ipc`). The frontend calls
+//! [`Desk`] and never touches the database, money arithmetic, or permissions.
 
+use chrono::NaiveDate;
 use db::DbPool;
+use serde::Serialize;
 
 use crate::commands;
 use crate::paths::AppPaths;
-use crate::state::{AuthState, LicenseState};
+use crate::state::{AccountLicense, AuthState, LicenseState};
 
 /// Live hostel desk: database, session, license, and on-disk paths.
 pub struct Desk {
@@ -19,6 +21,63 @@ pub struct Desk {
     pub(crate) license: LicenseState,
     /// Data and documents directories.
     pub(crate) paths: AppPaths,
+    /// Held for a whole sync pass, so the background loop, "Sync now", and
+    /// connect never push or pull the same rows at once.
+    pub(crate) sync_gate: tokio::sync::Mutex<()>,
+}
+
+/// The screen the window opens on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Gate {
+    /// No usable account license: sign in to an account, or wait for it.
+    Lock,
+    /// Licensed, but the hostel or its first administrator is missing.
+    Onboarding,
+    /// Set up; no staff member is signed in.
+    SignIn,
+    /// A staff member is signed in.
+    Ready,
+}
+
+/// Everything the window needs to pick its first screen ([`Desk::boot_state`]).
+#[derive(Debug, Clone, Serialize)]
+pub struct BootState {
+    /// Which screen to show.
+    pub gate: Gate,
+    /// Signed-in staff member; set only when `gate` is `ready`.
+    pub user: Option<db::User>,
+    /// This desk already holds a hostel (for example one pulled from the
+    /// cloud), so onboarding only creates the first administrator.
+    pub hostel_exists: bool,
+    /// This computer is signed in to a HostelDesk account and syncs.
+    pub enrolled: bool,
+    /// The account license in force today; `None` while locked.
+    pub license: Option<AccountLicense>,
+    /// Why the desk is locked; set only when `gate` is `lock` and the desk is
+    /// enrolled (an unenrolled desk just needs to sign in).
+    pub lock_reason: Option<String>,
+    /// `CARGO_PKG_VERSION` of the running binary.
+    pub app_version: &'static str,
+}
+
+/// Why a signed-in computer is locked, from the server's last answer.
+pub fn lock_reason(license: Option<AccountLicense>, today: NaiveDate) -> String {
+    match license {
+        Some(license) if !license.approved => {
+            "Your HostelDesk account is waiting for approval. This computer \
+             unlocks by itself as soon as it is approved."
+        }
+        Some(license) if license.expires_on < today => {
+            "Your HostelDesk plan has ended. Contact HostelDesk to renew it; this \
+             computer unlocks by itself once it is renewed."
+        }
+        _ => {
+            "This computer needs to check its license with HostelDesk. Connect it \
+             to the internet; it checks again by itself."
+        }
+    }
+    .to_string()
 }
 
 impl Desk {
@@ -38,6 +97,7 @@ impl Desk {
             auth: AuthState::new(),
             license,
             paths,
+            sync_gate: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -54,7 +114,42 @@ impl Desk {
             auth,
             license,
             paths,
+            sync_gate: tokio::sync::Mutex::new(()),
         }
+    }
+
+    /// Which screen to open on, and what it needs: the account license, then
+    /// onboarding, then the staff session decide, in that order.
+    pub async fn boot_state(&self) -> Result<BootState, String> {
+        let enrolled = self.cloud_enrolled();
+        let license = self.license_status();
+        let hostel_exists = self
+            .db
+            .primary_hostel_id()
+            .await
+            .map_err(|e| e.to_string())?
+            .is_some();
+        let (gate, user) = if license.is_none() {
+            (Gate::Lock, None)
+        } else if !self.onboarding_status().await? {
+            (Gate::Onboarding, None)
+        } else {
+            match self.session().await? {
+                Some(user) => (Gate::Ready, Some(user)),
+                None => (Gate::SignIn, None),
+            }
+        };
+        let lock_reason = (gate == Gate::Lock && enrolled)
+            .then(|| lock_reason(self.cached_license(), chrono::Utc::now().date_naive()));
+        Ok(BootState {
+            gate,
+            user,
+            hostel_exists,
+            enrolled,
+            license,
+            lock_reason,
+            app_version: self.app_version(),
+        })
     }
 
     /// Currently loaded license, if activation succeeded and the file verified.
@@ -215,6 +310,147 @@ impl Desk {
         .await
     }
 
+    /// Record a payment on an active stay and print its receipt.
+    ///
+    /// The amount is checked with `protocol::validate_money`; the receipt's
+    /// balance is the stay's balance minus this payment, in `Decimal`, never
+    /// below zero. A PDF failure does not undo the payment: it comes back as
+    /// [`commands::TakePaymentResult::pdf_error`].
+    pub async fn take_payment(
+        &self,
+        request: commands::TakePaymentRequest,
+    ) -> Result<commands::TakePaymentResult, String> {
+        let hostel_id = request.hostel_id;
+        // Also the license and session guard, so those errors come first.
+        let stays = self
+            .active_allocations(commands::ListActiveAllocationsRequest { hostel_id })
+            .await?;
+        let amount = request.amount.trim().to_string();
+        let paid = protocol::validate_money("Amount", &amount)
+            .map_err(|_| "Amount must be above zero, like 150000.".to_string())?;
+        let stay = stays
+            .into_iter()
+            .find(|stay| stay.allocation_id == request.allocation_id)
+            .ok_or("Choose an active stay.")?;
+        let profile = self
+            .hostel_profile(hostel_id)
+            .await?
+            .ok_or("The hostel profile is missing.")?;
+        let prefs = self
+            .app_preferences(commands::GetAppPreferencesRequest { hostel_id })
+            .await?;
+        let notes = request
+            .notes
+            .map(|notes| notes.trim().to_string())
+            .filter(|notes| !notes.is_empty());
+
+        let (_, receipt_number) = self
+            .record_payment_and_generate_receipt(commands::RecordPaymentRequest {
+                hostel_id,
+                allocation_id: stay.allocation_id,
+                resident_id: stay.resident_id,
+                amount: amount.clone(),
+                payment_method: request.payment_method.clone(),
+                period_start: None,
+                period_end: None,
+                notes: notes.clone(),
+            })
+            .await?;
+        let printed = self
+            .generate_and_open_receipt(commands::GenerateReceiptRequest {
+                hostel_id,
+                hostel_name: profile.name,
+                hostel_address: profile.address,
+                hostel_phone: profile.phone,
+                receipt_number: receipt_number.clone(),
+                resident_name: stay.resident_name,
+                room_number: stay.room_number,
+                amount,
+                date: chrono::Local::now().date_naive(),
+                balance: commands::balance_after(&stay.balance, paid),
+                payment_method: request.payment_method,
+                notes,
+                currency_code: profile.currency,
+                footer_text: prefs.receipt_footer,
+                logo_path: profile.branding_logo_path,
+            })
+            .await;
+        Ok(commands::TakePaymentResult {
+            receipt_number,
+            pdf_error: printed.err(),
+        })
+    }
+
+    /// Open a payment's receipt PDF again, or print it from the ledger when
+    /// this desk has none (for example a payment taken on another desk). A
+    /// reprint shows the balance as it stood right after that payment.
+    pub async fn open_receipt(&self, request: commands::OpenReceiptRequest) -> Result<(), String> {
+        let hostel_id = request.hostel_id;
+        // Also the license and session guard, so those errors come first.
+        let profile = self
+            .hostel_profile(hostel_id)
+            .await?
+            .ok_or("The hostel profile is missing.")?;
+        let prefs = self
+            .app_preferences(commands::GetAppPreferencesRequest { hostel_id })
+            .await?;
+        let resident_id: Option<i64> =
+            sqlx::query_scalar("SELECT resident_id FROM payments WHERE id = ?1 AND hostel_id = ?2")
+                .bind(request.payment_id)
+                .bind(hostel_id)
+                .fetch_optional(&self.db.inner)
+                .await
+                .map_err(|e| e.to_string())?;
+        let missing = || "That payment is no longer on record.".to_string();
+        let resident_id = resident_id.ok_or_else(missing)?;
+        let row = self
+            .list_payments(db::ListPaymentsFilter {
+                hostel_id,
+                from: None,
+                to: None,
+                resident_id: Some(resident_id),
+                method: None,
+            })
+            .await?
+            .into_iter()
+            .find(|row| row.id == request.payment_id)
+            .ok_or_else(missing)?;
+
+        if let Some(path) = row
+            .pdf_path
+            .as_deref()
+            .filter(|path| std::path::Path::new(path).exists())
+        {
+            return open::that(path).map_err(|e| format!("Could not open the receipt: {e}"));
+        }
+        let detail = self
+            .resident_detail(commands::GetResidentDetailRequest {
+                hostel_id,
+                resident_id,
+            })
+            .await?;
+        let balance = commands::balance_at_payment(&detail, row.allocation_id, row.id)?;
+        self.generate_and_open_receipt(commands::GenerateReceiptRequest {
+            hostel_id,
+            hostel_name: profile.name,
+            hostel_address: profile.address,
+            hostel_phone: profile.phone,
+            receipt_number: row.receipt_number.unwrap_or_default(),
+            resident_name: row.resident_name,
+            room_number: row.room_number,
+            amount: row.amount,
+            date: row.payment_date.with_timezone(&chrono::Local).date_naive(),
+            balance,
+            payment_method: row.payment_method,
+            notes: row.notes,
+            currency_code: profile.currency,
+            footer_text: prefs.receipt_footer,
+            logo_path: profile.branding_logo_path,
+        })
+        .await
+        .map(|_| ())
+    }
+
     /// Payments ledger.
     pub async fn list_payments(
         &self,
@@ -305,5 +541,248 @@ impl Desk {
             );
         }
         commands::restore_backup(request, &self.paths, &self.db, &self.license, &self.auth).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::test_support::setup_license_state;
+    use crate::state::AccountLicense;
+    use chrono::NaiveDate;
+
+    async fn desk_at(root: &std::path::Path, license: LicenseState) -> Desk {
+        let paths = AppPaths::for_test(root);
+        std::fs::create_dir_all(&paths.data_dir).expect("data dir");
+        let db = DbPool::open(&paths.database_url()).await.expect("db");
+        Desk::from_parts(db, AuthState::new(), license, paths)
+    }
+
+    fn onboarding() -> commands::CompleteOnboardingRequest {
+        commands::CompleteOnboardingRequest {
+            hostel_name: "Sunrise".into(),
+            address: None,
+            phone: None,
+            currency: Some("UGX".into()),
+            branding_logo_path: None,
+            admin_name: "Ada".into(),
+            email: "ada@sunrise.co".into(),
+            password: "secret-pass".into(),
+        }
+    }
+
+    /// A licensed, signed-in desk with one resident checked in at 500000.
+    /// Documents is a plain file, so a receipt PDF can never be written (and
+    /// no PDF viewer opens while tests run).
+    async fn desk_with_stay(root: &std::path::Path) -> (Desk, i64, i64) {
+        let desk = desk_at(root, setup_license_state()).await;
+        std::fs::write(root.join("documents"), "").expect("documents file");
+        let hostel_id = desk
+            .complete_onboarding(onboarding())
+            .await
+            .expect("onboard")
+            .hostel_id;
+        let room_id = desk
+            .add_room(commands::AddRoomRequest {
+                hostel_id,
+                room_number: "1".into(),
+                room_type: "single".into(),
+                capacity: 1,
+                floor: None,
+                semester_rate: "500000".into(),
+                recess_rate: "200000".into(),
+            })
+            .await
+            .expect("room");
+        let allocation_id = desk
+            .check_in(commands::CheckInRequest {
+                hostel_id,
+                room_id,
+                resident_id: None,
+                full_name: Some("Grace".into()),
+                phone: None,
+                email: None,
+                id_number: None,
+                next_of_kin: None,
+                next_of_kin_phone: None,
+                photo_path: None,
+                rate_agreed: "500000".into(),
+                term: "semester_1".into(),
+                academic_year: "2026/2027".into(),
+            })
+            .await
+            .expect("check in");
+        (desk, hostel_id, allocation_id)
+    }
+
+    fn pay(hostel_id: i64, allocation_id: i64, amount: &str) -> commands::TakePaymentRequest {
+        commands::TakePaymentRequest {
+            hostel_id,
+            allocation_id,
+            amount: amount.into(),
+            payment_method: "cash".into(),
+            notes: Some("  ".into()),
+        }
+    }
+
+    #[test]
+    fn lock_reason_explains_the_servers_last_answer() {
+        let today = NaiveDate::from_ymd_opt(2026, 11, 27).unwrap();
+        let license = AccountLicense {
+            account_name: "Sunrise".into(),
+            plan: "trial".into(),
+            expires_on: today + chrono::Duration::days(30),
+            checked_on: today,
+            approved: false,
+        };
+        assert!(lock_reason(Some(license.clone()), today).contains("waiting for approval"));
+        let ended = AccountLicense {
+            approved: true,
+            expires_on: today - chrono::Duration::days(1),
+            ..license.clone()
+        };
+        assert!(lock_reason(Some(ended), today).contains("plan has ended"));
+        let stale = AccountLicense {
+            approved: true,
+            checked_on: today - chrono::Duration::days(20),
+            ..license
+        };
+        assert!(lock_reason(Some(stale), today).contains("check its license"));
+        assert!(lock_reason(None, today).contains("check its license"));
+    }
+
+    #[tokio::test]
+    async fn boot_state_picks_the_first_screen() {
+        let root = tempfile::tempdir().expect("temp");
+        let desk = desk_at(root.path(), LicenseState::default()).await;
+
+        let boot = desk.boot_state().await.expect("boot");
+        assert_eq!(boot.gate, Gate::Lock);
+        assert!(boot.user.is_none() && boot.license.is_none());
+        assert!(!boot.enrolled && !boot.hostel_exists);
+        assert_eq!(boot.lock_reason, None, "not signed in to an account yet");
+        assert_eq!(boot.app_version, env!("CARGO_PKG_VERSION"));
+
+        desk.license
+            .set(setup_license_state().get().expect("license"));
+        let boot = desk.boot_state().await.expect("boot");
+        assert_eq!(boot.gate, Gate::Onboarding);
+        assert!(boot.license.is_some() && !boot.hostel_exists);
+
+        let admin = desk
+            .complete_onboarding(onboarding())
+            .await
+            .expect("onboard");
+        let boot = desk.boot_state().await.expect("boot");
+        assert_eq!(boot.gate, Gate::Ready);
+        assert_eq!(boot.user.map(|user| user.id), Some(admin.id));
+        assert!(boot.hostel_exists);
+
+        desk.logout();
+        let boot = desk.boot_state().await.expect("boot");
+        assert_eq!(boot.gate, Gate::SignIn);
+        assert!(boot.user.is_none());
+        let json = serde_json::to_value(&boot).expect("json");
+        assert_eq!(
+            json["gate"], "sign_in",
+            "the IPC contract spells gates in snake_case"
+        );
+    }
+
+    #[tokio::test]
+    async fn take_payment_records_the_payment_even_when_the_receipt_pdf_fails() {
+        let root = tempfile::tempdir().expect("temp");
+        let (desk, hostel_id, allocation_id) = desk_with_stay(root.path()).await;
+
+        for bad in ["", "-5", "0", "1e3", "1.2.3"] {
+            let error = desk
+                .take_payment(pay(hostel_id, allocation_id, bad))
+                .await
+                .expect_err(bad);
+            assert!(error.starts_with("Amount"), "{bad}: {error}");
+        }
+        let error = desk
+            .take_payment(pay(hostel_id, allocation_id + 1, "100"))
+            .await
+            .expect_err("no such stay");
+        assert!(error.contains("active stay"), "{error}");
+
+        let taken = desk
+            .take_payment(pay(hostel_id, allocation_id, " 200000 "))
+            .await
+            .expect("take payment");
+        assert!(!taken.receipt_number.is_empty());
+        assert!(taken.pdf_error.is_some(), "Documents is a file here");
+
+        let filter = db::ListPaymentsFilter {
+            hostel_id,
+            from: None,
+            to: None,
+            resident_id: None,
+            method: None,
+        };
+        let rows = desk.list_payments(filter).await.expect("ledger");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].amount, "200000");
+        assert_eq!(rows[0].notes, None, "blank notes are not stored");
+        assert_eq!(rows[0].receipt_number.as_ref(), Some(&taken.receipt_number));
+
+        desk.logout();
+        assert_eq!(
+            desk.take_payment(pay(hostel_id, allocation_id, "100"))
+                .await
+                .expect_err("signed out"),
+            "unauthorized"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_receipt_reprints_a_payment_from_the_ledger() {
+        let root = tempfile::tempdir().expect("temp");
+        let (desk, hostel_id, allocation_id) = desk_with_stay(root.path()).await;
+        desk.take_payment(pay(hostel_id, allocation_id, "100"))
+            .await
+            .expect("take payment");
+        let payment_id = desk
+            .list_payments(db::ListPaymentsFilter {
+                hostel_id,
+                from: None,
+                to: None,
+                resident_id: None,
+                method: None,
+            })
+            .await
+            .expect("ledger")[0]
+            .id;
+
+        let missing = desk
+            .open_receipt(commands::OpenReceiptRequest {
+                hostel_id,
+                payment_id: payment_id + 1,
+            })
+            .await
+            .expect_err("no such payment");
+        assert!(missing.contains("no longer on record"), "{missing}");
+
+        // No PDF on record, so it prints one; Documents is a file, so that fails.
+        let printing = desk
+            .open_receipt(commands::OpenReceiptRequest {
+                hostel_id,
+                payment_id,
+            })
+            .await
+            .expect_err("PDF cannot be written here");
+        assert!(printing.contains("os error"), "{printing}");
+
+        desk.logout();
+        assert_eq!(
+            desk.open_receipt(commands::OpenReceiptRequest {
+                hostel_id,
+                payment_id,
+            })
+            .await
+            .expect_err("signed out"),
+            "unauthorized"
+        );
     }
 }

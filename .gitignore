@@ -34,3 +34,6 @@ specs/
 .wrangler/
 .dev.vars
 crates/server/build/
+
+# Tauri build-generated ACL schemas (crates/app)
+crates/app/gen/

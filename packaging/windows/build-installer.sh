@@ -3,9 +3,14 @@
 #
 #   packaging/windows/build-installer.sh <version> <outfile>
 #
-# Expects target/release/hosteldesk.exe. Used by the release workflow, and by
+# Expects target/release/hosteldesk.exe built with
+# `cargo build --release -p app --features custom-protocol` (after the frontend
+# build), so it serves its embedded UI. Used by the release workflow, and by
 # CI on a Windows runner (with a placeholder exe) so packaging breaks show up
 # on pull requests, not on release day.
+#
+# Downloads Microsoft's WebView2 Evergreen bootstrapper into target/ unless
+# WEBVIEW2_BOOTSTRAPPER points at a copy already on disk.
 set -euo pipefail
 
 version="$1"
@@ -20,6 +25,12 @@ if [[ -z "$makensis" ]]; then
 fi
 [[ -n "$makensis" ]] || { echo "makensis not found; install NSIS first" >&2; exit 1; }
 
+webview2="${WEBVIEW2_BOOTSTRAPPER:-target/MicrosoftEdgeWebview2Setup.exe}"
+if [[ ! -s "$webview2" ]]; then
+  mkdir -p "$(dirname "$webview2")"
+  curl -fsSL --retry 3 -o "$webview2" "https://go.microsoft.com/fwlink/p/?LinkId=2124703"
+fi
+
 # Windows makensis splits File paths only on backslashes, so give it native
 # paths there; forward slashes elsewhere.
 native() {
@@ -33,4 +44,5 @@ native() {
   -DOUTFILE="$(native "$outfile")" \
   -DBINARY="$(native target/release/hosteldesk.exe)" \
   -DICON="$(native crates/app/icons/icon.ico)" \
+  -DWEBVIEW2="$(native "$webview2")" \
   packaging/windows/hosteldesk.nsi

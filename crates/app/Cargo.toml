@@ -6,25 +6,35 @@ license-file.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# Serve the embedded frontend/dist over tauri://. Without it a release binary
+# loads devUrl (http://localhost:5173). `cargo tauri build` turns it on; every
+# plain `cargo build --release` (packaging/, release.yml) must pass
+# `--features custom-protocol`; src/lib.rs refuses to compile a release build without it.
+custom-protocol = ["tauri/custom-protocol"]
+
 [dependencies]
 anyhow = { workspace = true }
 chrono = { workspace = true }
 db = { path = "../db" }
 directories = "6"
-eframe = "0.35.0"
 hosteldesk-core = { path = "../core" }
 open = "5"
 pdf = { path = "../pdf" }
 protocol = { path = "../protocol" }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal"] }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_json = "1"
-sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
+sqlx = { workspace = true }
+tauri = { version = "2.12", features = [] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
 
 [dev-dependencies]
 server = { path = "../server" }
@@ -33,3 +43,8 @@ tempfile = "3"
 [[bin]]
 name = "hosteldesk"
 path = "src/main.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Only for set_prgname. Stays on the gtk-rs 0.18 line Tauri itself links,
+# so the window and this call share one glib.
+glib = "0.18"
