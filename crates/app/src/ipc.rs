@@ -30,6 +30,7 @@ pub(crate) fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + '
         cloud_enrolled,
         take_payment,
         open_receipt,
+        receipt_pdf,
         license_status,
         cached_license,
         app_version,
@@ -99,6 +100,17 @@ pub async fn take_payment(
     request: TakePaymentRequest,
 ) -> Result<TakePaymentResult, String> {
     desk.take_payment(request).await
+}
+
+/// [`Desk::receipt_pdf`], as raw bytes (an `ArrayBuffer` in the page).
+#[tauri::command]
+pub async fn receipt_pdf(
+    desk: DeskState<'_>,
+    request: OpenReceiptRequest,
+) -> Result<tauri::ipc::Response, String> {
+    desk.receipt_pdf(request)
+        .await
+        .map(tauri::ipc::Response::new)
 }
 
 /// [`Desk::open_receipt`].

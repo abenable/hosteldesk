@@ -59,3 +59,32 @@
     @apply bg-gray-100 text-gray-900 antialiased;
   }
 }
+
+/* Printing from the receipt viewer: only the receipt's pages, one per sheet
+   (ReceiptViewer copies them into .receipt-print, outside the app). */
+.receipt-print {
+  display: none;
+}
+@media print {
+  @page {
+    size: A4;
+    margin: 0;
+  }
+  html,
+  body {
+    background: white !important;
+  }
+  body > :not(.receipt-print) {
+    display: none !important;
+  }
+  .receipt-print {
+    display: block;
+  }
+  .receipt-print img {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    object-fit: contain;
+    break-after: page;
+  }
+}

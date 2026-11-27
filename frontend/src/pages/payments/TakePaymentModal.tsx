@@ -55,7 +55,8 @@ export default function TakePaymentModal({ stay, onClose }: TakePaymentModalProp
         notes: blank(String(data.get('notes') ?? '')),
       });
       if (result.pdf_error === null) {
-        desk.toast({ tone: 'success', title: `Payment recorded. Receipt ${result.receipt_number} opened.` });
+        desk.toast({ tone: 'success', title: 'Payment recorded.' });
+        desk.showReceipt({ paymentId: result.payment_id, receiptNumber: result.receipt_number });
       } else {
         desk.toast({
           tone: 'warning',

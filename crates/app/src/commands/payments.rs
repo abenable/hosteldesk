@@ -28,9 +28,11 @@ pub struct TakePaymentRequest {
 /// this is returned; only the PDF may have failed.
 #[derive(Debug, Clone, Serialize)]
 pub struct TakePaymentResult {
+    /// The recorded payment, for opening its receipt in the viewer.
+    pub payment_id: i64,
     /// Receipt number allocated to the payment.
     pub receipt_number: String,
-    /// Why the receipt PDF could not be written or opened, if it failed.
+    /// Why the receipt PDF could not be written, if it failed.
     pub pdf_error: Option<String>,
 }
 
@@ -169,13 +171,10 @@ pub async fn record_payment_and_generate_receipt(
         })
 }
 
-/// Generate a PDF receipt, open it with the default system PDF viewer, and
-/// persist the generated path back to the corresponding `receipts` row.
-#[instrument(
-    skip(paths, state, license_state),
-    fields(command = "generate_and_open_receipt")
-)]
-pub async fn generate_and_open_receipt(
+/// Write a PDF receipt into the receipts folder and record its path on the
+/// `receipts` row. Returns the path; the app shows it in its own viewer.
+#[instrument(skip(paths, state, license_state), fields(command = "write_receipt"))]
+pub async fn write_receipt(
     request: GenerateReceiptRequest,
     paths: &crate::paths::AppPaths,
     state: &DbPool,
@@ -185,7 +184,7 @@ pub async fn generate_and_open_receipt(
     info!(
         receipt_number = request.receipt_number,
         resident_name = %request.resident_name,
-        "generate_and_open_receipt invoked"
+        "write_receipt invoked"
     );
     require_license(license_state)?;
     require_session(auth_state, request.hostel_id)?;
@@ -231,7 +230,6 @@ pub async fn generate_and_open_receipt(
     let path = out_dir.join(filename);
 
     pdf::generate_receipt(&payload, &path).map_err(|e| e.to_string())?;
-    open::that(&path).map_err(|e| e.to_string())?;
 
     let path_str = path.to_string_lossy().to_string();
     if let Err(e) = state

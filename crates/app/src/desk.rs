@@ -354,19 +354,12 @@ impl Desk {
             .await
     }
 
-    /// Write a PDF receipt and open it.
-    pub async fn generate_and_open_receipt(
+    /// Write a PDF receipt into the receipts folder; returns its path.
+    pub async fn write_receipt(
         &self,
         request: commands::GenerateReceiptRequest,
     ) -> Result<String, String> {
-        commands::generate_and_open_receipt(
-            request,
-            &self.paths,
-            &self.db,
-            &self.license,
-            &self.auth,
-        )
-        .await
+        commands::write_receipt(request, &self.paths, &self.db, &self.license, &self.auth).await
     }
 
     /// Record a payment on an active stay and print its receipt.
@@ -412,7 +405,7 @@ impl Desk {
         let room_type = self.room_type(hostel_id, &stay.room_number).await?;
         let staff = self.session().await?;
 
-        let (_, receipt_number) = self
+        let (payment_id, receipt_number) = self
             .record_payment_and_generate_receipt(commands::RecordPaymentRequest {
                 hostel_id,
                 allocation_id: stay.allocation_id,
@@ -425,7 +418,7 @@ impl Desk {
             })
             .await?;
         let printed = self
-            .generate_and_open_receipt(commands::GenerateReceiptRequest {
+            .write_receipt(commands::GenerateReceiptRequest {
                 hostel_id,
                 hostel_name: profile.name,
                 hostel_address: profile.address,
@@ -450,15 +443,36 @@ impl Desk {
             })
             .await;
         Ok(commands::TakePaymentResult {
+            payment_id,
             receipt_number,
             pdf_error: printed.err(),
         })
     }
 
-    /// Open a payment's receipt PDF again, or print it from the ledger when
-    /// this desk has none (for example a payment taken on another desk). A
-    /// reprint shows the balance as it stood right after that payment.
+    /// A payment's receipt PDF for the in-app viewer (see [`Desk::receipt_file`]).
+    pub async fn receipt_pdf(
+        &self,
+        request: commands::OpenReceiptRequest,
+    ) -> Result<Vec<u8>, String> {
+        let path = self.receipt_file(request).await?;
+        std::fs::read(&path).map_err(|e| format!("Could not read the receipt: {e}"))
+    }
+
+    /// Open a payment's receipt in the computer's own PDF app (to print or
+    /// save it from there).
     pub async fn open_receipt(&self, request: commands::OpenReceiptRequest) -> Result<(), String> {
+        let path = self.receipt_file(request).await?;
+        open::that(&path).map_err(|e| format!("Could not open the receipt: {e}"))
+    }
+
+    /// The payment's receipt PDF on this desk, printed from the ledger when
+    /// there is none (for example a payment taken on another desk). A reprint
+    /// shows the balance as it stood right after that payment. Only a file
+    /// inside the receipts folder counts as the one on record.
+    async fn receipt_file(
+        &self,
+        request: commands::OpenReceiptRequest,
+    ) -> Result<std::path::PathBuf, String> {
         let hostel_id = request.hostel_id;
         // Also the license and session guard, so those errors come first.
         let profile = self
@@ -490,12 +504,14 @@ impl Desk {
             .find(|row| row.id == request.payment_id)
             .ok_or_else(missing)?;
 
-        if let Some(path) = row
+        let receipts = self.paths.receipts_dir().canonicalize().ok();
+        let on_record = row
             .pdf_path
             .as_deref()
-            .filter(|path| std::path::Path::new(path).exists())
-        {
-            return open::that(path).map_err(|e| format!("Could not open the receipt: {e}"));
+            .and_then(|path| std::path::Path::new(path).canonicalize().ok())
+            .filter(|path| receipts.as_ref().is_some_and(|dir| path.starts_with(dir)));
+        if let Some(path) = on_record {
+            return Ok(path);
         }
         let detail = self
             .resident_detail(commands::GetResidentDetailRequest {
@@ -509,7 +525,7 @@ impl Desk {
             .iter()
             .find(|stay| stay.id == row.allocation_id);
         let room_type = self.room_type(hostel_id, &row.room_number).await?;
-        self.generate_and_open_receipt(commands::GenerateReceiptRequest {
+        self.write_receipt(commands::GenerateReceiptRequest {
             hostel_id,
             hostel_name: profile.name,
             hostel_address: profile.address,
@@ -534,7 +550,7 @@ impl Desk {
             received_by_contact: None,
         })
         .await
-        .map(|_| ())
+        .map(std::path::PathBuf::from)
     }
 
     /// The type (`single`, `double`, `dorm`) of a room's class, for its receipts.
@@ -810,6 +826,46 @@ mod tests {
                 .expect_err("signed out"),
             "unauthorized"
         );
+    }
+
+    /// The in-app viewer gets the receipt itself: the file on record, printed
+    /// again when it is gone, and never a file outside the receipts folder.
+    #[tokio::test]
+    async fn receipt_pdf_hands_the_viewer_the_receipt() {
+        let root = tempfile::tempdir().expect("temp");
+        let (desk, hostel_id, allocation_id) = desk_with_stay(root.path()).await;
+        std::fs::remove_file(root.path().join("documents")).expect("documents is a folder again");
+        let taken = desk
+            .take_payment(pay(hostel_id, allocation_id, "100"))
+            .await
+            .expect("take payment");
+        assert_eq!(taken.pdf_error, None);
+        let request = || commands::OpenReceiptRequest {
+            hostel_id,
+            payment_id: taken.payment_id,
+        };
+        let pdf = desk.receipt_pdf(request()).await.expect("receipt");
+        assert!(pdf.starts_with(b"%PDF"));
+
+        let receipts = root.path().join("documents/HostelDesk/receipts");
+        for entry in std::fs::read_dir(&receipts).expect("receipts") {
+            std::fs::remove_file(entry.expect("entry").path()).expect("remove");
+        }
+        let reprinted = desk.receipt_pdf(request()).await.expect("printed again");
+        assert!(reprinted.starts_with(b"%PDF"));
+
+        let outside = root.path().join("not-a-receipt.pdf");
+        std::fs::write(&outside, b"%PDF-elsewhere").expect("outside file");
+        desk.db
+            .update_receipt_pdf_path(hostel_id, &taken.receipt_number, &outside.to_string_lossy())
+            .await
+            .expect("point outside");
+        let pdf = desk.receipt_pdf(request()).await.expect("receipt");
+        assert_ne!(
+            pdf, b"%PDF-elsewhere",
+            "read a file outside the receipts folder"
+        );
+        assert!(pdf.starts_with(b"%PDF"));
     }
 
     #[test]
