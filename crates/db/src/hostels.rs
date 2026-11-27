@@ -295,17 +295,7 @@ mod tests {
         assert!(!profile.onboarding_complete);
 
         // Add a room and an admin staff user.
-        pool.add_room(NewRoom {
-            hostel_id: hostel.id,
-            room_number: "101".to_string(),
-            room_type: "single".to_string(),
-            capacity: 1,
-            floor: None,
-            semester_rate: "10".to_string(),
-            recess_rate: "10".to_string(),
-        })
-        .await
-        .expect("add room");
+        seed_room(&pool, hostel.id, "101", "single").await;
         pool.create_user(NewUser {
             hostel_id: hostel.id,
             full_name: "Admin".to_string(),

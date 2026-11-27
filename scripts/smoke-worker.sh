@@ -49,8 +49,11 @@ jq -e '.approved == false and .plan == "trial"' <<<"${out#* }" >/dev/null || fai
 expect 403 "$(post /v1/pull "$refresh" "{\"hostel_public_id\":\"$hostel\",\"cursor\":0}")" "pull while pending"
 approve "$email"
 
+room_class() { # idempotency-key
+  echo "{\"idempotency_key\":\"$1\",\"command\":{\"type\":\"upsert_room_class\",\"public_id\":\"c1\",\"hostel_public_id\":\"$hostel\",\"base_revision\":0,\"floor\":null,\"room_type\":\"single\",\"semester_rate\":\"100\",\"recess_rate\":\"50\"}}"
+}
 room() { # id number
-  echo "{\"idempotency_key\":\"room-$1\",\"command\":{\"type\":\"upsert_room\",\"public_id\":\"$1\",\"hostel_public_id\":\"$hostel\",\"base_revision\":0,\"room_number\":\"$2\",\"room_type\":\"single\",\"capacity\":1,\"floor\":null,\"semester_rate\":\"100\",\"recess_rate\":\"50\",\"status\":\"vacant\"}}"
+  echo "{\"idempotency_key\":\"room-$1\",\"command\":{\"type\":\"upsert_room\",\"public_id\":\"$1\",\"hostel_public_id\":\"$hostel\",\"base_revision\":0,\"room_number\":\"$2\",\"class_public_id\":\"c1\",\"status\":\"vacant\"}}"
 }
 check_in() { # allocation resident
   echo "{\"idempotency_key\":\"in-$1\",\"command\":{\"type\":\"check_in\",\"allocation_public_id\":\"$1\",\"hostel_public_id\":\"$hostel\",\"resident_public_id\":\"$2\",\"room_public_id\":\"r1\",\"full_name\":\"Ada\",\"phone\":null,\"email\":null,\"id_number\":null,\"next_of_kin\":null,\"next_of_kin_phone\":null,\"rate_agreed\":\"100\",\"term\":\"semester_1\",\"academic_year\":\"2026/2027\",\"checked_in_at\":\"2026-11-15 09:00:00\"}}"
@@ -59,13 +62,19 @@ pay() { # payment amount receipt
   echo "{\"idempotency_key\":\"pay-$1\",\"command\":{\"type\":\"record_payment\",\"payment_public_id\":\"$1\",\"receipt_public_id\":\"rc-$1\",\"hostel_public_id\":\"$hostel\",\"allocation_public_id\":\"a1\",\"resident_public_id\":\"p1\",\"amount\":\"$2\",\"payment_method\":\"cash\",\"receipt_number\":\"$3\",\"payment_date\":\"2026-11-15T09:30:00Z\",\"notes\":null}}"
 }
 
-batch="[$(room r1 101),$(check_in a1 p1),$(check_in a2 p2),$(pay pay1 40 SMK-0001),$(pay pay2 40 SMK-0001),$(pay pay3 -5 SMK-0002),$(room r2 101)]"
+# Rooms have no bed count: a second resident in a room is no warning.
+batch="[$(room_class class-c1),$(room r1 101),$(check_in a1 p1),$(check_in a2 p2),$(pay pay1 40 SMK-0001),$(pay pay2 40 SMK-0001),$(pay pay3 -5 SMK-0002),$(room r2 101)]"
 out="$(post /v1/push "$refresh" "{\"hostel_public_id\":\"$hostel\",\"commands\":$batch}")"
 expect 200 "$out" "push"
 statuses="$(jq -r '[.results[].status] | join(",")' <<<"${out#* }")"
-[[ "$statuses" == "acked,acked,acked,acked,conflict,conflict,conflict" ]] || fail "push statuses: $statuses"
-jq -e '.results[2].message | test("over capacity")' <<<"${out#* }" >/dev/null || fail "over-capacity warning"
-jq -e '.results[5].message | test("amount")' <<<"${out#* }" >/dev/null || fail "bad amount message"
+[[ "$statuses" == "acked,acked,acked,acked,acked,conflict,conflict,conflict" ]] || fail "push statuses: $statuses"
+jq -e '.results[3].message == null' <<<"${out#* }" >/dev/null || fail "second resident warned: ${out#* }"
+jq -e '.results[6].message | test("amount")' <<<"${out#* }" >/dev/null || fail "bad amount message"
+
+# An upgraded desk re-creating the same room class is a no-op, not a conflict.
+out="$(post /v1/push "$refresh" "{\"hostel_public_id\":\"$hostel\",\"commands\":[$(room_class class-c1-again)]}")"
+expect 200 "$out" "room class re-create"
+[[ "$(jq -r '.results[0].status' <<<"${out#* }")" == acked ]] || fail "room class re-create: ${out#* }"
 
 # Replaying the same batch changes nothing and acks the already-applied keys.
 out="$(post /v1/push "$refresh" "{\"hostel_public_id\":\"$hostel\",\"commands\":[$(room r1 101)]}")"
@@ -105,6 +114,7 @@ jq -e '.approved and .plan == "trial" and .expires_on > (now | strftime("%Y-%m-%
 expect 401 "$(post /v1/license "not-a-token" '{}')" "license with a bad token"
 rooms="$(jq -r '[.changes[] | select(.entity == "room") | .room_number] | unique | join(",")' <<<"$body")"
 [[ "$rooms" == "101,103,104" ]] || fail "pulled rooms: $rooms"
+jq -e '[.changes[] | select(.entity == "room_class")] | length == 1' <<<"$body" >/dev/null || fail "pulled room class"
 jq -e '[.changes[] | select(.entity == "payment")] | length == 1 and .[0].payment_date == "2026-11-15T09:30:00Z"' <<<"$body" >/dev/null || fail "pulled payment"
 cursor="$(jq -r .cursor <<<"$body")"
 out="$(post /v1/pull "$refresh2" "{\"hostel_public_id\":\"$hostel\",\"cursor\":$cursor}")"

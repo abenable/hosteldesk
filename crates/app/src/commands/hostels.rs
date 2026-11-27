@@ -44,7 +44,14 @@ pub async fn complete_onboarding(
     info!(hostel_name = %request.hostel_name, "complete_onboarding invoked");
     require_license(license_state)?;
 
-    if request.hostel_name.trim().is_empty() {
+    // A desk that pulled its hostel from the cloud only adds the first
+    // administrator; the database ignores the name then.
+    let creates_hostel = state
+        .primary_hostel_id()
+        .await
+        .map_err(|e| map_db_error("complete_onboarding", e))?
+        .is_none();
+    if creates_hostel && request.hostel_name.trim().is_empty() {
         return Err("hostel name is required".to_string());
     }
     if request.admin_name.trim().is_empty() {
@@ -220,7 +227,56 @@ fn require_session_current(auth_state: &crate::AuthState) -> Result<crate::Sessi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::test_support::temp_db_url;
+    use crate::commands::test_support::{setup_license_state, temp_db_url};
+
+    fn first_admin(hostel_name: &str) -> CompleteOnboardingRequest {
+        CompleteOnboardingRequest {
+            hostel_name: hostel_name.to_string(),
+            address: None,
+            phone: None,
+            currency: None,
+            branding_logo_path: None,
+            admin_name: "Ada".to_string(),
+            email: "ada@hostel.co".to_string(),
+            password: "secret-pass".to_string(),
+        }
+    }
+
+    /// A desk that pulled its hostel from the cloud only creates the first
+    /// administrator, so it has no hostel name to send.
+    #[tokio::test]
+    async fn onboarding_needs_a_hostel_name_only_when_it_creates_the_hostel() {
+        let license = setup_license_state();
+
+        let fresh = DbPool::open(&temp_db_url()).await.expect("open database");
+        let err = complete_onboarding(
+            first_admin("  "),
+            &fresh,
+            &license,
+            &crate::AuthState::new(),
+        )
+        .await
+        .expect_err("a new hostel needs a name");
+        assert_eq!(err, "hostel name is required");
+
+        let pulled = DbPool::open(&temp_db_url()).await.expect("open database");
+        let hostel = pulled
+            .create_hostel(db::NewHostel {
+                name: "From the cloud".to_string(),
+                address: None,
+                phone: None,
+                currency: None,
+                branding_logo_path: None,
+            })
+            .await
+            .expect("create hostel");
+        let admin =
+            complete_onboarding(first_admin(""), &pulled, &license, &crate::AuthState::new())
+                .await
+                .expect("first admin for the pulled hostel");
+        assert_eq!(admin.hostel_id, hostel.id);
+        assert_eq!(admin.role, "admin");
+    }
 
     #[tokio::test]
     async fn update_hostel_currency_validation_round_trip() {

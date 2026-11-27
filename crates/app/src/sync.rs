@@ -23,7 +23,7 @@ pub const DEFAULT_SERVER_URL: &str = "https://hosteldesk-sync.ableabenaitwe.work
 const PUSH_CHUNK: usize = 200;
 
 /// What one sync pass changed.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct SyncReport {
     /// Commands the server accepted.
     pub pushed: usize,
@@ -31,12 +31,12 @@ pub struct SyncReport {
     pub applied: usize,
     /// Commands rejected or accepted with a warning.
     pub issues: usize,
-    /// Short text for the status bar. Empty when nothing happened.
+    /// Text for a toast when changes need attention; empty otherwise.
     pub summary: String,
 }
 
 /// Cloud registration shown in Settings.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct CloudStatus {
     /// Server URL, once the desk has enrolled.
     pub server_url: Option<String>,
@@ -50,6 +50,46 @@ pub struct CloudStatus {
     pub issues: Vec<db::SyncIssue>,
 }
 
+/// Payload for [`Desk::connect_cloud`]. No `Debug`: it carries a password.
+#[derive(Deserialize)]
+pub struct ConnectCloudRequest {
+    /// Sync server; blank means [`DEFAULT_SERVER_URL`].
+    pub server_url: String,
+    /// Account email.
+    pub email: String,
+    /// Account password.
+    pub password: String,
+    /// Create a new account (and organization) instead of signing in.
+    pub create_account: bool,
+    /// Organization name for a new account; ignored when signing in.
+    pub organization_name: String,
+}
+
+/// Outcome of [`Desk::connect_cloud`]: the computer is signed in to the account.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConnectResult {
+    /// The account's license is usable today, so the desk is unlocked.
+    pub licensed: bool,
+    /// Why the desk stays locked, when `licensed` is false.
+    pub lock_reason: Option<String>,
+    /// The first sync failed; the background loop retries it.
+    pub sync_error: Option<String>,
+}
+
+/// One background or manual sync pass, as the frontend sees it. Emitted as
+/// the `sync` event after each background pass, and returned by `sync_now`.
+#[derive(Debug, Clone, Serialize)]
+pub struct SyncEvent {
+    /// Changes that need attention, for a toast; empty otherwise.
+    pub summary: String,
+    /// The pass received rows from the cloud, so the window reloads its data.
+    pub changed: bool,
+    /// Why the pass failed; it is retried on the next tick.
+    pub error: Option<String>,
+    /// The account's license is usable today (a locked desk can re-boot).
+    pub licensed: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CloudConfig {
     server_url: String,
@@ -60,6 +100,49 @@ struct CloudConfig {
 }
 
 impl Desk {
+    /// Sign this computer in to a HostelDesk account ([`Desk::enroll`]), then
+    /// run one sync so an approved account unlocks right away.
+    ///
+    /// Errors only when connecting fails; a failed first sync is reported in
+    /// [`ConnectResult::sync_error`] and retried by the background loop.
+    pub async fn connect_cloud(
+        &self,
+        request: ConnectCloudRequest,
+    ) -> Result<ConnectResult, String> {
+        self.enroll(
+            &request.server_url,
+            &request.email,
+            &request.password,
+            request.create_account,
+            &request.organization_name,
+        )
+        .await?;
+        let sync_error = self.sync_once().await.err();
+        let licensed = self.license_status().is_some();
+        Ok(ConnectResult {
+            licensed,
+            lock_reason: (!licensed).then(|| {
+                crate::lock_reason(self.cached_license(), chrono::Utc::now().date_naive())
+            }),
+            sync_error,
+        })
+    }
+
+    /// One [`Desk::sync_once`] pass reported as a [`SyncEvent`]. Never fails:
+    /// an error is part of the event.
+    pub async fn sync_now(&self) -> SyncEvent {
+        let (summary, changed, error) = match self.sync_once().await {
+            Ok(report) => (report.summary, report.applied > 0, None),
+            Err(error) => (String::new(), false, Some(error)),
+        };
+        SyncEvent {
+            summary,
+            changed,
+            error,
+            licensed: self.license_status().is_some(),
+        }
+    }
+
     /// Create or sign in to an organization, enroll this computer, and store the token.
     ///
     /// The first desk of an organization uploads its existing hostel. A desk
@@ -69,7 +152,7 @@ impl Desk {
     /// The account is the license, and the server is the only judge of it:
     /// after enrolling, the desk asks `/v1/license` and unlocks while the
     /// account's plan runs.
-    pub async fn connect_cloud(
+    pub(crate) async fn enroll(
         &self,
         server_url: &str,
         email: &str,
@@ -190,8 +273,25 @@ impl Desk {
         read_config(&self.paths).is_some() && read_token(&self.paths).is_some()
     }
 
+    /// Local changes are waiting to send. The background loop checks this
+    /// every few seconds so a payment or a new room reaches the cloud right
+    /// away; a database error reads as "no" and the next full pass sends it.
+    pub async fn has_pending_sync(&self) -> bool {
+        match self.db.primary_hostel_id().await {
+            Ok(Some(hostel_id)) => self
+                .db
+                .pending_sync_count(hostel_id)
+                .await
+                .is_ok_and(|count| count > 0),
+            _ => false,
+        }
+    }
+
     /// Push pending commands, then pull every new page. No-op when not enrolled.
+    ///
+    /// Passes run one at a time; a second caller waits for the first.
     pub async fn sync_once(&self) -> Result<SyncReport, String> {
+        let _one_at_a_time = self.sync_gate.lock().await;
         let (Some(config), Some(token)) = (read_config(&self.paths), read_token(&self.paths))
         else {
             return Ok(SyncReport::default());
@@ -254,10 +354,18 @@ impl Desk {
             }
         }
 
-        if report.pushed > 0 || report.applied > 0 || report.issues > 0 {
+        // Sync is automatic and the sidebar shows "Synced"; only a problem is
+        // worth a toast. (`applied` also counts this desk's own changes coming
+        // back from the server, so it cannot tell "another computer" apart.)
+        if report.issues > 0 {
+            let changes = if report.issues == 1 {
+                "change needs"
+            } else {
+                "changes need"
+            };
             report.summary = format!(
-                "Synced: {} sent, {} received, {} need attention",
-                report.pushed, report.applied, report.issues
+                "{} synced {changes} attention (Settings → Cloud).",
+                report.issues
             );
         }
         Ok(report)
@@ -490,7 +598,7 @@ fn write_token_file(paths: &AppPaths, token: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::state::{AuthState, LicenseState};
-    use db::{DbPool, NewCheckIn, NewHostel, NewPayment, NewRoom};
+    use db::{DbPool, NewCheckIn, NewHostel, NewPayment, NewRoom, NewRoomClass};
     use std::sync::Arc;
 
     async fn memory_server() -> (String, Arc<server::MemoryStore>) {
@@ -531,11 +639,70 @@ mod tests {
         }
     }
 
-    async fn scalar(desk: &Desk, sql: &str) -> String {
+    async fn scalar(desk: &Desk, sql: &'static str) -> String {
         sqlx::query_scalar(sql)
             .fetch_one(&desk.db.inner)
             .await
             .expect(sql)
+    }
+
+    /// A local change is waiting to send until the next pass, which sends it
+    /// without a toast: only received changes and issues are worth one.
+    #[tokio::test]
+    async fn a_local_change_waits_to_send_and_sending_it_is_silent() {
+        let (url, store) = memory_server().await;
+        let root = tempfile::tempdir().expect("temp");
+        let desk = desk_at(root.path()).await;
+        let hostel = desk
+            .db
+            .create_hostel(NewHostel {
+                name: "North".into(),
+                address: None,
+                phone: None,
+                currency: Some("UGX".into()),
+                branding_logo_path: None,
+            })
+            .await
+            .expect("hostel");
+        let class_id = desk
+            .db
+            .add_room_class(NewRoomClass {
+                hostel_id: hostel.id,
+                floor: None,
+                room_type: "single".into(),
+                semester_rate: "100".into(),
+                recess_rate: "40".into(),
+            })
+            .await
+            .expect("class");
+        assert!(
+            !desk.has_pending_sync().await,
+            "nothing waits on a desk that never enrolled"
+        );
+        desk.enroll(&url, "a@b.co", "secret-pass", true, "North")
+            .await
+            .expect("sign up");
+        store.approve("a@b.co").expect("approve");
+        assert!(desk.has_pending_sync().await, "the hostel waits to upload");
+        assert!(desk.sync_now().await.error.is_none());
+        assert!(!desk.has_pending_sync().await, "all sent");
+
+        desk.db
+            .add_room(NewRoom {
+                hostel_id: hostel.id,
+                room_number: "7".into(),
+                class_id,
+            })
+            .await
+            .expect("room");
+        assert!(desk.has_pending_sync().await, "the new room waits to send");
+        let event = desk.sync_now().await;
+        assert_eq!(
+            (event.summary.as_str(), event.error.as_deref()),
+            ("", None),
+            "{event:?}"
+        );
+        assert!(!desk.has_pending_sync().await, "the new room was sent");
     }
 
     /// The upgrade path end to end: a desk with v1-style history enrolls and
@@ -557,16 +724,23 @@ mod tests {
             })
             .await
             .expect("hostel");
+        let class_id = desk_a
+            .db
+            .add_room_class(NewRoomClass {
+                hostel_id: hostel.id,
+                floor: Some(1),
+                room_type: "single".into(),
+                semester_rate: "100".into(),
+                recess_rate: "40".into(),
+            })
+            .await
+            .expect("class");
         let room_id = desk_a
             .db
             .add_room(NewRoom {
                 hostel_id: hostel.id,
                 room_number: "1".into(),
-                room_type: "single".into(),
-                capacity: 1,
-                floor: None,
-                semester_rate: "100".into(),
-                recess_rate: "40".into(),
+                class_id,
             })
             .await
             .expect("room");
@@ -609,7 +783,7 @@ mod tests {
         );
 
         desk_a
-            .connect_cloud(&url, "a@b.co", "secret-pass", true, "North")
+            .enroll(&url, "a@b.co", "secret-pass", true, "North")
             .await
             .expect("sign up");
         assert!(
@@ -643,7 +817,7 @@ mod tests {
             .await
             .expect("other hostel");
         let refused = desk_c
-            .connect_cloud(&url, "a@b.co", "secret-pass", false, "")
+            .enroll(&url, "a@b.co", "secret-pass", false, "")
             .await
             .expect_err("different hostel must be refused");
         assert!(refused.contains("fresh"), "{refused}");
@@ -651,7 +825,7 @@ mod tests {
         let root_b = tempfile::tempdir().expect("temp b");
         let desk_b = desk_at(root_b.path()).await;
         desk_b
-            .connect_cloud(&url, "a@b.co", "secret-pass", false, "")
+            .enroll(&url, "a@b.co", "secret-pass", false, "")
             .await
             .expect("sign in");
         desk_b.sync_once().await.expect("sync b");
@@ -669,7 +843,8 @@ mod tests {
             "checked_out"
         );
 
-        // Both desks check someone into the one free bed while offline.
+        // Both desks check someone into the same room while offline: rooms
+        // have no bed count, so both stays stand and nothing is flagged.
         let hostel_b = desk_b.db.primary_hostel_id().await.unwrap().unwrap();
         let room_b = desk_b.db.get_rooms(hostel_b).await.unwrap()[0].id;
         desk_a
@@ -684,9 +859,12 @@ mod tests {
             .expect("b books");
         assert_eq!(desk_a.sync_once().await.expect("a").issues, 0);
         let second = desk_b.sync_once().await.expect("b");
-        assert_eq!(second.issues, 1, "{second:?}");
-        let issues = desk_b.cloud_status().await.unwrap().issues;
-        assert!(!issues[0].rejected && issues[0].message.contains("over capacity"));
+        assert_eq!(second.issues, 0, "{second:?}");
+        assert_eq!(
+            desk_b.db.get_rooms(hostel_b).await.unwrap()[0].floor,
+            Some(1),
+            "the room's class came across with it"
+        );
         desk_a.sync_once().await.expect("a catches up");
         for desk in [&desk_a, &desk_b] {
             assert_eq!(
@@ -709,7 +887,7 @@ mod tests {
         let root = tempfile::tempdir().expect("temp");
         let desk = desk_at(root.path()).await;
         assert!(desk.license_status().is_none());
-        desk.connect_cloud(&url, "owner@hostel.co", "secret-pass", true, "Sunrise")
+        desk.enroll(&url, "owner@hostel.co", "secret-pass", true, "Sunrise")
             .await
             .expect("sign up");
         let pending = desk.cached_license().expect("the server answered");
@@ -739,10 +917,66 @@ mod tests {
         let root_b = tempfile::tempdir().expect("temp b");
         let desk_b = desk_at(root_b.path()).await;
         desk_b
-            .connect_cloud(&url, "owner@hostel.co", "secret-pass", false, "")
+            .enroll(&url, "owner@hostel.co", "secret-pass", false, "")
             .await
             .expect("sign in");
         assert!(desk_b.license_status().is_none());
+    }
+
+    /// The Lock screen flow: connecting says why a new account stays locked,
+    /// and the background sync reports the unlock once the owner approves.
+    #[tokio::test]
+    async fn connect_cloud_explains_the_lock_and_sync_now_reports_the_unlock() {
+        let (url, store) = memory_server().await;
+        let root = tempfile::tempdir().expect("temp");
+        let desk = desk_at(root.path()).await;
+        let request = |password: &str| ConnectCloudRequest {
+            server_url: url.clone(),
+            email: "owner@hostel.co".into(),
+            password: password.into(),
+            create_account: true,
+            organization_name: "Sunrise".into(),
+        };
+
+        let idle = desk.sync_now().await;
+        assert_eq!(
+            (idle.summary.as_str(), idle.error, idle.licensed),
+            ("", None, false),
+            "a desk that never enrolled has nothing to sync"
+        );
+
+        let connected = desk
+            .connect_cloud(request("secret-pass"))
+            .await
+            .expect("connect");
+        assert!(!connected.licensed);
+        assert_eq!(connected.sync_error, None);
+        assert!(connected
+            .lock_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("waiting for approval")));
+        let boot = desk.boot_state().await.expect("boot");
+        assert_eq!(boot.gate, crate::Gate::Lock);
+        assert!(boot.enrolled);
+        assert_eq!(boot.lock_reason, connected.lock_reason);
+
+        store.approve("owner@hostel.co").expect("approve");
+        let event = desk.sync_now().await;
+        assert!(event.licensed && event.error.is_none(), "{event:?}");
+        assert_eq!(
+            desk.boot_state().await.expect("boot").gate,
+            crate::Gate::Onboarding
+        );
+
+        let other = tempfile::tempdir().expect("temp b");
+        let refused = desk_at(other.path())
+            .await
+            .connect_cloud(ConnectCloudRequest {
+                create_account: false,
+                ..request("wrong-pass")
+            })
+            .await;
+        assert!(refused.is_err(), "a wrong password does not connect");
     }
 
     #[test]

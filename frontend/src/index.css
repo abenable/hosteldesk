@@ -1,0 +1,53 @@
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+/* HyperUI form blocks are written against the forms plugin. */
+@plugin '@tailwindcss/forms';
+
+/*
+ * Theme: black and white, light mode only.
+ * - gray-* is Tailwind's `neutral` (pure grey, no blue cast), so every gray class stays.
+ * - primary-* is the same neutral ramp, kept as its own name so a brand colour
+ *   is a one-place change later. Steps the kit uses: primary-900 (#171717) for
+ *   solid actions, focus rings and selected marks, primary-800 for their hover,
+ *   primary-100 for selection / active-nav / info tints.
+ * - Colour only carries meaning: green = paid/available, amber = partial/warning,
+ *   red = owing/destructive. Nothing else is coloured.
+ */
+@theme {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+
+  --color-gray-50: oklch(98.5% 0 0);
+  --color-gray-100: oklch(97% 0 0);
+  --color-gray-200: oklch(92.2% 0 0);
+  --color-gray-300: oklch(87% 0 0);
+  --color-gray-400: oklch(70.8% 0 0);
+  --color-gray-500: oklch(55.6% 0 0);
+  --color-gray-600: oklch(43.9% 0 0);
+  --color-gray-700: oklch(37.1% 0 0);
+  --color-gray-800: oklch(26.9% 0 0);
+  --color-gray-900: oklch(20.5% 0 0);
+  --color-gray-950: oklch(14.5% 0 0);
+
+  --color-primary-50: oklch(98.5% 0 0);
+  --color-primary-100: oklch(97% 0 0);
+  --color-primary-200: oklch(92.2% 0 0);
+  --color-primary-300: oklch(87% 0 0);
+  --color-primary-400: oklch(70.8% 0 0);
+  --color-primary-500: oklch(55.6% 0 0);
+  --color-primary-600: oklch(43.9% 0 0);
+  --color-primary-700: oklch(37.1% 0 0);
+  --color-primary-800: oklch(26.9% 0 0);
+  --color-primary-900: oklch(20.5% 0 0);
+  --color-primary-950: oklch(14.5% 0 0);
+}
+
+@layer base {
+  :root {
+    /* Light only: native controls and scrollbars stay light on a dark OS. */
+    color-scheme: light;
+  }
+
+  body {
+    @apply bg-gray-100 text-gray-900 antialiased;
+  }
+}

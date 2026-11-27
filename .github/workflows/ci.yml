@@ -20,22 +20,37 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
-          toolchain: '1.94.0'
+          toolchain: '1.100.0'
           components: clippy, rustfmt
           targets: wasm32-unknown-unknown
 
       - name: Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      - name: Install Linux system dependencies
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Before any cargo step: the app crate embeds frontend/dist at compile time.
+      - name: Frontend lint and build
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run lint
+          npm run build
+
+      - name: Install Linux system dependencies (Tauri / WebKitGTK)
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libjavascriptcoregtk-4.1-dev \
+            libsoup-3.0-dev \
             libgtk-3-dev \
-            libxkbcommon-dev \
-            libxcb1-dev \
-            libx11-dev \
-            libwayland-dev \
+            librsvg2-dev \
             libssl-dev
 
       - name: cargo fmt

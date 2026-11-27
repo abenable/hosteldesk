@@ -12,18 +12,18 @@ authors.workspace = true
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-argon2 = "0.5"
+argon2 = { workspace = true }
 chrono = { workspace = true }
+getrandom = { workspace = true }
 hex = "0.4"
-password-hash = { version = "0.5", features = ["std", "getrandom"] }
 protocol = { path = "../protocol" }
 serde = { workspace = true }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-getrandom = { version = "0.2", features = ["js"] }
+getrandom = { workspace = true, features = ["wasm_js"] }
 tokio-postgres = { version = "0.7", default-features = false, features = ["js"] }
 worker = { version = "0.9", features = ["tokio-postgres"] }
 

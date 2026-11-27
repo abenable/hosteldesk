@@ -25,20 +25,31 @@ pub(crate) async fn seed_hostel(pool: &DbPool) -> Hostel {
     .expect("seed hostel")
 }
 
+/// A room class of `room_type` priced 100 a semester and 50 a recess.
+pub(crate) async fn seed_class(pool: &DbPool, hostel_id: i64, room_type: &str) -> i64 {
+    pool.add_room_class(NewRoomClass {
+        hostel_id,
+        floor: None,
+        room_type: room_type.to_string(),
+        semester_rate: "100".to_string(),
+        recess_rate: "50".to_string(),
+    })
+    .await
+    .expect("seed room class")
+}
+
+/// A room in a new class of `room_type` (see [`seed_class`]).
 pub(crate) async fn seed_room(
     pool: &DbPool,
     hostel_id: i64,
     room_number: &str,
     room_type: &str,
 ) -> i64 {
+    let class_id = seed_class(pool, hostel_id, room_type).await;
     pool.add_room(NewRoom {
         hostel_id,
         room_number: room_number.to_string(),
-        room_type: room_type.to_string(),
-        capacity: 1,
-        floor: None,
-        semester_rate: "100".to_string(),
-        recess_rate: "50".to_string(),
+        class_id,
     })
     .await
     .expect("seed room")

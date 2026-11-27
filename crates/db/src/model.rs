@@ -21,22 +21,53 @@ pub struct UpsertAppPreferences {
     pub receipt_footer: Option<String>,
 }
 
+/// A room class: the floor, type, and prices a hostel's rooms share.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct RoomClass {
+    pub id: i64,
+    pub hostel_id: i64,
+    /// Sync id. Classes made from pre-class rooms are `legacy:…`.
+    pub public_id: String,
+    pub floor: Option<i32>,
+    /// `single`, `double`, or `dorm`.
+    pub room_type: String,
+    /// Semester rate as a decimal string.
+    pub semester_rate: String,
+    /// Recess rate as a decimal string.
+    pub recess_rate: String,
+    /// How many rooms are in this class.
+    pub rooms: i32,
+}
+
+/// Data required to create a room class, or (with `class_id`) to edit one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewRoomClass {
+    pub hostel_id: i64,
+    pub floor: Option<i32>,
+    /// `single`, `double`, or `dorm`.
+    pub room_type: String,
+    /// Semester rate as a decimal string, e.g. `"500000.00"`.
+    pub semester_rate: String,
+    /// Recess rate as a decimal string.
+    pub recess_rate: String,
+}
+
+/// A room, with the floor, type, and prices of its class.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Room {
     pub id: i64,
     pub hostel_id: i64,
     pub room_number: String,
+    pub class_id: i64,
     pub room_type: String,
-    pub capacity: i32,
     pub floor: Option<i32>,
     pub semester_rate: String,
     pub recess_rate: String,
     pub status: String,
     pub created_at: DateTime<Utc>,
-    /// Number of active allocations currently in this room. A room only has
-    /// free beds when this is less than `capacity`, regardless of `status`
-    /// (a multi-capacity room stays `occupied` after its first resident).
-    pub occupied_beds: i32,
+    /// Residents with an active stay in this room. Rooms have no bed count:
+    /// any number of residents may share one.
+    pub residents: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,17 +233,13 @@ pub struct CompleteOnboarding {
 /// Data required to create a single room.
 ///
 /// `status` is deliberately absent — new rooms are always created `vacant`.
+/// Type, floor, and prices come from the room class.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewRoom {
     pub hostel_id: i64,
     pub room_number: String,
-    pub room_type: String,
-    pub capacity: i32,
-    pub floor: Option<i32>,
-    /// Semester rate as a decimal string, e.g. `"500000.00"`.
-    pub semester_rate: String,
-    /// Recess/internship rate as a decimal string.
-    pub recess_rate: String,
+    /// A room class of the same hostel.
+    pub class_id: i64,
 }
 
 /// Hostel profile augmented with derived onboarding state.

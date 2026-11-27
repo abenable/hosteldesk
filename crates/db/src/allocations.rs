@@ -193,15 +193,15 @@ impl DbPool {
 
 /// Verify a room can be allocated and, if it is vacant, mark it occupied.
 ///
-/// Fails when the room does not belong to the hostel, is under maintenance,
-/// or already has active allocations equal to its capacity. Called by
+/// Fails when the room does not belong to the hostel or is under maintenance.
+/// Rooms have no bed count, so an occupied room takes more residents. Called by
 /// [`insert_allocation`] so every allocation path applies the same guards.
 async fn prepare_room_for_allocation(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     hostel_id: i64,
     room_id: i64,
 ) -> anyhow::Result<()> {
-    let row = sqlx::query("SELECT status, capacity FROM rooms WHERE id = ?1 AND hostel_id = ?2")
+    let row = sqlx::query("SELECT status FROM rooms WHERE id = ?1 AND hostel_id = ?2")
         .bind(room_id)
         .bind(hostel_id)
         .fetch_optional(&mut **tx)
@@ -215,26 +215,12 @@ async fn prepare_room_for_allocation(
     };
 
     let status: String = row.try_get("status")?;
-    let capacity: i32 = row.try_get("capacity")?;
 
     if status == "maintenance" {
         anyhow::bail!("room is under maintenance");
     }
     if !matches!(status.as_str(), "vacant" | "occupied") {
         anyhow::bail!("room cannot be allocated");
-    }
-
-    let active_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM allocations WHERE room_id = ?1 AND hostel_id = ?2 AND status = 'active'",
-    )
-    .bind(room_id)
-    .bind(hostel_id)
-    .fetch_one(&mut **tx)
-    .await
-    .inspect_err(|e| error!(error = %e, room_id, "database error counting active allocations"))?;
-
-    if active_count >= i64::from(capacity) {
-        anyhow::bail!("room has no available beds");
     }
 
     if status == "vacant" {

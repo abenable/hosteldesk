@@ -1,9 +1,9 @@
 //! Filesystem locations shared with the previous Tauri build.
 //!
-//! Tauri stored the database and license under the OS data directory named
-//! `com.hosteldesk.app` (the bundle identifier). This module resolves that
-//! same directory via the [`directories`] crate so an egui build opens an
-//! existing `hosteldesk.db`.
+//! The database and license live under the OS data directory named
+//! `com.hosteldesk.app` (the Tauri identifier). This module resolves it with
+//! the [`directories`] crate rather than Tauri's path API, so the location
+//! stays exactly where every earlier build (Tauri 1.x, egui) kept it.
 
 use directories::{BaseDirs, UserDirs};
 use std::path::{Path, PathBuf};

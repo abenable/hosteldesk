@@ -8,7 +8,6 @@
 //! an outbox, and [`DbPool::link_device`] queues a full snapshot instead.
 
 use crate::DbPool;
-use argon2::password_hash::rand_core::{OsRng, RngCore};
 use protocol::{AckStatus, Entity, SyncCommand};
 use sqlx::{Row, SqliteConnection};
 use tracing::{error, instrument};
@@ -42,7 +41,7 @@ pub struct PendingSync {
 }
 
 /// A pushed command staff should look at: rejected, or accepted with a warning.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncIssue {
     /// What kind of change it was, for example `check_in`.
     pub command_type: String,
@@ -306,13 +305,14 @@ impl DbPool {
 }
 
 /// Queue every existing row of `hostel_id` as creates, in an order the server
-/// can apply: hostel, preferences, rooms, residents without a stay, each stay
+/// can apply: hostel, preferences, room classes, rooms, residents without a stay, each stay
 /// (check-in, then check-out when it ended), then payments.
 ///
 /// Local revisions reset to 1 to match the rows the server will create.
 async fn enqueue_snapshot(conn: &mut SqliteConnection, hostel_id: i64) -> anyhow::Result<()> {
     for sql in [
         "UPDATE hostels SET revision = 1 WHERE id = ?1",
+        "UPDATE room_classes SET revision = 1 WHERE hostel_id = ?1",
         "UPDATE rooms SET revision = 1 WHERE hostel_id = ?1",
         "UPDATE residents SET revision = 1 WHERE hostel_id = ?1",
         "UPDATE allocations SET revision = 1 WHERE hostel_id = ?1",
@@ -328,6 +328,14 @@ async fn enqueue_snapshot(conn: &mut SqliteConnection, hostel_id: i64) -> anyhow
             .await?;
     if has_prefs.is_some() {
         enqueue_preferences(conn, hostel_id).await?;
+    }
+    let classes: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM room_classes WHERE hostel_id = ?1 ORDER BY id")
+            .bind(hostel_id)
+            .fetch_all(&mut *conn)
+            .await?;
+    for class_id in classes {
+        enqueue_room_class(conn, hostel_id, class_id).await?;
     }
     let rooms: Vec<i64> =
         sqlx::query_scalar("SELECT id FROM rooms WHERE hostel_id = ?1 ORDER BY id")
@@ -395,7 +403,7 @@ async fn enqueue(
         "#,
     )
     .bind(hostel_id)
-    .bind(new_idempotency_key())
+    .bind(new_idempotency_key()?)
     .bind(command_type(command))
     .bind(serde_json::to_string(command)?)
     .execute(&mut *conn)
@@ -438,6 +446,39 @@ pub(crate) async fn enqueue_hostel(
     enqueue(conn, hostel_id, &command).await
 }
 
+/// Queue the current room class row, when the hostel is linked.
+pub(crate) async fn enqueue_room_class(
+    conn: &mut SqliteConnection,
+    hostel_id: i64,
+    class_id: i64,
+) -> anyhow::Result<()> {
+    if !enrolled(conn, hostel_id).await? {
+        return Ok(());
+    }
+    let hostel_public_id = hostel_public_id(conn, hostel_id).await?;
+    let row = sqlx::query(
+        r#"
+        SELECT public_id, revision, floor, room_type, semester_rate, recess_rate
+        FROM room_classes WHERE id = ?1 AND hostel_id = ?2
+        "#,
+    )
+    .bind(class_id)
+    .bind(hostel_id)
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("room class not found"))?;
+    let command = SyncCommand::UpsertRoomClass {
+        public_id: row.try_get("public_id")?,
+        hostel_public_id,
+        base_revision: base_revision(row.try_get("revision")?),
+        floor: row.try_get("floor")?,
+        room_type: row.try_get("room_type")?,
+        semester_rate: row.try_get("semester_rate")?,
+        recess_rate: row.try_get("recess_rate")?,
+    };
+    enqueue(conn, hostel_id, &command).await
+}
+
 /// Queue the current room row, when the hostel is linked.
 pub(crate) async fn enqueue_room(
     conn: &mut SqliteConnection,
@@ -450,9 +491,9 @@ pub(crate) async fn enqueue_room(
     let hostel_public_id = hostel_public_id(conn, hostel_id).await?;
     let row = sqlx::query(
         r#"
-        SELECT public_id, revision, room_number, room_type, capacity, floor,
-               semester_rate, recess_rate, status
-        FROM rooms WHERE id = ?1 AND hostel_id = ?2
+        SELECT r.public_id, r.revision, r.room_number, c.public_id AS class_public_id, r.status
+        FROM rooms r JOIN room_classes c ON c.id = r.class_id
+        WHERE r.id = ?1 AND r.hostel_id = ?2
         "#,
     )
     .bind(room_id)
@@ -465,11 +506,7 @@ pub(crate) async fn enqueue_room(
         hostel_public_id,
         base_revision: base_revision(row.try_get("revision")?),
         room_number: row.try_get("room_number")?,
-        room_type: row.try_get("room_type")?,
-        capacity: row.try_get("capacity")?,
-        floor: row.try_get("floor")?,
-        semester_rate: row.try_get("semester_rate")?,
-        recess_rate: row.try_get("recess_rate")?,
+        class_public_id: row.try_get("class_public_id")?,
         status: row.try_get("status")?,
     };
     enqueue(conn, hostel_id, &command).await
@@ -674,12 +711,13 @@ pub(crate) async fn enqueue_payment(
 fn entity_rank(entity: &Entity) -> u8 {
     match entity {
         Entity::Hostel(_) => 0,
-        Entity::Room(_) => 1,
-        Entity::Resident(_) => 2,
-        Entity::Preferences(_) => 3,
-        Entity::Allocation(_) => 4,
-        Entity::Payment(_) => 5,
-        Entity::Receipt(_) => 6,
+        Entity::RoomClass(_) => 1,
+        Entity::Room(_) => 2,
+        Entity::Resident(_) => 3,
+        Entity::Preferences(_) => 4,
+        Entity::Allocation(_) => 5,
+        Entity::Payment(_) => 6,
+        Entity::Receipt(_) => 7,
     }
 }
 
@@ -694,6 +732,7 @@ fn base_revision(current: i64) -> i64 {
 fn command_type(command: &SyncCommand) -> &'static str {
     match command {
         SyncCommand::UpsertHostel { .. } => "upsert_hostel",
+        SyncCommand::UpsertRoomClass { .. } => "upsert_room_class",
         SyncCommand::UpsertRoom { .. } => "upsert_room",
         SyncCommand::UpsertResident { .. } => "upsert_resident",
         SyncCommand::UpsertPreferences { .. } => "upsert_preferences",
@@ -703,10 +742,10 @@ fn command_type(command: &SyncCommand) -> &'static str {
     }
 }
 
-fn new_idempotency_key() -> String {
+fn new_idempotency_key() -> anyhow::Result<String> {
     let mut bytes = [0u8; 16];
-    OsRng.fill_bytes(&mut bytes);
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    getrandom::fill(&mut bytes)?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 async fn apply_one(
@@ -715,6 +754,7 @@ async fn apply_one(
 ) -> anyhow::Result<()> {
     match entity {
         Entity::Hostel(hostel) => apply_hostel(tx, hostel).await,
+        Entity::RoomClass(class) => apply_room_class(tx, class).await,
         Entity::Room(room) => apply_room(tx, room).await,
         Entity::Resident(resident) => apply_resident(tx, resident).await,
         Entity::Allocation(allocation) => apply_allocation(tx, allocation).await,
@@ -773,11 +813,43 @@ async fn apply_hostel(
     Ok(())
 }
 
+async fn apply_room_class(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    class: &protocol::RoomClassSnap,
+) -> anyhow::Result<()> {
+    let hostel_id = require_local_id(tx, "hostels", &class.hostel_public_id).await?;
+    sqlx::query(
+        r#"
+        INSERT INTO room_classes (
+            hostel_id, floor, room_type, semester_rate, recess_rate, public_id, revision
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ON CONFLICT(public_id) DO UPDATE SET
+            floor = excluded.floor,
+            room_type = excluded.room_type,
+            semester_rate = excluded.semester_rate,
+            recess_rate = excluded.recess_rate,
+            revision = excluded.revision
+        "#,
+    )
+    .bind(hostel_id)
+    .bind(class.floor)
+    .bind(&class.room_type)
+    .bind(&class.semester_rate)
+    .bind(&class.recess_rate)
+    .bind(&class.public_id)
+    .bind(class.revision)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 async fn apply_room(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     room: &protocol::RoomSnap,
 ) -> anyhow::Result<()> {
     let hostel_id = require_local_id(tx, "hostels", &room.hostel_public_id).await?;
+    let class_id = require_local_id(tx, "room_classes", &room.class_public_id).await?;
     let existing: Option<i64> = sqlx::query_scalar("SELECT id FROM rooms WHERE public_id = ?1")
         .bind(&room.public_id)
         .fetch_optional(&mut **tx)
@@ -788,17 +860,12 @@ async fn apply_room(
         sqlx::query(
             r#"
             UPDATE rooms
-            SET room_number = ?1, room_type = ?2, capacity = ?3, floor = ?4,
-                semester_rate = ?5, recess_rate = ?6, revision = ?7, status = ?8
-            WHERE id = ?9
+            SET room_number = ?1, class_id = ?2, revision = ?3, status = ?4
+            WHERE id = ?5
             "#,
         )
         .bind(&room.room_number)
-        .bind(&room.room_type)
-        .bind(room.capacity)
-        .bind(room.floor)
-        .bind(&room.semester_rate)
-        .bind(&room.recess_rate)
+        .bind(class_id)
         .bind(room.revision)
         .bind(&room.status)
         .bind(id)
@@ -808,20 +875,13 @@ async fn apply_room(
     }
     sqlx::query(
         r#"
-        INSERT INTO rooms (
-            hostel_id, room_number, room_type, capacity, floor,
-            semester_rate, recess_rate, status, public_id, revision
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        INSERT INTO rooms (hostel_id, room_number, class_id, status, public_id, revision)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         "#,
     )
     .bind(hostel_id)
     .bind(&room.room_number)
-    .bind(&room.room_type)
-    .bind(room.capacity)
-    .bind(room.floor)
-    .bind(&room.semester_rate)
-    .bind(&room.recess_rate)
+    .bind(class_id)
     .bind(&room.status)
     .bind(&room.public_id)
     .bind(room.revision)
@@ -1045,6 +1105,7 @@ async fn require_local_id(
 ) -> anyhow::Result<i64> {
     let sql = match table {
         "hostels" => "SELECT id FROM hostels WHERE public_id = ?1",
+        "room_classes" => "SELECT id FROM room_classes WHERE public_id = ?1",
         "rooms" => "SELECT id FROM rooms WHERE public_id = ?1",
         "residents" => "SELECT id FROM residents WHERE public_id = ?1",
         "allocations" => "SELECT id FROM allocations WHERE public_id = ?1",
@@ -1062,7 +1123,7 @@ async fn require_local_id(
 mod tests {
     use crate::model::*;
     use crate::test_support::*;
-    use protocol::{Entity, RoomSnap, SyncCommand};
+    use protocol::{Entity, RoomClassSnap, RoomSnap, SyncCommand};
 
     async fn link(pool: &crate::DbPool, hostel_id: i64) {
         pool.link_device(hostel_id, "https://sync.test", "dev-1", "AB12CD", true)
@@ -1132,6 +1193,7 @@ mod tests {
             .iter()
             .map(|row| match row.command {
                 SyncCommand::UpsertHostel { .. } => "hostel",
+                SyncCommand::UpsertRoomClass { .. } => "class",
                 SyncCommand::UpsertPreferences { .. } => "prefs",
                 SyncCommand::UpsertRoom { .. } => "room",
                 SyncCommand::UpsertResident { .. } => "resident",
@@ -1159,25 +1221,21 @@ mod tests {
         let pool = test_pool().await;
         let hostel = seed_hostel(&pool).await;
         link(&pool, hostel.id).await;
+        let class_id = seed_class(&pool, hostel.id, "single").await;
         let before = pool.pending_sync_count(hostel.id).await.unwrap();
-        seed_room(&pool, hostel.id, "7", "single").await;
+        let room = NewRoom {
+            hostel_id: hostel.id,
+            room_number: "7".into(),
+            class_id,
+        };
+        pool.add_room(room.clone()).await.expect("room");
         assert_eq!(
             pool.pending_sync_count(hostel.id).await.unwrap(),
             before + 1
         );
 
         // A failed write (duplicate room number) leaves no outbox row behind.
-        let duplicate = pool
-            .add_room(NewRoom {
-                hostel_id: hostel.id,
-                room_number: "7".into(),
-                room_type: "single".into(),
-                capacity: 1,
-                floor: None,
-                semester_rate: "100".into(),
-                recess_rate: "50".into(),
-            })
-            .await;
+        let duplicate = pool.add_room(room).await;
         assert!(duplicate.is_err());
         assert_eq!(
             pool.pending_sync_count(hostel.id).await.unwrap(),
@@ -1190,21 +1248,27 @@ mod tests {
         let pool = test_pool().await;
         let hostel = seed_hostel(&pool).await;
         let hostel_public_id = pool.hostel_public_id(hostel.id).await.unwrap().unwrap();
+        let class = Entity::RoomClass(RoomClassSnap {
+            public_id: "class-from-server".into(),
+            hostel_public_id: hostel_public_id.clone(),
+            revision: 1,
+            floor: Some(1),
+            room_type: "single".into(),
+            semester_rate: "100".into(),
+            recess_rate: "50".into(),
+        });
         let room = |status: &str| {
             Entity::Room(RoomSnap {
                 public_id: "room-from-server".into(),
                 hostel_public_id: hostel_public_id.clone(),
                 revision: 1,
                 room_number: "9".into(),
-                room_type: "single".into(),
-                capacity: 1,
-                floor: None,
-                semester_rate: "100".into(),
-                recess_rate: "50".into(),
+                class_public_id: "class-from-server".into(),
                 status: status.into(),
             })
         };
-        pool.apply_remote_page(&hostel_public_id, &[room("maintenance")], 4)
+        // The page lists the room first; classes still apply before rooms.
+        pool.apply_remote_page(&hostel_public_id, &[room("maintenance"), class], 4)
             .await
             .expect("apply");
         // A later page taking the room out of maintenance is honoured.
@@ -1226,11 +1290,7 @@ mod tests {
             hostel_public_id: "unknown-hostel".into(),
             revision: 1,
             room_number: "10".into(),
-            room_type: "single".into(),
-            capacity: 1,
-            floor: None,
-            semester_rate: "100".into(),
-            recess_rate: "50".into(),
+            class_public_id: "class-from-server".into(),
             status: "vacant".into(),
         });
         assert!(pool

@@ -206,18 +206,7 @@ mod tests {
             .await
             .expect("create hostel");
 
-        let room_id = pool
-            .add_room(NewRoom {
-                hostel_id: hostel.id,
-                room_number: "101".to_string(),
-                room_type: "single".to_string(),
-                capacity: 1,
-                floor: None,
-                semester_rate: "10".to_string(),
-                recess_rate: "10".to_string(),
-            })
-            .await
-            .expect("add room");
+        let room_id = seed_room(&pool, hostel.id, "101", "single").await;
 
         let resident_id = seed_resident(&pool, "Resident").await;
 

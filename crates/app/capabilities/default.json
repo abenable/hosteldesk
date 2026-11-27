@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The main window: HostelDesk's own commands (allowed without an ACL entry) and listening for the background `sync` event. Nothing else: no core defaults (image, tray, menu, window, emit), no filesystem, shell, or HTTP plugins.",
+  "windows": ["main"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

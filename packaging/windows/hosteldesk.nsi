@@ -8,7 +8,14 @@
 ; the 1.x (Tauri) installer used, so upgrading replaces it instead of leaving a
 ; second copy in Apps & features. The database lives in %APPDATA% and is never
 ; touched by install or uninstall.
+;
+; HostelDesk draws its window with Microsoft Edge WebView2. Windows 11 (and
+; updated Windows 10) ships the runtime; when it is missing, the installer runs
+; Microsoft's Evergreen bootstrapper (embedded by build-installer.sh) and refuses to
+; finish if the runtime still is not there, so nobody ends up with an app that
+; cannot open.
 !include "MUI2.nsh"
+!include "LogicLib.nsh"
 
 !ifndef VERSION
   !define VERSION "0.0.0"
@@ -22,7 +29,25 @@
 !ifndef ICON
   !define ICON "crates/app/icons/icon.ico"
 !endif
+!ifndef WEBVIEW2
+  !define WEBVIEW2 "target/MicrosoftEdgeWebview2Setup.exe"
+!endif
 !define UNINSTKEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\HostelDesk"
+; WebView2 Runtime's EdgeUpdate client id. This 32-bit installer reads HKLM
+; through WOW6432Node automatically; HKCU holds a per-user runtime.
+!define WEBVIEW2KEY "SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+
+; $0 = installed WebView2 Runtime version, or "" when there is none.
+!macro WebView2Version
+  ReadRegStr $0 HKLM "${WEBVIEW2KEY}" "pv"
+  ${If} $0 == ""
+  ${OrIf} $0 == "0.0.0.0"
+    ReadRegStr $0 HKCU "${WEBVIEW2KEY}" "pv"
+  ${EndIf}
+  ${If} $0 == "0.0.0.0"
+    StrCpy $0 ""
+  ${EndIf}
+!macroend
 
 Name "HostelDesk ${VERSION}"
 OutFile "${OUTFILE}"
@@ -36,6 +61,21 @@ RequestExecutionLevel user
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
+
+Section "-WebView2"
+  !insertmacro WebView2Version
+  ${If} $0 == ""
+    DetailPrint "Installing the Microsoft Edge WebView2 Runtime..."
+    InitPluginsDir
+    File "/oname=$PLUGINSDIR\MicrosoftEdgeWebview2Setup.exe" "${WEBVIEW2}"
+    ExecWait '"$PLUGINSDIR\MicrosoftEdgeWebview2Setup.exe" /silent /install' $1
+    !insertmacro WebView2Version
+    ${If} $0 == ""
+      MessageBox MB_ICONSTOP "HostelDesk needs the Microsoft Edge WebView2 Runtime, which could not be installed (code $1). Connect to the internet and run this installer again." /SD IDOK
+      Abort
+    ${EndIf}
+  ${EndIf}
+SectionEnd
 
 Section "HostelDesk"
   SetOutPath "$INSTDIR"
