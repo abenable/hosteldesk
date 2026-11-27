@@ -109,7 +109,7 @@ export interface Action {
  *   e.preventDefault();
  *   if (!valid()) return;
  *   void save.run(async () => {
- *     await api.addRoom(request);
+ *     await api.addRooms(request);
  *     desk.toast({ tone: 'success', title: 'Room added.' });
  *     desk.reload();
  *     onClose();

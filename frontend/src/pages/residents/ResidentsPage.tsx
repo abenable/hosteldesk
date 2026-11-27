@@ -125,13 +125,13 @@ export default function ResidentsPage() {
           <div className="relative min-w-56 flex-1 sm:max-w-xs">
             <Icon
               name="magnifying-glass"
-              className="pointer-events-none absolute inset-y-0 start-3 my-auto size-4 text-gray-400"
+              className="pointer-events-none absolute inset-y-0 start-4 my-auto size-4 text-gray-400"
             />
             <Input
               type="search"
               aria-label="Search residents"
               placeholder="Search name, phone or room"
-              className="ps-9 [&::-webkit-search-cancel-button]:hidden"
+              className="ps-10 [&::-webkit-search-cancel-button]:hidden"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />

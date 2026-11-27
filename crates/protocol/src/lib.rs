@@ -38,6 +38,23 @@ pub enum SyncCommand {
         /// ISO currency code.
         currency: String,
     },
+    /// Create or edit a room class: the floor, type, and prices its rooms share.
+    UpsertRoomClass {
+        /// Stable class id.
+        public_id: String,
+        /// Hostel that owns the class.
+        hostel_public_id: String,
+        /// Revision the edit was based on. `0` creates the class.
+        base_revision: i64,
+        /// Optional floor.
+        floor: Option<i32>,
+        /// `single`, `double`, or `dorm`.
+        room_type: String,
+        /// Semester rate, decimal string.
+        semester_rate: String,
+        /// Recess rate, decimal string.
+        recess_rate: String,
+    },
     /// Create or edit a room.
     UpsertRoom {
         /// Stable room id.
@@ -48,16 +65,8 @@ pub enum SyncCommand {
         base_revision: i64,
         /// Room label unique within the hostel.
         room_number: String,
-        /// `single`, `double`, or `dorm`.
-        room_type: String,
-        /// Bed count.
-        capacity: i32,
-        /// Optional floor.
-        floor: Option<i32>,
-        /// Semester rate, decimal string.
-        semester_rate: String,
-        /// Recess rate, decimal string.
-        recess_rate: String,
+        /// Room class (floor, type, and prices) of this hostel.
+        class_public_id: String,
         /// `vacant`, `occupied`, or `maintenance`.
         status: String,
     },
@@ -165,7 +174,10 @@ impl SyncCommand {
     pub fn hostel_public_id(&self) -> &str {
         match self {
             SyncCommand::UpsertHostel { public_id, .. } => public_id,
-            SyncCommand::UpsertRoom {
+            SyncCommand::UpsertRoomClass {
+                hostel_public_id, ..
+            }
+            | SyncCommand::UpsertRoom {
                 hostel_public_id, ..
             }
             | SyncCommand::UpsertResident {
@@ -214,13 +226,16 @@ fn valid_time(value: &str, format: &str) -> bool {
 /// Ids a batch of commands reads, so a store can load only those rows into a
 /// [`Ledger`] instead of the whole hostel.
 ///
-/// The store must load the hostel, its preferences, every allocation, resident,
-/// and payment listed here, the rooms listed here plus the rooms of those
-/// allocations plus any room whose number is in `room_numbers`, every *active*
-/// allocation in any of those rooms (for bed counts), receipts whose number is
+/// The store must load the hostel, its preferences, every room class,
+/// allocation, resident, and payment listed here, the rooms listed here plus
+/// the rooms of those allocations plus any room whose number is in
+/// `room_numbers`, every *active* allocation in any of those rooms (a room is
+/// vacant again once its last stay ends), receipts whose number is
 /// in `receipt_numbers`, and which of `idempotency_keys` were already applied.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct BatchRefs {
+    /// Room class ids named by class upserts and room upserts.
+    pub room_classes: HashSet<String>,
     /// Room ids named by the commands.
     pub rooms: HashSet<String>,
     /// Resident ids named by the commands.
@@ -246,13 +261,18 @@ impl BatchRefs {
                 .insert(envelope.idempotency_key.clone());
             match &envelope.command {
                 SyncCommand::UpsertHostel { .. } | SyncCommand::UpsertPreferences { .. } => {}
+                SyncCommand::UpsertRoomClass { public_id, .. } => {
+                    refs.room_classes.insert(public_id.clone());
+                }
                 SyncCommand::UpsertRoom {
                     public_id,
                     room_number,
+                    class_public_id,
                     ..
                 } => {
                     refs.rooms.insert(public_id.clone());
                     refs.room_numbers.insert(room_number.clone());
+                    refs.room_classes.insert(class_public_id.clone());
                 }
                 SyncCommand::UpsertResident { public_id, .. } => {
                     refs.residents.insert(public_id.clone());
@@ -295,6 +315,8 @@ impl BatchRefs {
 pub enum Entity {
     /// Hostel profile.
     Hostel(HostelSnap),
+    /// Room class.
+    RoomClass(RoomClassSnap),
     /// Room.
     Room(RoomSnap),
     /// Resident.
@@ -326,6 +348,25 @@ pub struct HostelSnap {
     pub currency: String,
 }
 
+/// Room class snapshot: the floor, type, and prices its rooms share.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoomClassSnap {
+    /// Stable id.
+    pub public_id: String,
+    /// Owning hostel.
+    pub hostel_public_id: String,
+    /// Current revision.
+    pub revision: i64,
+    /// Floor.
+    pub floor: Option<i32>,
+    /// `single`, `double`, or `dorm`.
+    pub room_type: String,
+    /// Semester rate.
+    pub semester_rate: String,
+    /// Recess rate.
+    pub recess_rate: String,
+}
+
 /// Room snapshot.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoomSnap {
@@ -337,16 +378,8 @@ pub struct RoomSnap {
     pub revision: i64,
     /// Room number.
     pub room_number: String,
-    /// Room type.
-    pub room_type: String,
-    /// Capacity.
-    pub capacity: i32,
-    /// Floor.
-    pub floor: Option<i32>,
-    /// Semester rate.
-    pub semester_rate: String,
-    /// Recess rate.
-    pub recess_rate: String,
+    /// Room class.
+    pub class_public_id: String,
     /// Status.
     pub status: String,
 }
@@ -475,6 +508,9 @@ pub enum ApplyOutcome {
 pub struct LedgerDump {
     /// Hostel profile.
     pub hostel: Option<HostelSnap>,
+    /// Room classes.
+    #[serde(default)]
+    pub room_classes: Vec<RoomClassSnap>,
     /// Rooms.
     pub rooms: Vec<RoomSnap>,
     /// Residents.
@@ -496,6 +532,7 @@ pub struct LedgerDump {
 pub struct Ledger {
     /// Hostel profile, once bootstrapped.
     pub hostel: Option<HostelSnap>,
+    room_classes: HashMap<String, RoomClassSnap>,
     rooms: HashMap<String, RoomSnap>,
     residents: HashMap<String, ResidentSnap>,
     allocations: HashMap<String, AllocationSnap>,
@@ -531,27 +568,36 @@ impl Ledger {
                 phone.clone(),
                 currency,
             ),
+            SyncCommand::UpsertRoomClass {
+                public_id,
+                hostel_public_id,
+                base_revision,
+                floor,
+                room_type,
+                semester_rate,
+                recess_rate,
+            } => self.upsert_room_class(RoomClassSnap {
+                public_id: public_id.clone(),
+                hostel_public_id: hostel_public_id.clone(),
+                revision: *base_revision,
+                floor: *floor,
+                room_type: room_type.clone(),
+                semester_rate: semester_rate.clone(),
+                recess_rate: recess_rate.clone(),
+            }),
             SyncCommand::UpsertRoom {
                 public_id,
                 hostel_public_id,
                 base_revision,
                 room_number,
-                room_type,
-                capacity,
-                floor,
-                semester_rate,
-                recess_rate,
+                class_public_id,
                 status,
             } => self.upsert_room(RoomSnap {
                 public_id: public_id.clone(),
                 hostel_public_id: hostel_public_id.clone(),
                 revision: *base_revision,
                 room_number: room_number.clone(),
-                room_type: room_type.clone(),
-                capacity: *capacity,
-                floor: *floor,
-                semester_rate: semester_rate.clone(),
-                recess_rate: recess_rate.clone(),
+                class_public_id: class_public_id.clone(),
                 status: status.clone(),
             }),
             SyncCommand::UpsertResident {
@@ -673,6 +719,7 @@ impl Ledger {
     pub fn dump(&self) -> LedgerDump {
         LedgerDump {
             hostel: self.hostel.clone(),
+            room_classes: self.room_classes.values().cloned().collect(),
             rooms: self.rooms.values().cloned().collect(),
             residents: self.residents.values().cloned().collect(),
             allocations: self.allocations.values().cloned().collect(),
@@ -687,6 +734,11 @@ impl Ledger {
     pub fn from_dump(dump: LedgerDump) -> Self {
         Self {
             hostel: dump.hostel,
+            room_classes: dump
+                .room_classes
+                .into_iter()
+                .map(|row| (row.public_id.clone(), row))
+                .collect(),
             rooms: dump
                 .rooms
                 .into_iter()
@@ -723,6 +775,7 @@ impl Ledger {
         if let Some(hostel) = &self.hostel {
             rows.push(Entity::Hostel(hostel.clone()));
         }
+        rows.extend(self.room_classes.values().cloned().map(Entity::RoomClass));
         rows.extend(self.rooms.values().cloned().map(Entity::Room));
         rows.extend(self.residents.values().cloned().map(Entity::Resident));
         rows.extend(self.allocations.values().cloned().map(Entity::Allocation));
@@ -774,6 +827,50 @@ impl Ledger {
         }
     }
 
+    fn upsert_room_class(&mut self, incoming: RoomClassSnap) -> ApplyOutcome {
+        let base = incoming.revision;
+        if let Some(current) = self.room_classes.get(&incoming.public_id) {
+            if current.hostel_public_id != incoming.hostel_public_id {
+                return conflict("room class belongs to another hostel");
+            }
+            // An upgraded desk re-creates the classes it derived from its old
+            // rooms (same id, same fields); the copy here already covers it.
+            let same = RoomClassSnap {
+                revision: current.revision,
+                ..incoming.clone()
+            } == *current;
+            if base == 0 && same {
+                return ApplyOutcome::Ack {
+                    changed: Vec::new(),
+                    replay: false,
+                    warning: None,
+                };
+            }
+            if current.revision != base {
+                return conflict("room class was saved on another desk");
+            }
+        } else if base != 0 {
+            return conflict("room class does not exist");
+        }
+        if !matches!(incoming.room_type.as_str(), "single" | "double" | "dorm") {
+            return conflict("room_type must be single, double, or dorm");
+        }
+        if let Err(message) = validate_money("semester_rate", &incoming.semester_rate)
+            .and_then(|_| validate_money("recess_rate", &incoming.recess_rate))
+        {
+            return ApplyOutcome::Conflict { message };
+        }
+        let mut snap = incoming;
+        snap.revision = if base == 0 { 1 } else { base + 1 };
+        self.room_classes
+            .insert(snap.public_id.clone(), snap.clone());
+        ApplyOutcome::Ack {
+            changed: vec![Entity::RoomClass(snap)],
+            replay: false,
+            warning: None,
+        }
+    }
+
     fn upsert_room(&mut self, incoming: RoomSnap) -> ApplyOutcome {
         let base = incoming.revision;
         if let Some(current) = self.rooms.get(&incoming.public_id) {
@@ -783,8 +880,12 @@ impl Ledger {
         } else if base != 0 {
             return conflict("room does not exist");
         }
-        if !matches!(incoming.room_type.as_str(), "single" | "double" | "dorm") {
-            return conflict("room_type must be single, double, or dorm");
+        if !self
+            .room_classes
+            .get(&incoming.class_public_id)
+            .is_some_and(|class| class.hostel_public_id == incoming.hostel_public_id)
+        {
+            return conflict("room class not found in this hostel");
         }
         if !matches!(
             incoming.status.as_str(),
@@ -792,16 +893,8 @@ impl Ledger {
         ) {
             return conflict("status must be vacant, occupied, or maintenance");
         }
-        if incoming.capacity < 1 {
-            return conflict("capacity must be at least 1");
-        }
         if incoming.room_number.trim().is_empty() {
             return conflict("room_number is required");
-        }
-        if let Err(message) = validate_money("semester_rate", &incoming.semester_rate)
-            .and_then(|_| validate_money("recess_rate", &incoming.recess_rate))
-        {
-            return ApplyOutcome::Conflict { message };
         }
         if self.rooms.values().any(|room| {
             room.hostel_public_id == incoming.hostel_public_id
@@ -877,9 +970,10 @@ impl Ledger {
     }
 
     /// A check-in records something that already happened at the front desk, so
-    /// a full room or one under maintenance is accepted with a warning for
-    /// staff to resolve, not rejected (rejecting it also orphaned the stay's
-    /// payments on the desk that took the money).
+    /// a room under maintenance is accepted with a warning for staff to
+    /// resolve, not rejected (rejecting it also orphaned the stay's payments on
+    /// the desk that took the money). Rooms have no bed count: any number of
+    /// residents may share one.
     fn check_in(&mut self, input: CheckInInput<'_>) -> ApplyOutcome {
         if !matches!(input.term, "semester_1" | "semester_2" | "recess") {
             return conflict("term must be semester_1, semester_2, or recess");
@@ -899,28 +993,12 @@ impl Ledger {
         if room.hostel_public_id != input.hostel_public_id {
             return conflict("room belongs to another hostel");
         }
-        let active = self
-            .allocations
-            .values()
-            .filter(|allocation| {
-                allocation.room_public_id == input.room_public_id && allocation.status == "active"
-            })
-            .count();
-        let warning = if room.status == "maintenance" {
-            Some(format!(
+        let warning = (room.status == "maintenance").then(|| {
+            format!(
                 "room {} was checked into while under maintenance",
                 room.room_number
-            ))
-        } else if active >= room.capacity as usize {
-            Some(format!(
-                "room {} is over capacity ({} beds, {} residents)",
-                room.room_number,
-                room.capacity,
-                active + 1
-            ))
-        } else {
-            None
-        };
+            )
+        });
         let resident = if let Some(existing) = self.residents.get(input.resident_public_id).cloned()
         {
             if existing.hostel_public_id != input.hostel_public_id {
@@ -1118,19 +1196,37 @@ fn conflict(message: &str) -> ApplyOutcome {
 mod tests {
     use super::*;
 
+    fn class(id: &str) -> SyncCommand {
+        SyncCommand::UpsertRoomClass {
+            public_id: id.to_string(),
+            hostel_public_id: "h1".to_string(),
+            base_revision: 0,
+            floor: Some(1),
+            room_type: "single".to_string(),
+            semester_rate: "100".to_string(),
+            recess_rate: "50".to_string(),
+        }
+    }
+
     fn room(id: &str) -> SyncCommand {
         SyncCommand::UpsertRoom {
             public_id: id.to_string(),
             hostel_public_id: "h1".to_string(),
             base_revision: 0,
             room_number: "101".to_string(),
-            room_type: "single".to_string(),
-            capacity: 1,
-            floor: None,
-            semester_rate: "100".to_string(),
-            recess_rate: "50".to_string(),
+            class_public_id: "c1".to_string(),
             status: "vacant".to_string(),
         }
+    }
+
+    /// A ledger holding room class `c1`, which [`room`] points at.
+    fn ledger() -> Ledger {
+        let mut ledger = Ledger::default();
+        assert!(matches!(
+            ledger.apply("class", &class("c1")),
+            ApplyOutcome::Ack { .. }
+        ));
+        ledger
     }
 
     fn check_in(allocation: &str, resident: &str) -> SyncCommand {
@@ -1154,7 +1250,7 @@ mod tests {
 
     #[test]
     fn replay_does_not_double_book() {
-        let mut ledger = Ledger::default();
+        let mut ledger = ledger();
         assert!(matches!(
             ledger.apply("room", &room("r1")),
             ApplyOutcome::Ack { .. }
@@ -1177,19 +1273,15 @@ mod tests {
 
     #[test]
     fn stale_room_edit_is_rejected() {
-        let mut ledger = Ledger::default();
+        let mut ledger = ledger();
         ledger.apply("room", &room("r1"));
         let stale = SyncCommand::UpsertRoom {
             public_id: "r1".to_string(),
             hostel_public_id: "h1".to_string(),
             base_revision: 0,
             room_number: "101".to_string(),
-            room_type: "single".to_string(),
-            capacity: 2,
-            floor: None,
-            semester_rate: "100".to_string(),
-            recess_rate: "50".to_string(),
-            status: "vacant".to_string(),
+            class_public_id: "c1".to_string(),
+            status: "occupied".to_string(),
         };
         match ledger.apply("edit", &stale) {
             ApplyOutcome::Conflict { message } => assert!(message.contains("another desk")),
@@ -1199,7 +1291,7 @@ mod tests {
 
     #[test]
     fn receipt_number_is_kept_and_not_reused() {
-        let mut ledger = Ledger::default();
+        let mut ledger = ledger();
         ledger.apply("room", &room("r1"));
         ledger.apply("in", &check_in("a1", "p1"));
         let payment = SyncCommand::RecordPayment {
@@ -1263,7 +1355,7 @@ mod tests {
 
     #[test]
     fn malformed_or_non_positive_money_is_a_conflict_not_a_crash() {
-        let mut ledger = Ledger::default();
+        let mut ledger = ledger();
         ledger.apply("room", &room("r1"));
         ledger.apply("in", &check_in("a1", "p1"));
         for (n, bad) in ["-5", "0", "abc", "", " 10", "1_000", "+5", "1e3"]
@@ -1276,16 +1368,16 @@ mod tests {
             ));
             assert!(message.contains("amount"), "{bad:?}: {message}");
         }
-        let mut bad_rate = room("r2");
-        if let SyncCommand::UpsertRoom { semester_rate, .. } = &mut bad_rate {
+        let mut bad_rate = class("c2");
+        if let SyncCommand::UpsertRoomClass { semester_rate, .. } = &mut bad_rate {
             *semester_rate = "-1".to_string();
         }
-        assert!(conflict_message(ledger.apply("room-2", &bad_rate)).contains("semester_rate"));
+        assert!(conflict_message(ledger.apply("class-2", &bad_rate)).contains("semester_rate"));
     }
 
     #[test]
     fn enum_fields_the_desk_cannot_store_are_conflicts() {
-        let mut ledger = Ledger::default();
+        let mut ledger = ledger();
         let mut bad_status = room("r1");
         if let SyncCommand::UpsertRoom { status, .. } = &mut bad_status {
             *status = "flooded".to_string();
@@ -1312,7 +1404,7 @@ mod tests {
 
     #[test]
     fn command_for_another_hostel_is_rejected() {
-        let mut ledger = Ledger::default();
+        let mut ledger = ledger();
         let outcome = ledger.apply_for_hostel("h2", "room", &room("r1"));
         assert!(conflict_message(outcome).contains("different hostel"));
         assert!(matches!(
@@ -1322,38 +1414,92 @@ mod tests {
     }
 
     #[test]
-    fn over_capacity_check_in_is_accepted_with_a_warning() {
-        let mut ledger = Ledger::default();
+    fn a_room_takes_any_number_of_residents_without_a_warning() {
+        let mut ledger = ledger();
         ledger.apply("room", &room("r1"));
         ledger.apply("in-1", &check_in("a1", "p1"));
-        match ledger.apply("in-2", &check_in("a2", "p2")) {
-            ApplyOutcome::Ack {
-                warning: Some(warning),
-                ..
-            } => assert!(warning.contains("over capacity"), "{warning}"),
-            other => panic!("expected ack with warning, got {other:?}"),
-        }
-        assert_eq!(ledger.allocations.len(), 2);
-        // The payment for the overbooked stay is not cascaded into a conflict.
-        let mut pay = payment("pay", "10", "R1");
-        if let SyncCommand::RecordPayment {
-            allocation_public_id,
-            resident_public_id,
-            ..
-        } = &mut pay
-        {
-            *allocation_public_id = "a2".to_string();
-            *resident_public_id = "p2".to_string();
-        }
         assert!(matches!(
-            ledger.apply("pay", &pay),
+            ledger.apply("in-2", &check_in("a2", "p2")),
             ApplyOutcome::Ack { warning: None, .. }
         ));
+        assert_eq!(ledger.allocations.len(), 2);
+    }
+
+    #[test]
+    fn a_room_needs_a_class_of_its_own_hostel() {
+        let mut ledger = Ledger::default();
+        assert!(conflict_message(ledger.apply("room", &room("r1"))).contains("room class"));
+        let mut elsewhere = class("c1");
+        if let SyncCommand::UpsertRoomClass {
+            hostel_public_id, ..
+        } = &mut elsewhere
+        {
+            *hostel_public_id = "h2".to_string();
+        }
+        ledger.apply("class", &elsewhere);
+        assert!(conflict_message(ledger.apply("room-2", &room("r1"))).contains("room class"));
+    }
+
+    #[test]
+    fn room_class_fields_the_desk_cannot_store_are_conflicts() {
+        let mut ledger = Ledger::default();
+        let mut bad_type = class("c1");
+        if let SyncCommand::UpsertRoomClass { room_type, .. } = &mut bad_type {
+            *room_type = "suite".to_string();
+        }
+        assert!(conflict_message(ledger.apply("a", &bad_type)).contains("room_type"));
+        let mut bad_recess = class("c1");
+        if let SyncCommand::UpsertRoomClass { recess_rate, .. } = &mut bad_recess {
+            *recess_rate = "0".to_string();
+        }
+        assert!(conflict_message(ledger.apply("b", &bad_recess)).contains("recess_rate"));
+    }
+
+    /// Upgraded desks each re-create the room classes they derived from their
+    /// old rooms; the copy the server already has must not become a conflict.
+    #[test]
+    fn re_creating_an_identical_room_class_is_a_no_op() {
+        let mut ledger = ledger();
+        assert_eq!(
+            ledger.apply("class-again", &class("c1")),
+            ApplyOutcome::Ack {
+                changed: Vec::new(),
+                replay: false,
+                warning: None,
+            }
+        );
+        let mut different = class("c1");
+        if let SyncCommand::UpsertRoomClass { semester_rate, .. } = &mut different {
+            *semester_rate = "900".to_string();
+        }
+        assert!(conflict_message(ledger.apply("class-3", &different)).contains("another desk"));
+    }
+
+    #[test]
+    fn editing_a_room_class_bumps_its_revision() {
+        let mut ledger = ledger();
+        let mut edit = class("c1");
+        if let SyncCommand::UpsertRoomClass {
+            base_revision,
+            semester_rate,
+            ..
+        } = &mut edit
+        {
+            *base_revision = 1;
+            *semester_rate = "120".to_string();
+        }
+        match ledger.apply("edit", &edit) {
+            ApplyOutcome::Ack { changed, .. } => assert!(matches!(
+                changed.as_slice(),
+                [Entity::RoomClass(c)] if c.revision == 2 && c.semester_rate == "120"
+            )),
+            other => panic!("expected ack, got {other:?}"),
+        }
     }
 
     #[test]
     fn reusing_an_allocation_or_payment_id_is_a_conflict() {
-        let mut ledger = Ledger::default();
+        let mut ledger = ledger();
         ledger.apply("room", &room("r1"));
         ledger.apply("in-1", &check_in("a1", "p1"));
         assert!(
@@ -1368,7 +1514,7 @@ mod tests {
 
     #[test]
     fn duplicate_room_number_is_a_conflict() {
-        let mut ledger = Ledger::default();
+        let mut ledger = ledger();
         ledger.apply("room-1", &room("r1"));
         // Same number "101", different id: would break the desk's UNIQUE index on pull.
         assert!(conflict_message(ledger.apply("room-2", &room("r2"))).contains("room_number"));
@@ -1376,7 +1522,7 @@ mod tests {
 
     #[test]
     fn payment_keeps_its_desk_date() {
-        let mut ledger = Ledger::default();
+        let mut ledger = ledger();
         ledger.apply("room", &room("r1"));
         ledger.apply("in", &check_in("a1", "p1"));
         match ledger.apply("pay", &payment("pay", "10", "R1")) {
@@ -1414,6 +1560,12 @@ mod tests {
         );
         LedgerDump {
             hostel: dump.hostel.clone(),
+            room_classes: dump
+                .room_classes
+                .iter()
+                .filter(|c| refs.room_classes.contains(&c.public_id))
+                .cloned()
+                .collect(),
             rooms: dump
                 .rooms
                 .iter()
@@ -1451,7 +1603,7 @@ mod tests {
 
     #[test]
     fn batch_scoped_ledger_matches_the_full_ledger() {
-        let mut full = Ledger::default();
+        let mut full = ledger();
         let mut second_room = room("r2");
         if let SyncCommand::UpsertRoom { room_number, .. } = &mut second_room {
             *room_number = "102".to_string();

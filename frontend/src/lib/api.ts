@@ -138,8 +138,15 @@ export const uploadHostelLogo = (request: T.UploadHostelLogoRequest) =>
 
 /** Rooms of a hostel. */
 export const rooms = (hostelId: number) => call<T.Room[]>('rooms', { hostelId });
-/** Add a room. Returns its id. */
-export const addRoom = (request: T.AddRoomRequest) => call<number>('add_room', { request });
+/** Room classes of a hostel. */
+export const roomClasses = (hostelId: number) => call<T.RoomClass[]>('room_classes', { hostelId });
+/** Create (`class_id: null`) or edit a room class. Admin only. Returns its id. */
+export const saveRoomClass = (request: T.SaveRoomClassRequest) =>
+  call<number>('save_room_class', { request });
+/** Add rooms of one class, all or none. Admin only. Returns their ids. */
+export const addRooms = (request: T.AddRoomsRequest) => call<number[]>('add_rooms', { request });
+/** Open the email app on a renewal request to HostelDesk (fixed address, built in Rust). */
+export const emailRenewal = () => call<void>('email_renewal');
 /** Check a resident in. Returns the new allocation id. */
 export const checkIn = (request: T.CheckInRequest) => call<number>('check_in', { request });
 /** Check an allocation out. */

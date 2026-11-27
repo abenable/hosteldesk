@@ -111,7 +111,7 @@ export default function TakePaymentModal({ stay, onClose }: TakePaymentModalProp
             }
           >
             <div className="relative">
-              <span className="pointer-events-none absolute inset-y-0 start-0 flex items-center ps-3 text-sm text-gray-500">
+              <span className="pointer-events-none absolute inset-y-0 start-0 flex items-center ps-4 text-sm text-gray-500">
                 {desk.currency}
               </span>
               <Input
@@ -134,7 +134,7 @@ export default function TakePaymentModal({ stay, onClose }: TakePaymentModalProp
               {METHODS.map((m) => (
                 <label
                   key={m.value}
-                  className="flex cursor-pointer items-center gap-3 rounded-lg border border-gray-300 bg-white px-3 py-2.5 text-sm font-medium text-gray-700 shadow-xs transition-colors hover:bg-gray-50 has-checked:border-primary-900 has-checked:text-gray-900 has-checked:ring-1 has-checked:ring-primary-900"
+                  className="flex cursor-pointer items-center gap-3 rounded-full border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 shadow-xs transition-colors hover:bg-gray-50 has-checked:border-primary-900 has-checked:text-gray-900 has-checked:ring-1 has-checked:ring-primary-900"
                 >
                   <input
                     type="radio"

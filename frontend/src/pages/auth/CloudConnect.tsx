@@ -11,7 +11,7 @@ type Errors = Partial<Record<'organization' | 'email' | 'password', string>>;
 
 /**
  * Connect this computer to a HostelDesk account: "Sign in" or "Create account"
- * (two modes), with the server URL under "Advanced". Runs `connect_cloud`
+ * (two modes); dev builds also offer a server URL under "Advanced". Runs `connect_cloud`
  * (which also syncs once), toasts the outcome, then calls `onConnected`.
  *
  * Used by the Lock screen (`onConnected` re-boots) and by Settings → Cloud for
@@ -110,21 +110,25 @@ export default function CloudConnectForm({
           onChange={(e) => setPassword(e.target.value)}
         />
       </Field>
-      <details className="group">
-        <summary className="flex w-fit cursor-pointer list-none items-center gap-1 rounded-sm text-sm font-medium text-gray-600 hover:text-gray-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-900 [&::-webkit-details-marker]:hidden">
-          Advanced
-          <Icon name="chevron-down" className="size-4 transition group-open:-rotate-180" />
-        </summary>
-        <Field label="Server" hint="Leave blank to use HostelDesk Cloud." className="mt-3">
-          <Input
-            type="url"
-            inputMode="url"
-            placeholder="https://"
-            value={server}
-            onChange={(e) => setServer(e.target.value)}
-          />
-        </Field>
-      </details>
+      {/* Customers always use HostelDesk Cloud (blank = DEFAULT_SERVER_URL in
+          sync.rs); only dev builds may point at a local Worker. */}
+      {import.meta.env.DEV && (
+        <details className="group">
+          <summary className="flex w-fit cursor-pointer list-none items-center gap-1 rounded-sm text-sm font-medium text-gray-600 hover:text-gray-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-900 [&::-webkit-details-marker]:hidden">
+            Advanced
+            <Icon name="chevron-down" className="size-4 transition group-open:-rotate-180" />
+          </summary>
+          <Field label="Server" hint="Leave blank to use HostelDesk Cloud." className="mt-3">
+            <Input
+              type="url"
+              inputMode="url"
+              placeholder="https://"
+              value={server}
+              onChange={(e) => setServer(e.target.value)}
+            />
+          </Field>
+        </details>
+      )}
       {connect.error && (
         <Alert title={create ? 'Could not create the account' : 'Could not sign in'}>
           {connect.error}

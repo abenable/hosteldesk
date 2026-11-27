@@ -37,7 +37,7 @@ export function Stat({ label, value, badge, hint }: StatProps) {
  *
  * ```tsx
  * <StatGroup>
- *   <Stat label="Beds occupied" value="18 / 24" badge={{ text: '75%', tone: 'info' }} />
+ *   <Stat label="Rooms occupied" value="18 / 24" badge={{ text: '75%', tone: 'info' }} />
  *   <Stat label="Collected today" value={desk.formatMoney(stats.revenue_today)} />
  *   <Stat label="Outstanding" value={desk.formatMoney(stats.outstanding_total)} />
  * </StatGroup>

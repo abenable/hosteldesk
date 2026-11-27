@@ -27,8 +27,11 @@ pub use sync::{CloudStatus, ConnectCloudRequest, ConnectResult, SyncEvent, SyncR
 #[cfg(all(not(debug_assertions), not(feature = "custom-protocol")))]
 compile_error!("release builds need `--features custom-protocol` (see crates/app/Cargo.toml)");
 
-/// How often the background loop syncs an enrolled desk.
+/// How often the background loop runs a full pass (send, then receive).
 const SYNC_EVERY: Duration = Duration::from_secs(30);
+
+/// How often it looks for local changes waiting to send between full passes.
+const SEND_CHECK_EVERY: Duration = Duration::from_secs(2);
 
 /// Show a dialog and exit. Used when the process cannot reach the main window.
 fn fail_startup(message: &str) -> ! {
@@ -54,21 +57,36 @@ pub(crate) fn relaunch() -> Result<(), String> {
     std::process::exit(0);
 }
 
-/// Every [`SYNC_EVERY`] while the desk is enrolled: run [`Desk::sync_now`] and
-/// emit its [`SyncEvent`] to the window as the `sync` event. The first pass
-/// waits one period: at startup the page has not registered its `sync`
-/// listener yet, so the page runs that pass itself (`sync_now`) once it has.
+/// While the desk is enrolled: run [`Desk::sync_now`] every [`SYNC_EVERY`],
+/// and sooner (within [`SEND_CHECK_EVERY`]) when local changes are waiting to
+/// send, then emit its [`SyncEvent`] to the window as the `sync` event. Staff
+/// never have to press "Sync now".
+///
+/// The early send only follows a pass that worked: offline, or while the
+/// account waits for approval, the loop keeps to [`SYNC_EVERY`] rather than
+/// calling the server every few seconds. The first pass waits one period: at
+/// startup the page has not registered its `sync` listener yet, so the page
+/// runs that pass itself (`sync_now`) once it has.
 fn spawn_sync_loop(app: AppHandle, desk: Arc<Desk>) {
     tauri::async_runtime::spawn(async move {
-        let first = tokio::time::Instant::now() + SYNC_EVERY;
-        let mut tick = tokio::time::interval_at(first, SYNC_EVERY);
+        let mut last_pass = tokio::time::Instant::now();
+        let mut tick = tokio::time::interval_at(last_pass + SYNC_EVERY, SEND_CHECK_EVERY);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut working = false;
         loop {
             tick.tick().await;
             if !desk.cloud_enrolled() {
                 continue;
             }
+            // ponytail: polls a local COUNT every 2 s; wake from the outbox
+            // writer instead if that ever shows up in a profile.
+            let due = last_pass.elapsed() >= SYNC_EVERY;
+            if !due && !(working && desk.has_pending_sync().await) {
+                continue;
+            }
             let event = desk.sync_now().await;
+            last_pass = tokio::time::Instant::now();
+            working = event.error.is_none() && event.licensed;
             if let Err(e) = app.emit("sync", &event) {
                 error!(error = %e, "could not emit the sync event");
             }

@@ -9,6 +9,7 @@ import {
   DetailSection,
   EmptyState,
   MiniStats,
+  Modal,
   PageHeader,
   Skeleton,
   Table,
@@ -19,55 +20,65 @@ import * as api from '../../lib/api';
 import { useDesk } from '../../lib/desk';
 import { termLabel } from '../../lib/format';
 import { isOwing } from '../../lib/money';
-import type { Room } from '../../lib/types';
+import type { Room, RoomClass } from '../../lib/types';
 import { useLoad } from '../../lib/useLoad';
-import { AddRoomModal } from './AddRoomModal';
-import { OccupancyBar } from './OccupancyBar';
-import { bedTotals, freeBeds, roomState, STATE_BADGE, typeLabel } from './room';
+import { ClassForm } from './ClassForm';
+import { ClassList, RoomSetup } from './RoomSetup';
+import { classLabel, roomState, STATE_BADGE } from './room';
 
-type Filter = 'all' | 'available' | 'full';
+type Filter = 'all' | 'vacant' | 'occupied';
 
 const NONE: Record<Exclude<Filter, 'all'>, { title: string; description: string }> = {
-  available: { title: 'No free beds', description: 'Every room is full right now.' },
-  full: { title: 'No full rooms', description: 'Every room has at least one free bed.' },
+  vacant: { title: 'No vacant rooms', description: 'Someone is staying in every room.' },
+  occupied: { title: 'No occupied rooms', description: 'Nobody is staying in any room yet.' },
 };
 
-/** Rooms, beds and rates (ui.rs `rooms` + `add_room`), with the selected room in a DetailPanel. */
+/**
+ * Rooms and their classes, with the selected room in a DetailPanel. An
+ * administrator adds rooms (and classes) through the setup wizard, which
+ * also opens from the dashboard (tab `add`) and here (tab `setup`).
+ */
 export default function RoomsPage() {
   const desk = useDesk();
   const { data: rooms, error, loading, reload } = useLoad(() => api.rooms(desk.hostelId), [desk.hostelId]);
+  const classes = useLoad(() => api.roomClasses(desk.hostelId), [desk.hostelId]);
   const [filter, setFilter] = useState<Filter>('all');
   const [selectedId, setSelectedId] = useState<number | null>(null);
-  // The dashboard's "Add room" lands here with tab 'add'. A new key per opening starts the form empty.
-  const [adding, setAdding] = useState(desk.isAdmin && desk.route.tab === 'add');
-  const [addKey, setAddKey] = useState(0);
-  const openAdd = () => {
-    setAddKey((k) => k + 1);
-    setAdding(true);
-  };
+  const [editing, setEditing] = useState<RoomClass | null>(null);
+  const setup = desk.isAdmin && (desk.route.tab === 'setup' || desk.route.tab === 'add');
 
+  if (setup) {
+    return (
+      <>
+        <PageHeader title="Set up rooms" description="Room classes first, then the rooms in each class." />
+        <div className="max-w-3xl">
+          <RoomSetup
+            hostelId={desk.hostelId}
+            currency={desk.currency}
+            steps={['Room classes', 'Rooms']}
+            startOnRooms={(classes.data?.length ?? 0) > 0}
+            doneLabel="Done"
+            onDone={() => {
+              desk.reload();
+              desk.navigate({ page: 'rooms' });
+            }}
+          />
+        </div>
+      </>
+    );
+  }
+
+  const openSetup = () => desk.navigate({ page: 'rooms', tab: 'setup' });
   const add = desk.isAdmin && (
-    <Button variant="secondary" icon="plus" onClick={openAdd}>
-      Add room
+    <Button icon="plus" onClick={openSetup}>
+      Add rooms
     </Button>
-  );
-  const modal = desk.isAdmin && (
-    <AddRoomModal
-      key={addKey}
-      open={adding}
-      onClose={() => setAdding(false)}
-      onAdded={(id) => {
-        setAdding(false);
-        setFilter('all');
-        setSelectedId(id);
-      }}
-    />
   );
 
   if (!rooms) {
     return (
       <>
-        <PageHeader title="Rooms" description="Rooms, beds and rates." actions={add} />
+        <PageHeader title="Rooms" description="Rooms, classes and prices." actions={add} />
         {loading ? (
           <Card>
             <Skeleton rows={8} />
@@ -77,15 +88,13 @@ export default function RoomsPage() {
             {error}
           </Alert>
         )}
-        {modal}
       </>
     );
   }
 
-  const beds = bedTotals(rooms);
-  const available = rooms.filter((r) => roomState(r) === 'available');
-  const full = rooms.filter((r) => roomState(r) === 'full');
-  const shown = filter === 'available' ? available : filter === 'full' ? full : rooms;
+  const vacant = rooms.filter((r) => roomState(r) === 'vacant');
+  const occupied = rooms.filter((r) => roomState(r) === 'occupied');
+  const shown = filter === 'vacant' ? vacant : filter === 'occupied' ? occupied : rooms;
   const selected = rooms.find((r) => r.id === selectedId);
 
   const room: Column<Room> = {
@@ -93,23 +102,13 @@ export default function RoomsPage() {
     cell: (r) => (
       <>
         <p className="font-medium text-gray-900">{r.room_number}</p>
-        <p className="text-sm font-normal text-gray-500">
-          {typeLabel(r.room_type)}
-          {r.floor !== null && ` · Floor ${r.floor}`}
-        </p>
+        <p className="text-sm font-normal text-gray-500">{classLabel(r)}</p>
       </>
     ),
   };
-  const bedsColumn: Column<Room> = {
-    header: 'Beds',
-    cell: (r) => (
-      <div className="w-20">
-        <p className="tabular-nums">
-          {r.occupied_beds} of {r.capacity}
-        </p>
-        <OccupancyBar room={r} className="mt-1.5" />
-      </div>
-    ),
+  const residents: Column<Room> = {
+    header: 'Residents',
+    cell: (r) => <span className="tabular-nums">{r.residents}</span>,
   };
   const status: Column<Room> = {
     header: 'Status',
@@ -120,11 +119,10 @@ export default function RoomsPage() {
   };
   const semester: Column<Room> = { header: 'Semester', cell: (r) => desk.formatMoney(r.semester_rate), align: 'end' };
   const recess: Column<Room> = { header: 'Recess', cell: (r) => desk.formatMoney(r.recess_rate), align: 'end' };
-  // Floor rides on the room's second line so the table fits at 1024 px. With the
-  // DetailPanel open the table is narrower still; the recess rate is in the panel.
+  // With the DetailPanel open the table is narrower; the recess price is in the panel.
   const columns = selected
-    ? [room, bedsColumn, status, semester]
-    : [room, bedsColumn, status, semester, recess];
+    ? [room, residents, status, semester]
+    : [room, residents, status, semester, recess];
 
   return (
     <>
@@ -132,8 +130,8 @@ export default function RoomsPage() {
         title="Rooms"
         description={
           rooms.length === 0
-            ? 'Rooms, beds and rates.'
-            : `${rooms.length} ${rooms.length === 1 ? 'room' : 'rooms'} · ${beds.occupied} of ${beds.total} beds occupied`
+            ? 'Rooms, classes and prices.'
+            : `${rooms.length} ${rooms.length === 1 ? 'room' : 'rooms'} · ${occupied.length} occupied · ${vacant.length} vacant`
         }
         actions={add}
       />
@@ -144,13 +142,13 @@ export default function RoomsPage() {
             title="No rooms yet"
             description={
               desk.isAdmin
-                ? 'Add your rooms with their beds and rates to start checking residents in.'
+                ? 'Set up your room classes and rooms to start checking residents in.'
                 : 'An administrator adds the rooms. They will show up here.'
             }
             action={
               desk.isAdmin && (
-                <Button icon="plus" onClick={openAdd}>
-                  Add room
+                <Button icon="plus" onClick={openSetup}>
+                  Set up rooms
                 </Button>
               )
             }
@@ -169,8 +167,8 @@ export default function RoomsPage() {
             onChange={setFilter}
             items={[
               { value: 'all', label: 'All', count: rooms.length },
-              { value: 'available', label: 'Available', count: available.length },
-              { value: 'full', label: 'Full', count: full.length },
+              { value: 'vacant', label: 'Vacant', count: vacant.length },
+              { value: 'occupied', label: 'Occupied', count: occupied.length },
             ]}
           />
           <Card flush>
@@ -192,31 +190,70 @@ export default function RoomsPage() {
           </Card>
         </>
       )}
+      {classes.data && classes.data.length > 0 && (
+        <Card
+          title="Room classes"
+          description="Each room takes its floor, type and prices from its class. A new price applies to new check-ins."
+        >
+          <ClassList
+            classes={classes.data}
+            currency={desk.currency}
+            action={(c) =>
+              desk.isAdmin && (
+                <Button variant="secondary" size="sm" icon="pencil-square" onClick={() => setEditing(c)}>
+                  Edit
+                </Button>
+              )
+            }
+          />
+        </Card>
+      )}
       {selected && <RoomDetail room={selected} onClose={() => setSelectedId(null)} />}
-      {modal}
+      <Modal
+        open={!!editing}
+        onClose={() => setEditing(null)}
+        title={editing ? `Edit ${classLabel(editing)}` : 'Edit class'}
+        description="Its rooms follow. Residents already checked in keep the price they agreed."
+        size="lg"
+      >
+        {editing && (
+          <ClassForm
+            key={editing.id}
+            hostelId={desk.hostelId}
+            currency={desk.currency}
+            editing={editing}
+            submitLabel="Save class"
+            onCancel={() => setEditing(null)}
+            onSaved={() => {
+              setEditing(null);
+              desk.toast({ tone: 'success', title: 'Room class saved.' });
+              desk.reload();
+            }}
+          />
+        )}
+      </Modal>
     </>
   );
 }
 
-/** The selected room: beds, rates and who is staying there (from `active_allocations`). */
+/** The selected room: its class, prices and who is staying there (from `active_allocations`). */
 function RoomDetail({ room, onClose }: { room: Room; onClose: () => void }) {
   const desk = useDesk();
   const stays = useLoad(() => api.activeAllocations({ hostel_id: desk.hostelId }), [desk.hostelId]);
   const state = roomState(room);
   const badge = STATE_BADGE[state];
   const here = stays.data?.filter((s) => s.room_number === room.room_number) ?? [];
-  const floor = room.floor === null ? 'No floor set' : `Floor ${room.floor}`;
 
   return (
     <DetailPanel
       title={`Room ${room.room_number}`}
-      subtitle={`${typeLabel(room.room_type)} · ${floor}`}
+      subtitle={classLabel(room)}
       onClose={onClose}
       footer={
         <Button
           className="flex-1"
           icon="user-plus"
-          disabled={state !== 'available'}
+          disabled={state === 'maintenance'}
           onClick={() => desk.navigate({ page: 'residents', tab: 'check-in' })}
         >
           Check in a resident
@@ -225,22 +262,10 @@ function RoomDetail({ room, onClose }: { room: Room; onClose: () => void }) {
     >
       <div className="flex items-center gap-2">
         <Badge tone={badge.tone}>{badge.label}</Badge>
-        <span className="text-sm text-gray-500">
-          {state === 'available'
-            ? `${freeBeds(room)} of ${room.capacity} beds free`
-            : state === 'full'
-              ? 'No free beds'
-              : 'Not taking check-ins'}
-        </span>
+        {state === 'maintenance' && <span className="text-sm text-gray-500">Not taking check-ins</span>}
       </div>
-      <MiniStats
-        items={[
-          { label: 'Beds', value: room.capacity },
-          { label: 'In use', value: room.occupied_beds },
-          { label: 'Free', value: freeBeds(room) },
-        ]}
-      />
-      <DetailSection label="Rates">
+      <MiniStats items={[{ label: 'Residents', value: room.residents }]} />
+      <DetailSection label="Prices">
         <dl className="divide-y divide-gray-200">
           {(
             [
@@ -271,7 +296,7 @@ function RoomDetail({ room, onClose }: { room: Room; onClose: () => void }) {
                 <button
                   type="button"
                   onClick={() => desk.navigate({ page: 'residents', residentId: s.resident_id })}
-                  className="flex w-full items-center gap-3 rounded-lg px-2 py-2 text-start transition-colors hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-900"
+                  className="flex w-full items-center gap-3 rounded-full px-2 py-2 text-start transition-colors hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-900"
                 >
                   <Avatar name={s.resident_name} size="sm" />
                   <span className="min-w-0 flex-1">

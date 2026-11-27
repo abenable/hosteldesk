@@ -31,12 +31,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # A tag with a suffix (v2.1.0-rc.1) is a test build: never "Latest".
+          prerelease=false
+          [[ "$RELEASE_TAG" == *-* ]] && prerelease=true
           id=$(gh api "repos/${{ github.repository }}/releases" \
             -f tag_name="${RELEASE_TAG}" \
             -f name="HostelDesk ${RELEASE_TAG}" \
             -f body="Installers for HostelDesk. Download the bundle for your platform." \
             -F draft=true \
-            -F prerelease=false \
+            -F prerelease="$prerelease" \
             --jq .id)
           echo "release_id=$id" >> "$GITHUB_OUTPUT"
 
@@ -58,6 +61,17 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
         with:
           ref: ${{ env.RELEASE_TAG }}
+
+      # The deb takes its version from Cargo.toml, the exe from the tag.
+      - name: Check tag matches Cargo.toml version
+        shell: bash
+        run: |
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          tag_version="${RELEASE_TAG#v}"
+          if [ "${tag_version%%-*}" != "$cargo_version" ]; then
+            echo "::error::Tag $RELEASE_TAG does not match Cargo.toml version $cargo_version"
+            exit 1
+          fi
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master

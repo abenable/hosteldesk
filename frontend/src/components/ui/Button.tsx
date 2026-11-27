@@ -2,20 +2,20 @@ import type { ComponentProps } from 'react';
 import { cx } from './cx';
 import { Icon, type IconName } from './Icon';
 
+// Every button is a black pill with white text (user, 2026-11-27); only `danger` keeps its red.
+// ponytail: primary/secondary/ghost are kept as names so the 30-odd call sites need no edit.
+const SOLID =
+  'bg-gray-950 text-white shadow-xs hover:bg-gray-800 focus-visible:outline-gray-950';
 const VARIANTS = {
-  primary:
-    'bg-primary-900 text-white shadow-xs hover:bg-primary-800 focus-visible:outline-primary-900',
-  secondary:
-    'bg-white text-gray-900 shadow-xs ring-1 ring-gray-300 ring-inset hover:bg-gray-50 focus-visible:outline-primary-900',
-  ghost:
-    'text-gray-700 hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-gray-900',
-  danger:
-    'bg-red-600 text-white hover:bg-red-700 focus-visible:outline-red-600',
+  primary: SOLID,
+  secondary: SOLID,
+  ghost: SOLID,
+  danger: 'bg-red-600 text-white shadow-xs hover:bg-red-700 focus-visible:outline-red-600',
 };
 
 const SIZES = {
-  sm: 'gap-1.5 px-3 py-1.5 text-sm/none',
-  md: 'gap-2 px-4 py-2 text-sm',
+  sm: 'gap-1.5 px-3.5 py-1.5 text-sm/none',
+  md: 'gap-2 px-5 py-2 text-sm',
 };
 
 /** Props of {@link Button}. */
@@ -29,9 +29,8 @@ export interface ButtonProps extends ComponentProps<'button'> {
 }
 
 /**
- * Button (HyperUI modal/toast buttons). `type` defaults to `"button"`.
- * `primary` is the solid brand action (one per view); `secondary` is the
- * rounded outline button for page-header actions and Cancel.
+ * Button: a fully rounded black pill with white text. `type` defaults to `"button"`.
+ * `primary`, `secondary` and `ghost` look the same; `danger` is red.
  *
  * ```tsx
  * <Button icon="plus" onClick={open}>Add room</Button>
@@ -57,7 +56,7 @@ export function Button({
       disabled={disabled || loading}
       aria-busy={loading || undefined}
       className={cx(
-        'inline-flex shrink-0 items-center justify-center rounded-lg font-medium whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50',
+        'inline-flex shrink-0 items-center justify-center rounded-full font-medium whitespace-nowrap transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 disabled:cursor-not-allowed disabled:opacity-50',
         VARIANTS[variant],
         SIZES[size],
         className,

@@ -178,6 +178,7 @@ pub fn apply_batch(
 pub fn entity_key(entity: &Entity) -> (&'static str, &str, Option<&str>, bool) {
     match entity {
         Entity::Hostel(row) => ("hostel", &row.public_id, None, false),
+        Entity::RoomClass(row) => ("room_class", &row.public_id, None, false),
         Entity::Room(row) => ("room", &row.public_id, Some(&row.room_number), false),
         Entity::Resident(row) => ("resident", &row.public_id, None, false),
         Entity::Allocation(row) => (
@@ -201,6 +202,7 @@ pub fn dump_from(entities: Vec<Entity>, applied: Vec<String>) -> protocol::Ledge
     for entity in entities {
         match entity {
             Entity::Hostel(row) => dump.hostel = Some(row),
+            Entity::RoomClass(row) => dump.room_classes.push(row),
             Entity::Room(row) => dump.rooms.push(row),
             Entity::Resident(row) => dump.residents.push(row),
             Entity::Allocation(row) => dump.allocations.push(row),

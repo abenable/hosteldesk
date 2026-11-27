@@ -309,15 +309,21 @@ mod tests {
             })
             .await
             .expect("create hostel");
+        let class_id = pool
+            .add_room_class(db::NewRoomClass {
+                hostel_id: hostel.id,
+                floor: None,
+                room_type: "single".to_string(),
+                semester_rate: "100.00".to_string(),
+                recess_rate: "50.00".to_string(),
+            })
+            .await
+            .expect("add room class");
         let room_id = pool
             .add_room(db::NewRoom {
                 hostel_id: hostel.id,
                 room_number: "101".to_string(),
-                room_type: "single".to_string(),
-                capacity: 1,
-                floor: None,
-                semester_rate: "100.00".to_string(),
-                recess_rate: "50.00".to_string(),
+                class_id,
             })
             .await
             .expect("add room");

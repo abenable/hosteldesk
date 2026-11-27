@@ -19,7 +19,7 @@ export interface CheckInModalProps {
 }
 
 /**
- * Check a resident into a room with a free bed (`check_in`; ui.rs
+ * Check a resident into a room (`check_in`; ui.rs
  * `check_in_form` / `check_in`). The rate is prefilled from the room for the
  * chosen term and stays editable. Render it keyed by an open counter so each
  * opening starts with an empty form.
@@ -164,8 +164,10 @@ export default function CheckInModal({ open, onClose, returning }: CheckInModalP
           </Field>
         )}
         {!rooms.loading && rooms.data && free.length === 0 && (
-          <Alert tone="warning" title="No room has a free bed.">
-            Check someone out or add a room first.
+          <Alert tone="warning" title="No room is taking check-ins.">
+            {rooms.data.length === 0
+              ? 'An administrator sets up the rooms first.'
+              : 'Every room is under maintenance.'}
           </Alert>
         )}
         <div className="grid grid-cols-3 gap-4">

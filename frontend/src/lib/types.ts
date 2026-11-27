@@ -73,20 +73,35 @@ export interface AppPreferences {
   updated_at: IsoDateTime;
 }
 
-/** `db::Room`. A room has free beds only when `occupied_beds < capacity`, whatever `status` says. */
+/** `db::RoomClass`: the floor, type and prices a hostel's rooms share. */
+export interface RoomClass {
+  id: number;
+  hostel_id: number;
+  public_id: string;
+  floor: number | null;
+  /** `"single"`, `"double"` or `"dorm"`. */
+  room_type: string;
+  semester_rate: Money;
+  recess_rate: Money;
+  /** How many rooms are in this class. */
+  rooms: number;
+}
+
+/** `db::Room`, with its class's floor, type and prices. Rooms have no resident limit. */
 export interface Room {
   id: number;
   hostel_id: number;
   room_number: string;
+  class_id: number;
   room_type: string;
-  capacity: number;
   floor: number | null;
   semester_rate: Money;
   recess_rate: Money;
   /** e.g. `"vacant"`, `"occupied"`, `"maintenance"`. */
   status: string;
   created_at: IsoDateTime;
-  occupied_beds: number;
+  /** Residents with an active stay here. */
+  residents: number;
 }
 
 /** `db::Resident`. */
@@ -281,8 +296,10 @@ export interface ConnectResult {
 
 /** Payload of the `sync` event and the result of `sync_now`. */
 export interface SyncEvent {
-  /** Short text of what changed. Empty when nothing happened. */
+  /** Toast text when synced changes need attention. Empty otherwise. */
   summary: string;
+  /** The pass received data from the cloud: reload what is on screen. */
+  changed: boolean;
   error: string | null;
   licensed: boolean;
 }
@@ -360,15 +377,21 @@ export interface UploadHostelLogoRequest {
   filename: string;
 }
 
-/** `rooms::AddRoomRequest`. */
-export interface AddRoomRequest {
+/** `rooms::SaveRoomClassRequest`. `class_id: null` creates a class. */
+export interface SaveRoomClassRequest {
   hostel_id: number;
-  room_number: string;
-  room_type: string;
-  capacity: number;
+  class_id: number | null;
   floor: number | null;
+  room_type: string;
   semester_rate: Money;
   recess_rate: Money;
+}
+
+/** `rooms::AddRoomsRequest`: rooms of one class, added all or none. */
+export interface AddRoomsRequest {
+  hostel_id: number;
+  class_id: number;
+  room_numbers: string[];
 }
 
 /** `allocations::CheckInRequest`. Send `resident_id` for a returning resident, or `full_name` (+ details) for a new one. */

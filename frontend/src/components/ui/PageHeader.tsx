@@ -18,7 +18,7 @@ export interface PageHeaderProps {
  * page (loading, error, empty) and keep it first.
  *
  * ```tsx
- * <PageHeader title="Rooms" description={`${rooms.length} rooms · ${free} beds free`}
+ * <PageHeader title="Rooms" description={`${rooms.length} rooms · ${vacant} vacant`}
  *   actions={<Button variant="secondary" icon="plus" onClick={openAdd}>Add room</Button>} />
  * ```
  */

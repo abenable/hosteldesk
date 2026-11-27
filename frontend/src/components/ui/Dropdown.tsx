@@ -95,7 +95,7 @@ export function Dropdown({ trigger, label, items, header, triggerClassName }: Dr
         onClick={toggle}
         className={
           triggerClassName ??
-          'rounded-lg p-1.5 text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-900'
+          'rounded-full p-1.5 text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-900'
         }
       >
         {trigger}

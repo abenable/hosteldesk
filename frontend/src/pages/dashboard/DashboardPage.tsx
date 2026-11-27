@@ -15,8 +15,7 @@ import { useDesk } from '../../lib/desk';
 import { todayIso } from '../../lib/format';
 import type { ActivityItem, Room } from '../../lib/types';
 import { useLoad, type Load } from '../../lib/useLoad';
-import { OccupancyBar } from '../rooms/OccupancyBar';
-import { bedTotals, freeBeds, percent, roomState, type RoomState } from '../rooms/room';
+import { classLabel, percent, roomState, type RoomState } from '../rooms/room';
 
 /** How many feed entries to show (Rust caps it at 50). */
 const ACTIVITY_LIMIT = 8;
@@ -58,8 +57,8 @@ function longDate(iso: string): string {
 const pending = <span className="block h-8 w-28 animate-pulse rounded-md bg-gray-200" />;
 
 /**
- * Today at a glance (ui.rs `dashboard`): beds and takings in a stat strip,
- * the recent-activity feed, and a bed map of the rooms. Quick actions jump to
+ * Today at a glance (ui.rs `dashboard`): occupied rooms and takings in a stat
+ * strip, the recent-activity feed, and a map of the rooms. Quick actions jump to
  * the check-in and payment flows on their pages.
  */
 export default function DashboardPage() {
@@ -75,11 +74,13 @@ export default function DashboardPage() {
   );
   const rooms = useLoad(() => api.rooms(desk.hostelId), [desk.hostelId]);
 
-  const beds = rooms.data && bedTotals(rooms.data);
+  const total = rooms.data?.length ?? 0;
+  const occupied = rooms.data?.filter((r) => roomState(r) === 'occupied').length ?? 0;
+  const vacant = rooms.data?.filter((r) => roomState(r) === 'vacant').length ?? 0;
   const checkIns = stats.data?.check_ins_today;
   const subtitle = [
     longDate(today),
-    beds && beds.total > 0 && `${beds.occupied} of ${beds.total} beds occupied`,
+    total > 0 && `${occupied} of ${total} rooms occupied`,
     checkIns !== undefined && `${checkIns} ${checkIns === 1 ? 'check-in' : 'check-ins'} today`,
   ]
     .filter(Boolean)
@@ -112,15 +113,19 @@ export default function DashboardPage() {
         </Alert>
       ) : (
         <StatGroup>
-          {beds && beds.total > 0 ? (
+          {total > 0 ? (
             <Stat
-              label="Beds occupied"
-              value={`${beds.occupied} / ${beds.total}`}
-              badge={{ text: `${percent(beds.occupied, beds.total)}%` }}
-              hint={`${beds.total - beds.occupied} free`}
+              label="Rooms occupied"
+              value={`${occupied} / ${total}`}
+              badge={{ text: `${percent(occupied, total)}%` }}
+              hint={`${vacant} vacant`}
             />
           ) : (
-            <Stat label="Beds occupied" value={beds ? '0' : rooms.loading ? pending : '—'} hint={beds && 'No rooms yet'} />
+            <Stat
+              label="Rooms occupied"
+              value={rooms.data ? '0' : rooms.loading ? pending : '—'}
+              hint={rooms.data && 'No rooms yet'}
+            />
           )}
           <Stat
             label="Collected today"
@@ -147,7 +152,7 @@ export default function DashboardPage() {
           title="Rooms"
           description={
             rooms.data && rooms.data.length > 0
-              ? `${rooms.data.filter((r) => roomState(r) === 'available').length} of ${rooms.data.length} with a free bed`
+              ? `${rooms.data.filter((r) => roomState(r) === 'vacant').length} of ${rooms.data.length} vacant`
               : undefined
           }
           actions={
@@ -230,12 +235,12 @@ function Activity({ load, canCheckIn }: { load: Load<ActivityItem[]>; canCheckIn
 }
 
 const TILE_TONE: Record<RoomState, string> = {
-  available: 'text-green-700',
-  full: 'text-gray-500',
+  vacant: 'text-green-700',
+  occupied: 'text-gray-500',
   maintenance: 'text-amber-700',
 };
 
-/** Compact bed map: one tile per room, its occupied beds and what is free. */
+/** Compact room map: one tile per room, with its class and who is in it. */
 function RoomMap({ load }: { load: Load<Room[]> }) {
   const desk = useDesk();
   if (load.loading) return <Skeleton rows={5} />;
@@ -252,13 +257,13 @@ function RoomMap({ load }: { load: Load<Room[]> }) {
         title="No rooms yet"
         description={
           desk.isAdmin
-            ? 'Add your rooms to start checking residents in.'
+            ? 'Set up your room classes and rooms to start checking residents in.'
             : 'An administrator adds the rooms.'
         }
         action={
           desk.isAdmin && (
-            <Button icon="plus" onClick={() => desk.navigate({ page: 'rooms', tab: 'add' })}>
-              Add room
+            <Button icon="plus" onClick={() => desk.navigate({ page: 'rooms', tab: 'setup' })}>
+              Set up rooms
             </Button>
           )
         }
@@ -273,16 +278,16 @@ function RoomMap({ load }: { load: Load<Room[]> }) {
           return (
             <li
               key={room.id}
-              title={`Room ${room.room_number}: ${room.occupied_beds} of ${room.capacity} beds occupied${state === 'maintenance' ? ', under maintenance' : ''}`}
-              className="rounded-lg border border-gray-200 px-3 py-2.5"
+              title={`Room ${room.room_number}: ${room.residents} ${room.residents === 1 ? 'resident' : 'residents'}${state === 'maintenance' ? ', under maintenance' : ''}`}
+              className="rounded-2xl border border-gray-200 px-3 py-2.5"
             >
               <p className="flex items-baseline justify-between gap-2 text-sm">
                 <span className="truncate font-medium text-gray-900">{room.room_number}</span>
                 <span className={cx('text-xs whitespace-nowrap tabular-nums', TILE_TONE[state])}>
-                  {state === 'available' ? `${freeBeds(room)} free` : state === 'full' ? 'Full' : 'Closed'}
+                  {state === 'vacant' ? 'Vacant' : state === 'occupied' ? `${room.residents} in` : 'Closed'}
                 </span>
               </p>
-              <OccupancyBar room={room} className="mt-2" />
+              <p className="mt-1 truncate text-xs text-gray-500">{classLabel(room)}</p>
             </li>
           );
         })}

@@ -60,7 +60,7 @@ export function Toaster() {
               <button
                 type="button"
                 onClick={() => dismissToast(item.id)}
-                className="-m-1 shrink-0 rounded-md p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-900"
+                className="-m-1 shrink-0 rounded-full p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-gray-900"
               >
                 <span className="sr-only">Dismiss</span>
                 <Icon name="x-mark" />

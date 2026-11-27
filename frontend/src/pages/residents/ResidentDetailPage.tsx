@@ -161,7 +161,7 @@ export default function ResidentDetailPage({ residentId }: { residentId: number 
               <EmptyState
                 icon="home"
                 title="Never checked in"
-                description="Check them into a room with a free bed to start a stay."
+                description="Check them into a room to start a stay."
               />
             ) : (
               <Table

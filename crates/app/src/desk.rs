@@ -61,6 +61,24 @@ pub struct BootState {
     pub app_version: &'static str,
 }
 
+/// Where hostels buy and renew HostelDesk plans (docs/LICENSING.md).
+pub const SUPPORT_EMAIL: &str = "ableabenaitwe@gmail.com";
+
+/// `mailto:` link to [`SUPPORT_EMAIL`] with `subject` percent-encoded, so a
+/// hostel name holding `&`, `?`, or a line break cannot add other fields.
+pub fn renewal_mailto(subject: &str) -> String {
+    let subject: String = subject
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                char::from(byte).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect();
+    format!("mailto:{SUPPORT_EMAIL}?subject={subject}")
+}
+
 /// Why a signed-in computer is locked, from the server's last answer.
 pub fn lock_reason(license: Option<AccountLicense>, today: NaiveDate) -> String {
     match license {
@@ -263,9 +281,50 @@ impl Desk {
         commands::get_rooms(hostel_id, &self.db, &self.license, &self.auth).await
     }
 
-    /// Add one room.
-    pub async fn add_room(&self, request: commands::AddRoomRequest) -> Result<i64, String> {
-        commands::add_room(request, &self.db, &self.license, &self.auth).await
+    /// Room classes for one hostel.
+    pub async fn room_classes(&self, hostel_id: i64) -> Result<Vec<db::RoomClass>, String> {
+        commands::get_room_classes(hostel_id, &self.db, &self.license, &self.auth).await
+    }
+
+    /// Create a room class, or edit one. Returns its id.
+    pub async fn save_room_class(
+        &self,
+        request: commands::SaveRoomClassRequest,
+    ) -> Result<i64, String> {
+        commands::save_room_class(request, &self.db, &self.license, &self.auth).await
+    }
+
+    /// Add rooms of one class, all or none. Returns their ids.
+    pub async fn add_rooms(&self, request: commands::AddRoomsRequest) -> Result<Vec<i64>, String> {
+        commands::add_rooms(request, &self.db, &self.license, &self.auth).await
+    }
+
+    /// Open the computer's email app on a renewal request to HostelDesk,
+    /// naming the hostel and its plan. The address is fixed here; the UI
+    /// never hands Rust a URL to open.
+    pub async fn email_renewal(&self) -> Result<(), String> {
+        let hostel = match self
+            .db
+            .primary_hostel_id()
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            Some(id) => self
+                .db
+                .get_hostel_by_id(id)
+                .await
+                .map_err(|e| e.to_string())?
+                .map(|hostel| hostel.name),
+            None => None,
+        };
+        let plan = self.cached_license().map(|license| license.plan);
+        let subject = match (hostel, plan) {
+            (Some(hostel), Some(plan)) => format!("Renew HostelDesk for {hostel} ({plan} plan)"),
+            (Some(hostel), None) => format!("Renew HostelDesk for {hostel}"),
+            _ => "Renew HostelDesk".to_string(),
+        };
+        open::that(renewal_mailto(&subject))
+            .map_err(|e| format!("Could not open your email app: {e}"))
     }
 
     /// Check a resident in. Returns the new allocation id.
@@ -582,18 +641,25 @@ mod tests {
             .await
             .expect("onboard")
             .hostel_id;
-        let room_id = desk
-            .add_room(commands::AddRoomRequest {
+        let class_id = desk
+            .save_room_class(commands::SaveRoomClassRequest {
                 hostel_id,
-                room_number: "1".into(),
-                room_type: "single".into(),
-                capacity: 1,
+                class_id: None,
                 floor: None,
+                room_type: "single".into(),
                 semester_rate: "500000".into(),
                 recess_rate: "200000".into(),
             })
             .await
-            .expect("room");
+            .expect("class");
+        let room_id = desk
+            .add_rooms(commands::AddRoomsRequest {
+                hostel_id,
+                class_id,
+                room_numbers: vec!["1".into()],
+            })
+            .await
+            .expect("room")[0];
         let allocation_id = desk
             .check_in(commands::CheckInRequest {
                 hostel_id,
@@ -733,6 +799,14 @@ mod tests {
                 .await
                 .expect_err("signed out"),
             "unauthorized"
+        );
+    }
+
+    #[test]
+    fn renewal_mailto_encodes_the_subject() {
+        assert_eq!(
+            renewal_mailto("Renew Kate & Co?\nbcc=x (1-year)"),
+            "mailto:ableabenaitwe@gmail.com?subject=Renew%20Kate%20%26%20Co%3F%0Abcc%3Dx%20%281-year%29"
         );
     }
 

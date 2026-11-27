@@ -10,12 +10,12 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::commands::{
-    AddRoomRequest, CheckInRequest, CheckOutRequest, CompleteOnboardingRequest, CreateUserRequest,
+    AddRoomsRequest, CheckInRequest, CheckOutRequest, CompleteOnboardingRequest, CreateUserRequest,
     DeleteUserRequest, GetAppPreferencesRequest, GetDashboardStatsRequest,
     GetResidentDetailRequest, ListActiveAllocationsRequest, ListRecentActivityRequest,
     ListResidentsRequest, ListUsersRequest, LoginRequest, OpenReceiptRequest, RestoreBackupRequest,
-    TakePaymentRequest, TakePaymentResult, UpdateHostelRequest, UpdateResidentRequest,
-    UpdateUserRequest, UploadHostelLogoRequest, UpsertAppPreferencesRequest,
+    SaveRoomClassRequest, TakePaymentRequest, TakePaymentResult, UpdateHostelRequest,
+    UpdateResidentRequest, UpdateUserRequest, UploadHostelLogoRequest, UpsertAppPreferencesRequest,
 };
 use crate::{
     AccountLicense, BootState, CloudStatus, ConnectCloudRequest, ConnectResult, Desk, SyncEvent,
@@ -50,7 +50,10 @@ pub(crate) fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + '
         update_hostel,
         upload_hostel_logo,
         rooms,
-        add_room,
+        room_classes,
+        save_room_class,
+        add_rooms,
+        email_renewal,
         check_in,
         check_out,
         active_allocations,
@@ -237,10 +240,34 @@ pub async fn rooms(desk: DeskState<'_>, hostel_id: i64) -> Result<Vec<db::Room>,
     desk.rooms(hostel_id).await
 }
 
-/// [`Desk::add_room`].
+/// [`Desk::room_classes`]. JS passes `{ hostelId }`.
 #[tauri::command]
-pub async fn add_room(desk: DeskState<'_>, request: AddRoomRequest) -> Result<i64, String> {
-    desk.add_room(request).await
+pub async fn room_classes(
+    desk: DeskState<'_>,
+    hostel_id: i64,
+) -> Result<Vec<db::RoomClass>, String> {
+    desk.room_classes(hostel_id).await
+}
+
+/// [`Desk::save_room_class`].
+#[tauri::command]
+pub async fn save_room_class(
+    desk: DeskState<'_>,
+    request: SaveRoomClassRequest,
+) -> Result<i64, String> {
+    desk.save_room_class(request).await
+}
+
+/// [`Desk::add_rooms`].
+#[tauri::command]
+pub async fn add_rooms(desk: DeskState<'_>, request: AddRoomsRequest) -> Result<Vec<i64>, String> {
+    desk.add_rooms(request).await
+}
+
+/// [`Desk::email_renewal`].
+#[tauri::command]
+pub async fn email_renewal(desk: DeskState<'_>) -> Result<(), String> {
+    desk.email_renewal().await
 }
 
 /// [`Desk::check_in`].

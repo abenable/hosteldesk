@@ -94,10 +94,8 @@ export default function DeskProvider({
         error: event.error,
         lastAt: event.error ? s.lastAt : new Date(),
       }));
-      if (event.summary) {
-        toast({ tone: 'info', title: event.summary });
-        reload();
-      }
+      if (event.summary) toast({ tone: 'warning', title: event.summary });
+      if (event.changed) reload();
       // The license lapsed (or the offline grace ran out): back to the gate, which locks.
       if (!event.licensed) void reboot();
     },

@@ -5,12 +5,14 @@ import BackupSection from './BackupSection';
 import BusinessSection from './BusinessSection';
 import CloudSection from './CloudSection';
 import PreferencesSection from './PreferencesSection';
+import SubscriptionSection from './SubscriptionSection';
 import TeamSection from './TeamSection';
 
-type Tab = 'account' | 'business' | 'team' | 'preferences' | 'backup' | 'cloud';
+type Tab = 'account' | 'subscription' | 'business' | 'team' | 'preferences' | 'backup' | 'cloud';
 
 const TABS: TabItem<Tab>[] = [
   { value: 'account', label: 'Account' },
+  { value: 'subscription', label: 'Subscription' },
   { value: 'business', label: 'Business' },
   { value: 'team', label: 'Team' },
   { value: 'preferences', label: 'Preferences' },
@@ -19,10 +21,10 @@ const TABS: TabItem<Tab>[] = [
 ];
 
 /** What a manager (non-admin) may open, as in main's ui.rs. */
-const STAFF_TABS: Tab[] = ['account', 'cloud'];
+const STAFF_TABS: Tab[] = ['account', 'subscription', 'cloud'];
 
 /**
- * Account, business, team, preferences, backups and cloud, as segmented tabs
+ * Account, subscription, business, team, preferences, backups and cloud, as segmented tabs
  * (`route.tab` picks one; unknown or admin-only tabs fall back to Account).
  * Each tab is a stack of two-column sections (see `Section`).
  */
@@ -46,6 +48,7 @@ export default function SettingsPage() {
       />
       <div className="@container divide-y divide-gray-200 pt-2">
         {tab === 'account' && <AccountSection />}
+        {tab === 'subscription' && <SubscriptionSection />}
         {tab === 'business' && <BusinessSection />}
         {tab === 'team' && <TeamSection />}
         {tab === 'preferences' && <PreferencesSection />}

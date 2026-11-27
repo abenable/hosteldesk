@@ -24,8 +24,8 @@ export interface TabsProps<V extends string> {
 
 const STYLES = {
   segmented: {
-    list: 'gap-1 rounded-lg bg-gray-100 p-1',
-    tab: 'group flex items-center justify-center gap-1.5 rounded-md px-3.5 py-1.5 text-sm font-medium whitespace-nowrap text-gray-600 transition-colors hover:text-gray-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-900 aria-selected:bg-white aria-selected:text-gray-900 aria-selected:shadow-xs',
+    list: 'gap-1 rounded-full bg-gray-100 p-1',
+    tab: 'group flex items-center justify-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-medium whitespace-nowrap text-gray-600 transition-colors hover:text-gray-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-900 aria-selected:bg-white aria-selected:text-gray-900 aria-selected:shadow-xs',
   },
   underline: {
     list: 'w-full gap-6 border-b border-gray-200',

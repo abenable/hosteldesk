@@ -31,7 +31,7 @@ pub struct SyncReport {
     pub applied: usize,
     /// Commands rejected or accepted with a warning.
     pub issues: usize,
-    /// Short text for the status bar. Empty when nothing happened.
+    /// Text for a toast when changes need attention; empty otherwise.
     pub summary: String,
 }
 
@@ -77,11 +77,13 @@ pub struct ConnectResult {
 }
 
 /// One background or manual sync pass, as the frontend sees it. Emitted as
-/// the `sync` event every 30 s while enrolled, and returned by `sync_now`.
+/// the `sync` event after each background pass, and returned by `sync_now`.
 #[derive(Debug, Clone, Serialize)]
 pub struct SyncEvent {
-    /// What changed, for a toast; empty when nothing did.
+    /// Changes that need attention, for a toast; empty otherwise.
     pub summary: String,
+    /// The pass received rows from the cloud, so the window reloads its data.
+    pub changed: bool,
     /// Why the pass failed; it is retried on the next tick.
     pub error: Option<String>,
     /// The account's license is usable today (a locked desk can re-boot).
@@ -129,12 +131,13 @@ impl Desk {
     /// One [`Desk::sync_once`] pass reported as a [`SyncEvent`]. Never fails:
     /// an error is part of the event.
     pub async fn sync_now(&self) -> SyncEvent {
-        let (summary, error) = match self.sync_once().await {
-            Ok(report) => (report.summary, None),
-            Err(error) => (String::new(), Some(error)),
+        let (summary, changed, error) = match self.sync_once().await {
+            Ok(report) => (report.summary, report.applied > 0, None),
+            Err(error) => (String::new(), false, Some(error)),
         };
         SyncEvent {
             summary,
+            changed,
             error,
             licensed: self.license_status().is_some(),
         }
@@ -270,6 +273,20 @@ impl Desk {
         read_config(&self.paths).is_some() && read_token(&self.paths).is_some()
     }
 
+    /// Local changes are waiting to send. The background loop checks this
+    /// every few seconds so a payment or a new room reaches the cloud right
+    /// away; a database error reads as "no" and the next full pass sends it.
+    pub async fn has_pending_sync(&self) -> bool {
+        match self.db.primary_hostel_id().await {
+            Ok(Some(hostel_id)) => self
+                .db
+                .pending_sync_count(hostel_id)
+                .await
+                .is_ok_and(|count| count > 0),
+            _ => false,
+        }
+    }
+
     /// Push pending commands, then pull every new page. No-op when not enrolled.
     ///
     /// Passes run one at a time; a second caller waits for the first.
@@ -337,10 +354,18 @@ impl Desk {
             }
         }
 
-        if report.pushed > 0 || report.applied > 0 || report.issues > 0 {
+        // Sync is automatic and the sidebar shows "Synced"; only a problem is
+        // worth a toast. (`applied` also counts this desk's own changes coming
+        // back from the server, so it cannot tell "another computer" apart.)
+        if report.issues > 0 {
+            let changes = if report.issues == 1 {
+                "change needs"
+            } else {
+                "changes need"
+            };
             report.summary = format!(
-                "Synced: {} sent, {} received, {} need attention",
-                report.pushed, report.applied, report.issues
+                "{} synced {changes} attention (Settings → Cloud).",
+                report.issues
             );
         }
         Ok(report)
@@ -573,7 +598,7 @@ fn write_token_file(paths: &AppPaths, token: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::state::{AuthState, LicenseState};
-    use db::{DbPool, NewCheckIn, NewHostel, NewPayment, NewRoom};
+    use db::{DbPool, NewCheckIn, NewHostel, NewPayment, NewRoom, NewRoomClass};
     use std::sync::Arc;
 
     async fn memory_server() -> (String, Arc<server::MemoryStore>) {
@@ -621,6 +646,65 @@ mod tests {
             .expect(sql)
     }
 
+    /// A local change is waiting to send until the next pass, which sends it
+    /// without a toast: only received changes and issues are worth one.
+    #[tokio::test]
+    async fn a_local_change_waits_to_send_and_sending_it_is_silent() {
+        let (url, store) = memory_server().await;
+        let root = tempfile::tempdir().expect("temp");
+        let desk = desk_at(root.path()).await;
+        let hostel = desk
+            .db
+            .create_hostel(NewHostel {
+                name: "North".into(),
+                address: None,
+                phone: None,
+                currency: Some("UGX".into()),
+                branding_logo_path: None,
+            })
+            .await
+            .expect("hostel");
+        let class_id = desk
+            .db
+            .add_room_class(NewRoomClass {
+                hostel_id: hostel.id,
+                floor: None,
+                room_type: "single".into(),
+                semester_rate: "100".into(),
+                recess_rate: "40".into(),
+            })
+            .await
+            .expect("class");
+        assert!(
+            !desk.has_pending_sync().await,
+            "nothing waits on a desk that never enrolled"
+        );
+        desk.enroll(&url, "a@b.co", "secret-pass", true, "North")
+            .await
+            .expect("sign up");
+        store.approve("a@b.co").expect("approve");
+        assert!(desk.has_pending_sync().await, "the hostel waits to upload");
+        assert!(desk.sync_now().await.error.is_none());
+        assert!(!desk.has_pending_sync().await, "all sent");
+
+        desk.db
+            .add_room(NewRoom {
+                hostel_id: hostel.id,
+                room_number: "7".into(),
+                class_id,
+            })
+            .await
+            .expect("room");
+        assert!(desk.has_pending_sync().await, "the new room waits to send");
+        let event = desk.sync_now().await;
+        assert_eq!(
+            (event.summary.as_str(), event.error.as_deref()),
+            ("", None),
+            "{event:?}"
+        );
+        assert!(!desk.has_pending_sync().await, "the new room was sent");
+    }
+
     /// The upgrade path end to end: a desk with v1-style history enrolls and
     /// uploads it, a fresh desk joins and receives it with original dates and
     /// receipt numbers, and an overbooked bed is flagged instead of undone.
@@ -640,16 +724,23 @@ mod tests {
             })
             .await
             .expect("hostel");
+        let class_id = desk_a
+            .db
+            .add_room_class(NewRoomClass {
+                hostel_id: hostel.id,
+                floor: Some(1),
+                room_type: "single".into(),
+                semester_rate: "100".into(),
+                recess_rate: "40".into(),
+            })
+            .await
+            .expect("class");
         let room_id = desk_a
             .db
             .add_room(NewRoom {
                 hostel_id: hostel.id,
                 room_number: "1".into(),
-                room_type: "single".into(),
-                capacity: 1,
-                floor: None,
-                semester_rate: "100".into(),
-                recess_rate: "40".into(),
+                class_id,
             })
             .await
             .expect("room");
@@ -752,7 +843,8 @@ mod tests {
             "checked_out"
         );
 
-        // Both desks check someone into the one free bed while offline.
+        // Both desks check someone into the same room while offline: rooms
+        // have no bed count, so both stays stand and nothing is flagged.
         let hostel_b = desk_b.db.primary_hostel_id().await.unwrap().unwrap();
         let room_b = desk_b.db.get_rooms(hostel_b).await.unwrap()[0].id;
         desk_a
@@ -767,9 +859,12 @@ mod tests {
             .expect("b books");
         assert_eq!(desk_a.sync_once().await.expect("a").issues, 0);
         let second = desk_b.sync_once().await.expect("b");
-        assert_eq!(second.issues, 1, "{second:?}");
-        let issues = desk_b.cloud_status().await.unwrap().issues;
-        assert!(!issues[0].rejected && issues[0].message.contains("over capacity"));
+        assert_eq!(second.issues, 0, "{second:?}");
+        assert_eq!(
+            desk_b.db.get_rooms(hostel_b).await.unwrap()[0].floor,
+            Some(1),
+            "the room's class came across with it"
+        );
         desk_a.sync_once().await.expect("a catches up");
         for desk in [&desk_a, &desk_b] {
             assert_eq!(

@@ -1,18 +1,9 @@
+import logo from '../../assets/logo.png';
 import { cx } from './cx';
 
-const SIZES = { sm: 'size-9 rounded-lg text-base', lg: 'size-14 rounded-2xl text-2xl' };
+const SIZES = { sm: 'size-9', lg: 'mx-auto size-14' };
 
-/** The HostelDesk mark: a black tile with a white "H" (the monochrome stand-in for the app icon). */
+/** The HostelDesk logo (the app icon, in full colour). Decorative: the product or hostel name sits beside it. */
 export function BrandMark({ size = 'sm' }: { size?: keyof typeof SIZES }) {
-  return (
-    <span
-      aria-hidden="true"
-      className={cx(
-        'inline-flex shrink-0 items-center justify-center bg-gray-950 font-semibold text-white shadow-xs',
-        SIZES[size],
-      )}
-    >
-      H
-    </span>
-  );
+  return <img src={logo} alt="" className={cx('shrink-0 object-contain', SIZES[size])} />;
 }

@@ -28,6 +28,7 @@ export { Skeleton, Spinner } from './Loaders';
 export { ConfirmDialog, Modal, type ConfirmDialogProps, type ModalProps } from './Modal';
 export { PageHeader, type PageHeaderProps } from './PageHeader';
 export { Stat, StatGroup, type StatProps } from './Stat';
+export { Steps } from './Steps';
 export { NameCell, Table, type Column, type TableProps } from './Table';
 export { Tabs, type TabItem, type TabsProps } from './Tabs';
 export { Toaster } from './Toaster';

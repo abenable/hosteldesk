@@ -201,6 +201,7 @@ impl PgStore {
             )
             .await?;
         for (kind, ids) in [
+            ("room_class", &refs.room_classes),
             ("allocation", &refs.allocations),
             ("resident", &refs.residents),
             ("payment", &refs.payments),
@@ -557,13 +558,20 @@ impl SyncStore for PgStore {
             Some(owner) if owner != org_id => return Err(ApiError::Unauthorized),
             Some(_) => {}
         }
+        // Cursor 0 is a desk that has pulled nothing: serve it from the very
+        // start, including the room classes migration 0004 put at cursors < 0.
+        let after = if request.cursor == 0 {
+            i64::MIN
+        } else {
+            request.cursor
+        };
         let rows = self
             .rows(
                 "SELECT cursor, body::text FROM changes WHERE hostel_public_id = $1 \
                  AND cursor > $2 ORDER BY cursor LIMIT $3",
                 &[
                     (&hostel, Type::TEXT),
-                    (&request.cursor, Type::INT8),
+                    (&after, Type::INT8),
                     (&(PULL_PAGE_SIZE + 1), Type::INT8),
                 ],
             )

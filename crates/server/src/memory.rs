@@ -378,17 +378,25 @@ mod tests {
         (reply.status, json)
     }
 
+    fn class(id: &str) -> SyncCommand {
+        SyncCommand::UpsertRoomClass {
+            public_id: id.into(),
+            hostel_public_id: "h1".into(),
+            base_revision: 0,
+            floor: None,
+            room_type: "single".into(),
+            semester_rate: "10".into(),
+            recess_rate: "5".into(),
+        }
+    }
+
     fn room(id: &str, number: &str) -> SyncCommand {
         SyncCommand::UpsertRoom {
             public_id: id.into(),
             hostel_public_id: "h1".into(),
             base_revision: 0,
             room_number: number.into(),
-            room_type: "single".into(),
-            capacity: 1,
-            floor: None,
-            semester_rate: "10".into(),
-            recess_rate: "5".into(),
+            class_public_id: "c1".into(),
             status: "vacant".into(),
         }
     }
@@ -457,12 +465,16 @@ mod tests {
         {
             *hostel_public_id = "someone-else".into();
         }
+        let mut under_repair = room("r1", "1");
+        if let SyncCommand::UpsertRoom { status, .. } = &mut under_repair {
+            *status = "maintenance".into();
+        }
         let body = PushRequest {
             hostel_public_id: "h1".into(),
             commands: vec![
-                envelope("1", room("r1", "1")),
-                envelope("2", check_in("a1", "p1")),
-                envelope("3", check_in("a2", "p2")),
+                envelope("1", class("c1")),
+                envelope("2", under_repair),
+                envelope("3", check_in("a1", "p1")),
                 envelope("4", foreign),
             ],
         };
@@ -489,7 +501,7 @@ mod tests {
             .message
             .as_deref()
             .unwrap()
-            .contains("over capacity"));
+            .contains("under maintenance"));
 
         let (status, pulled) = call(
             &app,

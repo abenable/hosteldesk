@@ -8,14 +8,14 @@ import * as api from '../../lib/api';
 import { useDesk } from '../../lib/desk';
 import { isOwing } from '../../lib/money';
 import type { Room } from '../../lib/types';
+import { classLabel } from '../rooms/room';
 
-/** Rooms a resident can be checked into: not under maintenance and with a free bed. */
-export const freeRooms = (rooms: Room[]) =>
-  rooms.filter((room) => room.status !== 'maintenance' && room.occupied_beds < room.capacity);
+/** Rooms a resident can be checked into: any not under maintenance (rooms have no resident limit). */
+export const freeRooms = (rooms: Room[]) => rooms.filter((room) => room.status !== 'maintenance');
 
-/** `"12 · double · 1 of 2 beds free"` (ui.rs `room_choice`). */
+/** `"A12 · Double · Floor 1 · 2 staying"`, or `"… · vacant"` (ui.rs `room_choice`). */
 export const roomChoice = (room: Room) =>
-  `${room.room_number} · ${room.room_type} · ${room.capacity - room.occupied_beds} of ${room.capacity} beds free`;
+  `${room.room_number} · ${classLabel(room)} · ${room.residents > 0 ? `${room.residents} staying` : 'vacant'}`;
 
 /** The room's rate for `term`: recess has its own rate (ui.rs `rate_for_term`). */
 export const rateForTerm = (room: Room, term: string) =>

@@ -55,7 +55,7 @@ export function Field({ label, hint, error, className, children }: FieldProps) {
 }
 
 const CONTROL =
-  'block w-full rounded-lg border-gray-300 text-sm text-gray-900 shadow-xs placeholder:text-gray-400 focus:border-primary-900 focus:ring-1 focus:ring-primary-900 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500 aria-invalid:border-red-600 aria-invalid:focus:border-red-600 aria-invalid:focus:ring-red-600';
+  'block w-full border-gray-300 text-sm text-gray-900 shadow-xs placeholder:text-gray-400 focus:border-primary-900 focus:ring-1 focus:ring-primary-900 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500 aria-invalid:border-red-600 aria-invalid:focus:border-red-600 aria-invalid:focus:ring-red-600';
 
 function useControl(id: string | undefined) {
   const field = useContext(FieldContext);
@@ -68,7 +68,7 @@ function useControl(id: string | undefined) {
 
 /** Text input; use inside a {@link Field}. All `<input>` props pass through (`type`, `value`, `onChange`, `placeholder`…). */
 export function Input({ className, id, ...props }: ComponentProps<'input'>) {
-  return <input {...useControl(id)} className={cx(CONTROL, className)} {...props} />;
+  return <input {...useControl(id)} className={cx(CONTROL, 'rounded-full px-4', className)} {...props} />;
 }
 
 /**
@@ -81,12 +81,12 @@ export function Input({ className, id, ...props }: ComponentProps<'input'>) {
  * ```
  */
 export function Select({ className, id, ...props }: ComponentProps<'select'>) {
-  return <select {...useControl(id)} className={cx(CONTROL, className)} {...props} />;
+  return <select {...useControl(id)} className={cx(CONTROL, 'rounded-full ps-4 pe-10', className)} {...props} />;
 }
 
-/** Multi-line input; use inside a {@link Field}. Defaults to 3 rows. */
+/** Multi-line input; use inside a {@link Field}. Defaults to 3 rows. Large radius, not a pill: a full round clips multi-line text. */
 export function Textarea({ className, id, rows = 3, ...props }: ComponentProps<'textarea'>) {
-  return <textarea {...useControl(id)} rows={rows} className={cx(CONTROL, className)} {...props} />;
+  return <textarea {...useControl(id)} rows={rows} className={cx(CONTROL, 'rounded-3xl px-4', className)} {...props} />;
 }
 
 /** Props of {@link Checkbox} and {@link Toggle}. */
