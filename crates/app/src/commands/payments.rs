@@ -99,11 +99,18 @@ pub struct GenerateReceiptRequest {
     pub hostel_phone: Option<String>,
     pub receipt_number: String,
     pub resident_name: String,
+    /// The resident's phone and email, printed under their name.
+    pub resident_phone: Option<String>,
+    pub resident_email: Option<String>,
     pub room_number: String,
+    /// The room's type (`single`, `double`, `dorm`), from its class.
+    pub room_type: Option<String>,
+    /// The stay's term (`semester_1`, …) and academic year (`2026/2027`).
+    pub term: Option<String>,
+    pub academic_year: Option<String>,
     pub amount: String,
     pub date: NaiveDate,
     pub balance: String,
-    pub payment_method: String,
     pub notes: Option<String>,
     /// ISO 4217 currency code used to prefix monetary amounts.
     pub currency_code: String,
@@ -111,6 +118,10 @@ pub struct GenerateReceiptRequest {
     pub footer_text: Option<String>,
     /// Optional path to a logo image to render at the top of the receipt.
     pub logo_path: Option<String>,
+    /// The staff member who took the payment and their email; `None` on a
+    /// reprint, which cannot know who took it.
+    pub received_by: Option<String>,
+    pub received_by_contact: Option<String>,
 }
 
 /// Record a payment and atomically generate the next sequential receipt number.
@@ -190,15 +201,21 @@ pub async fn generate_and_open_receipt(
         hostel_phone: request.hostel_phone,
         receipt_number: request.receipt_number,
         resident_name: request.resident_name,
+        resident_phone: request.resident_phone,
+        resident_email: request.resident_email,
         room_number: request.room_number,
+        room_type: request.room_type,
+        term: request.term,
+        academic_year: request.academic_year,
         amount,
         date: request.date,
         balance,
-        payment_method: request.payment_method,
         notes: request.notes,
         currency_code: request.currency_code,
         footer_text: request.footer_text,
         logo_path,
+        received_by: request.received_by,
+        received_by_contact: request.received_by_contact,
     };
 
     let out_dir = paths.receipts_dir();

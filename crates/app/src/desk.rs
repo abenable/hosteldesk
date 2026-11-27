@@ -402,6 +402,15 @@ impl Desk {
             .notes
             .map(|notes| notes.trim().to_string())
             .filter(|notes| !notes.is_empty());
+        let payer = self
+            .resident_detail(commands::GetResidentDetailRequest {
+                hostel_id,
+                resident_id: stay.resident_id,
+            })
+            .await?
+            .resident;
+        let room_type = self.room_type(hostel_id, &stay.room_number).await?;
+        let staff = self.session().await?;
 
         let (_, receipt_number) = self
             .record_payment_and_generate_receipt(commands::RecordPaymentRequest {
@@ -423,15 +432,21 @@ impl Desk {
                 hostel_phone: profile.phone,
                 receipt_number: receipt_number.clone(),
                 resident_name: stay.resident_name,
+                resident_phone: payer.phone,
+                resident_email: payer.email,
                 room_number: stay.room_number,
+                room_type,
+                term: Some(stay.term),
+                academic_year: Some(stay.academic_year),
                 amount,
                 date: chrono::Local::now().date_naive(),
                 balance: commands::balance_after(&stay.balance, paid),
-                payment_method: request.payment_method,
                 notes,
                 currency_code: profile.currency,
                 footer_text: prefs.receipt_footer,
                 logo_path: profile.branding_logo_path,
+                received_by: staff.as_ref().map(|user| user.full_name.clone()),
+                received_by_contact: staff.map(|user| user.email),
             })
             .await;
         Ok(commands::TakePaymentResult {
@@ -489,6 +504,11 @@ impl Desk {
             })
             .await?;
         let balance = commands::balance_at_payment(&detail, row.allocation_id, row.id)?;
+        let stay = detail
+            .allocations
+            .iter()
+            .find(|stay| stay.id == row.allocation_id);
+        let room_type = self.room_type(hostel_id, &row.room_number).await?;
         self.generate_and_open_receipt(commands::GenerateReceiptRequest {
             hostel_id,
             hostel_name: profile.name,
@@ -496,18 +516,37 @@ impl Desk {
             hostel_phone: profile.phone,
             receipt_number: row.receipt_number.unwrap_or_default(),
             resident_name: row.resident_name,
+            resident_phone: detail.resident.phone.clone(),
+            resident_email: detail.resident.email.clone(),
             room_number: row.room_number,
+            room_type,
+            term: stay.map(|stay| stay.term.clone()),
+            academic_year: stay.map(|stay| stay.academic_year.clone()),
             amount: row.amount,
             date: row.payment_date.with_timezone(&chrono::Local).date_naive(),
             balance,
-            payment_method: row.payment_method,
             notes: row.notes,
             currency_code: profile.currency,
             footer_text: prefs.receipt_footer,
             logo_path: profile.branding_logo_path,
+            // Payments do not record who took them: left blank to write in.
+            received_by: None,
+            received_by_contact: None,
         })
         .await
         .map(|_| ())
+    }
+
+    /// The type (`single`, `double`, `dorm`) of a room's class, for its receipts.
+    async fn room_type(&self, hostel_id: i64, room_number: &str) -> Result<Option<String>, String> {
+        Ok(self
+            .db
+            .get_rooms(hostel_id)
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|room| room.room_number == room_number)
+            .map(|room| room.room_type))
     }
 
     /// Payments ledger.
