@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useDesk, type Page, type Route } from '../lib/desk';
 import { daysUntil, planLabel } from '../lib/format';
 import DashboardPage from '../pages/dashboard/DashboardPage';
@@ -94,42 +94,17 @@ function NavLink({ item, count, collapsed }: { item: NavItem; count?: number; co
   );
 }
 
-/** Collapses the sidebar to an icon rail, or expands it again. */
-function CollapseButton({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
-  const label = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
-  return (
-    <button
-      type="button"
-      aria-controls="sidebar"
-      aria-expanded={!collapsed}
-      aria-label={label}
-      title={label}
-      onClick={onToggle}
-      className={cx(
-        'grid size-8 shrink-0 place-items-center rounded-full text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900',
-        FOCUS,
-      )}
-    >
-      <Icon name={collapsed ? 'chevron-right' : 'chevron-left'} className="size-5" />
-    </button>
-  );
-}
-
 /**
  * Hostel name with the plan and days left under it (amber within 30 days, red within 7);
- * the plan line opens Settings → Subscription. The collapse button sits at the
- * right; collapsed, the logo shows with the expand button under it.
+ * the plan line opens Settings → Subscription. Collapsed, only the logo shows.
  */
-function Workspace({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+function Workspace({ collapsed }: { collapsed: boolean }) {
   const { profile, license, formatDate, navigate } = useDesk();
   const days = license ? daysUntil(license.expires_on) : null;
   if (collapsed) {
     return (
-      <div className="flex flex-col items-center gap-2 border-b border-gray-200 py-4">
-        <span title={profile.name}>
-          <BrandMark />
-        </span>
-        <CollapseButton collapsed onToggle={onToggle} />
+      <div className="flex justify-center border-b border-gray-200 py-4" title={profile.name}>
+        <BrandMark />
       </div>
     );
   }
@@ -157,7 +132,6 @@ function Workspace({ collapsed, onToggle }: { collapsed: boolean; onToggle: () =
           <p className="text-xs text-gray-500">HostelDesk</p>
         )}
       </div>
-      <CollapseButton collapsed={false} onToggle={onToggle} />
     </div>
   );
 }
@@ -235,6 +209,9 @@ function UserCard({ collapsed }: { collapsed: boolean }) {
   );
 }
 
+/** The page name for the content header: a resident's page is under Residents. */
+const pageLabel = (page: Page) => [...FRONT_DESK, SETTINGS].find((item) => item.page === page)?.label ?? '';
+
 /**
  * The signed-in layout (HyperUI app-shells "Sidebar with page header" +
  * vertical-menu "Base with icon", tuned to the Fernhill/Tabula references):
@@ -242,17 +219,31 @@ function UserCard({ collapsed }: { collapsed: boolean }) {
  * navigation, sync status and the user card; the content panel holds the
  * current page (its PageHeader is the title area) and, on the right, the
  * column a `<DetailPanel>` docks into. The content uses the full width of its
- * panel; the sidebar collapses to an icon rail (remembered per computer).
+ * panel. The toggle at the top left of the content panel (or Ctrl+B) collapses
+ * the sidebar to an icon rail, remembered per computer.
  * Desktop only (≥ 1024 px).
  */
 export default function AppShell() {
   const { route, profile } = useDesk();
   const [slot, setSlot] = useState<HTMLElement | null>(null);
   const [collapsed, setCollapsed] = useState(readCollapsed);
-  const toggle = () => {
-    saveCollapsed(!collapsed);
-    setCollapsed(!collapsed);
-  };
+  const toggle = () =>
+    setCollapsed((was) => {
+      saveCollapsed(!was);
+      return !was;
+    });
+
+  // Ctrl+B (⌘B on a Mac) toggles the sidebar, as in shadcn/ui.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b') {
+        event.preventDefault();
+        toggle();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   return (
     <div className="flex h-screen gap-3 p-3">
@@ -263,7 +254,7 @@ export default function AppShell() {
           collapsed ? 'w-18' : 'w-60 xl:w-64',
         )}
       >
-        <Workspace collapsed={collapsed} onToggle={toggle} />
+        <Workspace collapsed={collapsed} />
         <nav aria-label="Main" className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
           <p className={cx('px-3 pt-1 pb-2 text-xs font-medium text-gray-500', collapsed && 'sr-only')}>
             Front desk
@@ -288,19 +279,39 @@ export default function AppShell() {
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xs">
-        <DetailSlot value={slot}>
-          {/* Keyed by location: a new page starts at the top with fresh state; a tab change keeps both. */}
-          <main
-            key={`${route.page}:${route.residentId ?? ''}`}
-            className="min-w-0 flex-1 overflow-y-auto"
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-xs">
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-gray-200 px-6">
+          <button
+            type="button"
+            aria-controls="sidebar"
+            aria-expanded={!collapsed}
+            aria-label="Toggle sidebar"
+            title="Toggle sidebar (Ctrl+B)"
+            onClick={toggle}
+            className={cx(
+              '-ms-1.5 grid size-8 place-items-center rounded-full text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900',
+              FOCUS,
+            )}
           >
-            <div className="space-y-6 px-8 py-8">
-              <CurrentPage route={route} />
-            </div>
-          </main>
-        </DetailSlot>
-        <div ref={setSlot} className="w-80 shrink-0 border-s border-gray-200 empty:hidden xl:w-96" />
+            <Icon name="panel-left" className="size-5" />
+          </button>
+          <span aria-hidden="true" className="mx-2 h-4 w-px bg-gray-200" />
+          <p className="text-sm font-medium text-gray-900">{pageLabel(route.page)}</p>
+        </header>
+        <div className="flex min-h-0 flex-1">
+          <DetailSlot value={slot}>
+            {/* Keyed by location: a new page starts at the top with fresh state; a tab change keeps both. */}
+            <main
+              key={`${route.page}:${route.residentId ?? ''}`}
+              className="min-w-0 flex-1 overflow-y-auto"
+            >
+              <div className="space-y-6 px-8 py-8">
+                <CurrentPage route={route} />
+              </div>
+            </main>
+          </DetailSlot>
+          <div ref={setSlot} className="w-80 shrink-0 border-s border-gray-200 empty:hidden xl:w-96" />
+        </div>
       </div>
     </div>
   );

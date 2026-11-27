@@ -343,8 +343,6 @@ function ResidentPanel({
           <dl className="space-y-2">
             <Line label="Email" value={r.email} />
             <Line label="ID number" value={r.id_number} />
-            <Line label="Next of kin" value={r.next_of_kin} />
-            <Line label="Their phone" value={r.next_of_kin_phone} />
           </dl>
         </DetailSection>
 

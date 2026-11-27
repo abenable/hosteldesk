@@ -5,13 +5,15 @@ import {
   Card,
   cx,
   EmptyState,
+  Icon,
+  type IconName,
   PageHeader,
   Skeleton,
   Stat,
   StatGroup,
 } from '../../components/ui';
 import * as api from '../../lib/api';
-import { useDesk } from '../../lib/desk';
+import { useDesk, type Route } from '../../lib/desk';
 import { todayIso } from '../../lib/format';
 import type { ActivityItem, Room } from '../../lib/types';
 import { useLoad, type Load } from '../../lib/useLoad';
@@ -148,26 +150,73 @@ export default function DashboardPage() {
         >
           <Activity load={activity} canCheckIn={!!rooms.data?.length} />
         </Card>
-        <Card
-          title="Rooms"
-          description={
-            rooms.data && rooms.data.length > 0
-              ? `${rooms.data.filter((r) => roomState(r) === 'vacant').length} of ${rooms.data.length} vacant`
-              : undefined
-          }
-          actions={
-            rooms.data &&
-            rooms.data.length > 0 && (
-              <Button variant="ghost" size="sm" onClick={() => desk.navigate({ page: 'rooms' })}>
-                View all
-              </Button>
-            )
-          }
-        >
-          <RoomMap load={rooms} />
-        </Card>
+        <div className="space-y-6">
+          <Card
+            title="Rooms"
+            description={
+              rooms.data && rooms.data.length > 0
+                ? `${rooms.data.filter((r) => roomState(r) === 'vacant').length} of ${rooms.data.length} vacant`
+                : undefined
+            }
+            actions={
+              rooms.data &&
+              rooms.data.length > 0 && (
+                <Button variant="ghost" size="sm" onClick={() => desk.navigate({ page: 'rooms' })}>
+                  View all
+                </Button>
+              )
+            }
+          >
+            <RoomMap load={rooms} />
+          </Card>
+          <Card title="Quick actions" description="The everyday front-desk jobs, one click away.">
+            <QuickActions />
+          </Card>
+        </div>
       </div>
     </>
+  );
+}
+
+/** A shortcut on the dashboard: its label, icon and where it goes. */
+interface QuickAction {
+  label: string;
+  icon: IconName;
+  to: Route;
+}
+
+/** Tiles for the everyday jobs; room setup and staff are for administrators. */
+function QuickActions() {
+  const desk = useDesk();
+  const actions: QuickAction[] = [
+    { label: 'Check in', icon: 'user-plus', to: { page: 'residents', tab: 'check-in' } },
+    { label: 'Take payment', icon: 'banknotes', to: { page: 'payments', tab: 'outstanding' } },
+    { label: 'Find a resident', icon: 'magnifying-glass', to: { page: 'residents' } },
+    { label: 'Receipts', icon: 'document-text', to: { page: 'payments', tab: 'history' } },
+  ];
+  if (desk.isAdmin) {
+    actions.push(
+      { label: 'Add rooms', icon: 'plus', to: { page: 'rooms', tab: 'setup' } },
+      { label: 'Add staff', icon: 'user-group', to: { page: 'settings', tab: 'team' } },
+    );
+  }
+  return (
+    <ul className="grid grid-cols-2 gap-3">
+      {actions.map((action) => (
+        <li key={action.label}>
+          <button
+            type="button"
+            onClick={() => desk.navigate(action.to)}
+            className="flex w-full items-center gap-3 rounded-2xl border border-gray-200 p-3 text-start transition-colors hover:bg-gray-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary-900"
+          >
+            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-gray-100">
+              <Icon name={action.icon} className="size-5 text-gray-700" />
+            </span>
+            <span className="truncate text-sm font-medium text-gray-900">{action.label}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 

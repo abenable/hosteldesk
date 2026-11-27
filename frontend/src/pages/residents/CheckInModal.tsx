@@ -8,7 +8,7 @@ import type { Term } from '../../lib/types';
 import { useAction, useLoad } from '../../lib/useLoad';
 import { freeRooms, rateForTerm, roomChoice } from './stay';
 
-type Key = 'name' | 'phone' | 'email' | 'id_number' | 'kin' | 'kin_phone' | 'room' | 'rate' | 'year';
+type Key = 'name' | 'phone' | 'email' | 'id_number' | 'room' | 'rate' | 'year';
 
 /** Props of {@link CheckInModal}. */
 export interface CheckInModalProps {
@@ -33,8 +33,6 @@ export default function CheckInModal({ open, onClose, returning }: CheckInModalP
     phone: '',
     email: '',
     id_number: '',
-    kin: '',
-    kin_phone: '',
     room: '',
     rate: '',
     year: academicYear(),
@@ -78,8 +76,8 @@ export default function CheckInModal({ open, onClose, returning }: CheckInModalP
         phone: returning ? null : blank(values.phone),
         email: returning ? null : blank(values.email),
         id_number: returning ? null : blank(values.id_number),
-        next_of_kin: returning ? null : blank(values.kin),
-        next_of_kin_phone: returning ? null : blank(values.kin_phone),
+        next_of_kin: null,
+        next_of_kin_phone: null,
         photo_path: null,
         rate_agreed: cleanMoney(values.rate),
         term,
@@ -130,12 +128,6 @@ export default function CheckInModal({ open, onClose, returning }: CheckInModalP
             </Field>
             <Field label="Email" error={errors.email}>
               <Input type="email" autoComplete="off" value={values.email} onChange={set('email')} />
-            </Field>
-            <Field label="Next of kin">
-              <Input autoComplete="off" value={values.kin} onChange={set('kin')} />
-            </Field>
-            <Field label="Next-of-kin phone">
-              <Input type="tel" autoComplete="off" value={values.kin_phone} onChange={set('kin_phone')} />
             </Field>
           </div>
         </fieldset>
