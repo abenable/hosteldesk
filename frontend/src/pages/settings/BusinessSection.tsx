@@ -18,7 +18,7 @@ export default function BusinessSection() {
       >
         <BusinessForm key={desk.profile.id} profile={desk.profile} />
       </Section>
-      <Section title="Logo" description="Printed at the top of every receipt.">
+      <Section title="Logo" description="Printed at the top of every receipt. Without one, receipts carry the HostelDesk logo.">
         <LogoCard profile={desk.profile} />
       </Section>
     </>

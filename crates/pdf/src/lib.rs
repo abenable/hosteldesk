@@ -62,6 +62,9 @@ impl ReceiptPayload {
 /// Group the integer part of a decimal amount with thousands separators,
 /// preserving any fractional part (e.g. `150000` -> `150,000`, `1234.5` ->
 /// `1,234.5`).
+/// The HostelDesk logo (the app icon), printed when a hostel has no logo of its own.
+const DEFAULT_LOGO: &[u8] = include_bytes!("../../app/icons/128x128@2x.png");
+
 fn format_with_commas(amount: Decimal) -> String {
     let s = format!("{amount:.2}");
     let (int_part, frac_part) = match s.split_once('.') {
@@ -221,24 +224,29 @@ pub fn generate_receipt(payload: &ReceiptPayload, path: impl AsRef<Path>) -> any
     let right_x: f32 = 190.0;
     let page_center: f32 = 105.0;
 
-    // Header: logo (if any) at the left, hostel identity stacked beside it.
+    // Header: the hostel's logo at the left (HostelDesk's when it has none,
+    // or its file is missing or unreadable), hostel identity stacked beside it.
     let logo_box = 22.0;
     let mut text_x = margin_x;
     let header_top = 277.0;
-    if let Some(logo_path) = &payload.logo_path {
-        if draw_logo(
+    let mut place = |bytes: &[u8]| {
+        draw_logo(
             &mut doc,
             &mut l,
-            logo_path,
+            bytes,
             margin_x,
             header_top - logo_box,
             logo_box,
             logo_box,
         )
         .is_ok()
-        {
-            text_x = margin_x + logo_box + 6.0;
-        }
+    };
+    let custom = payload
+        .logo_path
+        .as_deref()
+        .and_then(|path| std::fs::read(path).ok());
+    if custom.as_deref().is_some_and(&mut place) || place(DEFAULT_LOGO) {
+        text_x = margin_x + logo_box + 6.0;
     }
 
     text(
@@ -465,14 +473,13 @@ fn hline(ops: &mut Vec<Op>, x1: f32, x2: f32, y: f32) {
 fn draw_logo(
     doc: &mut PdfDocument,
     ops: &mut Vec<Op>,
-    logo_path: &str,
+    bytes: &[u8],
     x: f32,
     y: f32,
     max_w: f32,
     max_h: f32,
 ) -> anyhow::Result<()> {
-    let bytes = std::fs::read(logo_path)?;
-    let image = RawImage::decode_from_bytes(&bytes, &mut Vec::new()).map_err(anyhow::Error::msg)?;
+    let image = RawImage::decode_from_bytes(bytes, &mut Vec::new()).map_err(anyhow::Error::msg)?;
     let (px_w, px_h) = (image.width as f32, image.height as f32);
     if px_w == 0.0 || px_h == 0.0 {
         anyhow::bail!("logo image has zero dimensions");
@@ -592,25 +599,36 @@ mod tests {
         let (png, _) = pixel
             .encode_to_bytes(&[printpdf::OutputImageFormat::Png])
             .expect("encode png");
-        let path =
-            std::env::temp_dir().join(format!("hosteldesk_logo_test_{}.png", std::process::id()));
-        std::fs::write(&path, png).expect("write png");
 
         let mut doc = PdfDocument::new("logo");
         let mut ops = Vec::new();
-        let placed = draw_logo(
-            &mut doc,
-            &mut ops,
-            path.to_str().expect("utf-8 path"),
-            20.0,
-            255.0,
-            22.0,
-            22.0,
-        );
-        let _ = std::fs::remove_file(&path);
-
+        let placed = draw_logo(&mut doc, &mut ops, &png, 20.0, 255.0, 22.0, 22.0);
         placed.expect("logo placed");
         assert!(matches!(ops.as_slice(), [Op::UseXobject { .. }]));
+    }
+
+    /// A hostel without its own logo (or whose logo file has gone) gets the
+    /// HostelDesk logo at the top of the receipt instead of none.
+    #[test]
+    fn receipts_fall_back_to_the_hostel_desk_logo() {
+        let has_image = |logo_path: Option<&str>| {
+            let mut payload = sample_payload();
+            payload.logo_path = logo_path.map(str::to_string);
+            let path = std::env::temp_dir().join(format!(
+                "hosteldesk_receipt_logo_{}_{}.pdf",
+                std::process::id(),
+                logo_path.is_some()
+            ));
+            generate_receipt(&payload, &path).expect("generate receipt");
+            let bytes = std::fs::read(&path).expect("read pdf");
+            let _ = std::fs::remove_file(&path);
+            bytes.windows(6).any(|w| w == b"/Image")
+        };
+        assert!(has_image(None), "no custom logo");
+        assert!(
+            has_image(Some("/nonexistent/logo.png")),
+            "custom logo file missing"
+        );
     }
 
     #[test]
