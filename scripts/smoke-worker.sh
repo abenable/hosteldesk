@@ -50,7 +50,7 @@ expect 403 "$(post /v1/pull "$refresh" "{\"hostel_public_id\":\"$hostel\",\"curs
 approve "$email"
 
 room_class() { # idempotency-key
-  echo "{\"idempotency_key\":\"$1\",\"command\":{\"type\":\"upsert_room_class\",\"public_id\":\"c1\",\"hostel_public_id\":\"$hostel\",\"base_revision\":0,\"floor\":null,\"room_type\":\"single\",\"semester_rate\":\"100\",\"recess_rate\":\"50\"}}"
+  echo "{\"idempotency_key\":\"$1\",\"command\":{\"type\":\"upsert_room_class\",\"public_id\":\"c1\",\"hostel_public_id\":\"$hostel\",\"base_revision\":0,\"room_type\":\"single\",\"semester_rate\":\"100\",\"recess_rate\":\"50\"}}"
 }
 room() { # id number
   echo "{\"idempotency_key\":\"room-$1\",\"command\":{\"type\":\"upsert_room\",\"public_id\":\"$1\",\"hostel_public_id\":\"$hostel\",\"base_revision\":0,\"room_number\":\"$2\",\"class_public_id\":\"c1\",\"status\":\"vacant\"}}"

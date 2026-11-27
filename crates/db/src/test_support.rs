@@ -29,7 +29,6 @@ pub(crate) async fn seed_hostel(pool: &DbPool) -> Hostel {
 pub(crate) async fn seed_class(pool: &DbPool, hostel_id: i64, room_type: &str) -> i64 {
     pool.add_room_class(NewRoomClass {
         hostel_id,
-        floor: None,
         room_type: room_type.to_string(),
         semester_rate: "100".to_string(),
         recess_rate: "50".to_string(),

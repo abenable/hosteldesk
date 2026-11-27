@@ -13,13 +13,11 @@ use crate::commands::{
     AddRoomsRequest, CheckInRequest, CheckOutRequest, CompleteOnboardingRequest, CreateUserRequest,
     DeleteUserRequest, GetAppPreferencesRequest, GetDashboardStatsRequest,
     GetResidentDetailRequest, ListActiveAllocationsRequest, ListRecentActivityRequest,
-    ListResidentsRequest, ListUsersRequest, LoginRequest, OpenReceiptRequest, RestoreBackupRequest,
-    SaveRoomClassRequest, TakePaymentRequest, TakePaymentResult, UpdateHostelRequest,
-    UpdateResidentRequest, UpdateUserRequest, UploadHostelLogoRequest, UpsertAppPreferencesRequest,
+    ListResidentsRequest, ListUsersRequest, LoginRequest, OpenReceiptRequest, SaveRoomClassRequest,
+    TakePaymentRequest, TakePaymentResult, UpdateHostelRequest, UpdateResidentRequest,
+    UpdateUserRequest, UploadHostelLogoRequest, UpsertAppPreferencesRequest,
 };
-use crate::{
-    AccountLicense, BootState, CloudStatus, ConnectCloudRequest, ConnectResult, Desk, SyncEvent,
-};
+use crate::{AccountLicense, BootState, ConnectCloudRequest, ConnectResult, Desk, SyncEvent};
 
 type DeskState<'a> = State<'a, Arc<Desk>>;
 
@@ -29,7 +27,6 @@ pub(crate) fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + '
         boot_state,
         connect_cloud,
         sync_now,
-        cloud_status,
         cloud_enrolled,
         take_payment,
         open_receipt,
@@ -65,9 +62,6 @@ pub(crate) fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + '
         update_resident,
         app_preferences,
         update_app_preferences,
-        backup_database,
-        list_backups,
-        restore_backup,
     ]
 }
 
@@ -90,12 +84,6 @@ pub async fn connect_cloud(
 #[tauri::command]
 pub async fn sync_now(desk: DeskState<'_>) -> Result<SyncEvent, String> {
     Ok(desk.sync_now().await)
-}
-
-/// [`Desk::cloud_status`].
-#[tauri::command]
-pub async fn cloud_status(desk: DeskState<'_>) -> Result<CloudStatus, String> {
-    desk.cloud_status().await
 }
 
 /// [`Desk::cloud_enrolled`].
@@ -361,25 +349,4 @@ pub async fn update_app_preferences(
     request: UpsertAppPreferencesRequest,
 ) -> Result<db::AppPreferences, String> {
     desk.update_app_preferences(request).await
-}
-
-/// [`Desk::backup_database`].
-#[tauri::command]
-pub async fn backup_database(desk: DeskState<'_>) -> Result<String, String> {
-    desk.backup_database().await
-}
-
-/// [`Desk::list_backups`].
-#[tauri::command]
-pub async fn list_backups(desk: DeskState<'_>) -> Result<Vec<String>, String> {
-    desk.list_backups().await
-}
-
-/// [`Desk::restore_backup`].
-#[tauri::command]
-pub async fn restore_backup(
-    desk: DeskState<'_>,
-    request: RestoreBackupRequest,
-) -> Result<(), String> {
-    desk.restore_backup(request).await
 }

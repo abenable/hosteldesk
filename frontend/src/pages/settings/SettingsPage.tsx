@@ -1,14 +1,12 @@
 import { PageHeader, Tabs, type TabItem } from '../../components/ui';
 import { useDesk } from '../../lib/desk';
 import AccountSection from './AccountSection';
-import BackupSection from './BackupSection';
 import BusinessSection from './BusinessSection';
-import CloudSection from './CloudSection';
 import PreferencesSection from './PreferencesSection';
 import SubscriptionSection from './SubscriptionSection';
 import TeamSection from './TeamSection';
 
-type Tab = 'account' | 'subscription' | 'business' | 'team' | 'preferences' | 'backup' | 'cloud';
+type Tab = 'account' | 'subscription' | 'business' | 'team' | 'preferences';
 
 const TABS: TabItem<Tab>[] = [
   { value: 'account', label: 'Account' },
@@ -16,17 +14,15 @@ const TABS: TabItem<Tab>[] = [
   { value: 'business', label: 'Business' },
   { value: 'team', label: 'Team' },
   { value: 'preferences', label: 'Preferences' },
-  { value: 'backup', label: 'Backup' },
-  { value: 'cloud', label: 'Cloud' },
 ];
 
 /** What a manager (non-admin) may open, as in main's ui.rs. */
-const STAFF_TABS: Tab[] = ['account', 'subscription', 'cloud'];
+const STAFF_TABS: Tab[] = ['account', 'subscription'];
 
 /**
- * Account, subscription, business, team, preferences, backups and cloud, as segmented tabs
+ * Account, subscription, business, team and preferences, as segmented tabs
  * (`route.tab` picks one; unknown or admin-only tabs fall back to Account).
- * Each tab is a stack of two-column sections (see `Section`).
+ * Each tab is a single column of sections (see `Section`).
  */
 export default function SettingsPage() {
   const desk = useDesk();
@@ -46,14 +42,12 @@ export default function SettingsPage() {
         onChange={(next) => desk.navigate({ page: 'settings', tab: next })}
         items={items}
       />
-      <div className="@container divide-y divide-gray-200 pt-2">
+      <div className="max-w-2xl divide-y divide-gray-200 pt-2">
         {tab === 'account' && <AccountSection />}
         {tab === 'subscription' && <SubscriptionSection />}
         {tab === 'business' && <BusinessSection />}
         {tab === 'team' && <TeamSection />}
         {tab === 'preferences' && <PreferencesSection />}
-        {tab === 'backup' && <BackupSection />}
-        {tab === 'cloud' && <CloudSection />}
       </div>
     </>
   );

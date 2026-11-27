@@ -87,8 +87,6 @@ export const connectCloud = (request: T.ConnectCloudRequest) =>
   call<T.ConnectResult>('connect_cloud', { request });
 /** Run one sync pass now (the same pass the 30 s background loop runs). */
 export const syncNow = () => call<T.SyncEvent>('sync_now');
-/** Cloud registration for Settings → Cloud. */
-export const cloudStatus = () => call<T.CloudStatus>('cloud_status');
 /** This computer is connected to a HostelDesk account (also in `bootState().enrolled`). */
 export const cloudEnrolled = () => call<boolean>('cloud_enrolled');
 /** The usable license, or null when this computer is locked. */
@@ -196,10 +194,3 @@ export const appPreferences = (request: T.GetAppPreferencesRequest) =>
 /** Save preferences. Admin only. */
 export const updateAppPreferences = (request: T.UpsertAppPreferencesRequest) =>
   call<T.AppPreferences>('update_app_preferences', { request });
-/** Write a database backup; returns its path. Admin only. */
-export const backupDatabase = () => call<string>('backup_database');
-/** Backup files, newest first. Admin only. */
-export const listBackups = () => call<string[]>('list_backups');
-/** Replace the database with a backup; the app restarts. Refused on cloud-synced desks. */
-export const restoreBackup = (request: T.RestoreBackupRequest) =>
-  call<void>('restore_backup', { request });

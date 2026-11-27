@@ -14,8 +14,7 @@ type Errors = Partial<Record<'organization' | 'email' | 'password', string>>;
  * (two modes); dev builds also offer a server URL under "Advanced". Runs `connect_cloud`
  * (which also syncs once), toasts the outcome, then calls `onConnected`.
  *
- * Used by the Lock screen (`onConnected` re-boots) and by Settings → Cloud for
- * an admin on a desk that is not connected yet (`onConnected={() => desk.reload()}`).
+ * Used by the Lock screen (`onConnected` re-boots).
  */
 export default function CloudConnectForm({
   onConnected,

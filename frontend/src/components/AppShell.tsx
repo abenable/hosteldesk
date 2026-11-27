@@ -94,24 +94,49 @@ function NavLink({ item, count, collapsed }: { item: NavItem; count?: number; co
   );
 }
 
+/** Collapses the sidebar to an icon rail, or expands it again. */
+function CollapseButton({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
+  const label = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+  return (
+    <button
+      type="button"
+      aria-controls="sidebar"
+      aria-expanded={!collapsed}
+      aria-label={label}
+      title={label}
+      onClick={onToggle}
+      className={cx(
+        'grid size-8 shrink-0 place-items-center rounded-full text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900',
+        FOCUS,
+      )}
+    >
+      <Icon name={collapsed ? 'chevron-right' : 'chevron-left'} className="size-5" />
+    </button>
+  );
+}
+
 /**
  * Hostel name with the plan and days left under it (amber within 30 days, red within 7);
- * the plan line opens Settings → Subscription. Collapsed, only the logo shows.
+ * the plan line opens Settings → Subscription. The collapse button sits at the
+ * right; collapsed, the logo shows with the expand button under it.
  */
-function Workspace({ collapsed }: { collapsed: boolean }) {
+function Workspace({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
   const { profile, license, formatDate, navigate } = useDesk();
   const days = license ? daysUntil(license.expires_on) : null;
   if (collapsed) {
     return (
-      <div className="flex justify-center border-b border-gray-200 py-4" title={profile.name}>
-        <BrandMark />
+      <div className="flex flex-col items-center gap-2 border-b border-gray-200 py-4">
+        <span title={profile.name}>
+          <BrandMark />
+        </span>
+        <CollapseButton collapsed onToggle={onToggle} />
       </div>
     );
   }
   return (
     <div className="flex items-center gap-3 border-b border-gray-200 p-4">
       <BrandMark />
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-semibold text-gray-900" title={profile.name}>
           {profile.name}
         </p>
@@ -132,6 +157,7 @@ function Workspace({ collapsed }: { collapsed: boolean }) {
           <p className="text-xs text-gray-500">HostelDesk</p>
         )}
       </div>
+      <CollapseButton collapsed={false} onToggle={onToggle} />
     </div>
   );
 }
@@ -237,7 +263,7 @@ export default function AppShell() {
           collapsed ? 'w-18' : 'w-60 xl:w-64',
         )}
       >
-        <Workspace collapsed={collapsed} />
+        <Workspace collapsed={collapsed} onToggle={toggle} />
         <nav aria-label="Main" className="flex min-h-0 flex-1 flex-col overflow-y-auto p-3">
           <p className={cx('px-3 pt-1 pb-2 text-xs font-medium text-gray-500', collapsed && 'sr-only')}>
             Front desk
@@ -254,28 +280,6 @@ export default function AppShell() {
           </ul>
           <ul className="mt-auto space-y-1 pt-3">
             <NavLink item={SETTINGS} collapsed={collapsed} />
-            <li>
-              <button
-                type="button"
-                aria-controls="sidebar"
-                aria-expanded={!collapsed}
-                title={collapsed ? 'Expand sidebar' : undefined}
-                onClick={toggle}
-                className={cx(
-                  'flex w-full items-center gap-3 rounded-full py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50 hover:text-gray-900',
-                  FOCUS,
-                  collapsed ? 'justify-center px-2' : 'px-3',
-                )}
-              >
-                <Icon
-                  name={collapsed ? 'chevron-right' : 'chevron-left'}
-                  className="size-5 shrink-0 text-gray-500"
-                />
-                <span className={collapsed ? 'sr-only' : 'flex-1 text-start'}>
-                  {collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-                </span>
-              </button>
-            </li>
           </ul>
         </nav>
         <div className={cx('space-y-2 border-t border-gray-200', collapsed ? 'px-2 py-3' : 'p-3')}>

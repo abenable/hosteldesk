@@ -73,12 +73,11 @@ export interface AppPreferences {
   updated_at: IsoDateTime;
 }
 
-/** `db::RoomClass`: the floor, type and prices a hostel's rooms share. */
+/** `db::RoomClass`: the type and prices a hostel's rooms share. */
 export interface RoomClass {
   id: number;
   hostel_id: number;
   public_id: string;
-  floor: number | null;
   /** `"single"`, `"double"` or `"dorm"`. */
   room_type: string;
   semester_rate: Money;
@@ -87,14 +86,13 @@ export interface RoomClass {
   rooms: number;
 }
 
-/** `db::Room`, with its class's floor, type and prices. Rooms have no resident limit. */
+/** `db::Room`, with its class's type and prices. Rooms have no resident limit. */
 export interface Room {
   id: number;
   hostel_id: number;
   room_number: string;
   class_id: number;
   room_type: string;
-  floor: number | null;
   semester_rate: Money;
   recess_rate: Money;
   /** e.g. `"vacant"`, `"occupied"`, `"maintenance"`. */
@@ -233,16 +231,6 @@ export interface ActivityItem {
   amount: Money | null;
 }
 
-/** `db::SyncIssue`: a pushed change staff should look at. */
-export interface SyncIssue {
-  /** e.g. `"check_in"`. */
-  command_type: string;
-  message: string;
-  /** True when the server rejected the change; false for a warning. */
-  rejected: boolean;
-  created_at: string;
-}
-
 // ---------------------------------------------------------------- app state
 
 /** `state::AccountLicense`: the server's last answer about the account. */
@@ -253,18 +241,6 @@ export interface AccountLicense {
   expires_on: IsoDate;
   checked_on: IsoDate;
   approved: boolean;
-}
-
-/** `sync::CloudStatus`: shown in Settings → Cloud. */
-export interface CloudStatus {
-  /** Null until this computer is connected. */
-  server_url: string | null;
-  device_prefix: string | null;
-  cursor: string;
-  /** Changes waiting to be sent. */
-  pending: number;
-  /** Rejected changes and warnings, newest first. */
-  issues: SyncIssue[];
 }
 
 /** Which screen the app starts on. */
@@ -381,7 +357,6 @@ export interface UploadHostelLogoRequest {
 export interface SaveRoomClassRequest {
   hostel_id: number;
   class_id: number | null;
-  floor: number | null;
   room_type: string;
   semester_rate: Money;
   recess_rate: Money;
@@ -485,11 +460,6 @@ export interface UpsertAppPreferencesRequest {
   date_format: string;
   language: string;
   receipt_footer: string | null;
-}
-
-/** `backup::RestoreBackupRequest`. */
-export interface RestoreBackupRequest {
-  backup_path: string;
 }
 
 /** `connect_cloud` request. `server_url` blank = HostelDesk Cloud. */

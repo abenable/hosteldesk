@@ -58,7 +58,7 @@ function PreferencesForm({ prefs }: { prefs: AppPreferences }) {
         }
       >
         <div className="space-y-5">
-          <Field label="Date format" hint="Used on every screen and on receipts." className="sm:w-1/2">
+          <Field label="Date format" hint="Used on every screen and on receipts.">
             <Select
               value={values.dateFormat}
               onChange={(e) => setValues((v) => ({ ...v, dateFormat: e.target.value }))}

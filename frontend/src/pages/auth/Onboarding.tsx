@@ -98,7 +98,7 @@ export default function Onboarding({ boot, reboot }: { boot: BootState; reboot: 
     step >= 2
       ? [
           'Add your rooms',
-          'Group your rooms into classes by floor, type and price, then add the rooms of each class.',
+          'Group your rooms into classes by type and price, then add the rooms of each class. Put the floor or block in the room number, like A01 or B12.',
         ]
       : existing
         ? [

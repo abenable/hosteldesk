@@ -60,7 +60,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.0
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          # The version branch has the same name as the tag: name the tag.
+          ref: refs/tags/${{ env.RELEASE_TAG }}
 
       # The deb takes its version from Cargo.toml, the exe from the tag.
       - name: Check tag matches Cargo.toml version

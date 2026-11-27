@@ -20,7 +20,7 @@ mod sync;
 pub use desk::{lock_reason, BootState, Desk, Gate};
 pub use paths::AppPaths;
 pub use state::{AccountLicense, AuthState, LicenseState, Session, OFFLINE_GRACE_DAYS};
-pub use sync::{CloudStatus, ConnectCloudRequest, ConnectResult, SyncEvent, SyncReport};
+pub use sync::{ConnectCloudRequest, ConnectResult, SyncEvent, SyncReport};
 
 // Without `custom-protocol` the binary loads devUrl (http://localhost:5173) and
 // gives whatever answers there full IPC access, so a release build must have it.
@@ -44,17 +44,6 @@ fn fail_startup(message: &str) -> ! {
         .set_level(rfd::MessageLevel::Error)
         .show();
     std::process::exit(1);
-}
-
-/// Replace the current process with a fresh launch of the same binary.
-///
-/// Restore closes the SQLite pool, so the only safe next step is a new process.
-pub(crate) fn relaunch() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| format!("could not locate HostelDesk: {e}"))?;
-    std::process::Command::new(exe)
-        .spawn()
-        .map_err(|e| format!("could not restart HostelDesk: {e}"))?;
-    std::process::exit(0);
 }
 
 /// While the desk is enrolled: run [`Desk::sync_now`] every [`SYNC_EVERY`],

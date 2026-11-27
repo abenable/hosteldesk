@@ -3,8 +3,8 @@ use crate::DbPool;
 use tracing::{debug, error, info, instrument};
 
 impl DbPool {
-    /// Rooms of `hostel_id` by number, each with its class's floor, type, and
-    /// prices and how many residents are staying in it.
+    /// Rooms of `hostel_id` by number, each with its class's type and prices
+    /// and how many residents are staying in it.
     #[instrument(skip(self))]
     pub async fn get_rooms(&self, hostel_id: i64) -> anyhow::Result<Vec<Room>> {
         debug!(hostel_id, "fetching rooms");
@@ -12,7 +12,7 @@ impl DbPool {
             r#"
             SELECT
                 rooms.id, rooms.hostel_id, rooms.room_number, rooms.class_id,
-                c.room_type, c.floor, c.semester_rate, c.recess_rate,
+                c.room_type, c.semester_rate, c.recess_rate,
                 rooms.status, rooms.created_at,
                 (SELECT COUNT(*) FROM allocations
                   WHERE allocations.room_id = rooms.id AND allocations.status = 'active'
@@ -30,19 +30,19 @@ impl DbPool {
         Ok(rooms)
     }
 
-    /// Room classes of `hostel_id`, by floor (none first) then type, each with
-    /// its number of rooms.
+    /// Room classes of `hostel_id`, by type then price, each with its number
+    /// of rooms.
     #[instrument(skip(self))]
     pub async fn get_room_classes(&self, hostel_id: i64) -> anyhow::Result<Vec<RoomClass>> {
         let classes = sqlx::query_as::<_, RoomClass>(
             r#"
             SELECT
-                c.id, c.hostel_id, c.public_id, c.floor, c.room_type,
+                c.id, c.hostel_id, c.public_id, c.room_type,
                 c.semester_rate, c.recess_rate,
                 (SELECT COUNT(*) FROM rooms WHERE rooms.class_id = c.id) AS rooms
             FROM room_classes c
             WHERE c.hostel_id = ?1
-            ORDER BY c.floor, c.room_type, c.id
+            ORDER BY c.room_type, CAST(c.semester_rate AS REAL), c.id
             "#,
         )
         .bind(hostel_id)
@@ -59,12 +59,11 @@ impl DbPool {
         let mut tx = self.inner.begin().await?;
         let id = sqlx::query(
             r#"
-            INSERT INTO room_classes (hostel_id, floor, room_type, semester_rate, recess_rate)
-            VALUES (?1, ?2, ?3, ?4, ?5)
+            INSERT INTO room_classes (hostel_id, room_type, semester_rate, recess_rate)
+            VALUES (?1, ?2, ?3, ?4)
             "#,
         )
         .bind(class.hostel_id)
-        .bind(class.floor)
         .bind(&class.room_type)
         .bind(&class.semester_rate)
         .bind(&class.recess_rate)
@@ -78,7 +77,7 @@ impl DbPool {
         Ok(id)
     }
 
-    /// Change a class's floor, type, or prices; its rooms follow. Stays
+    /// Change a class's type or prices; its rooms follow. Stays
     /// already agreed keep their rate.
     #[instrument(skip(self, class))]
     pub async fn update_room_class(
@@ -91,11 +90,10 @@ impl DbPool {
         let updated = sqlx::query(
             r#"
             UPDATE room_classes
-            SET floor = ?1, room_type = ?2, semester_rate = ?3, recess_rate = ?4
-            WHERE id = ?5 AND hostel_id = ?6
+            SET room_type = ?1, semester_rate = ?2, recess_rate = ?3
+            WHERE id = ?4 AND hostel_id = ?5
             "#,
         )
-        .bind(class.floor)
         .bind(&class.room_type)
         .bind(&class.semester_rate)
         .bind(&class.recess_rate)
@@ -299,7 +297,6 @@ mod tests {
             class_id,
             NewRoomClass {
                 hostel_id: hostel.id,
-                floor: Some(2),
                 room_type: "double".to_string(),
                 semester_rate: "900".to_string(),
                 recess_rate: "300".to_string(),
@@ -309,12 +306,8 @@ mod tests {
         .expect("edit class");
         let rooms = pool.get_rooms(hostel.id).await.expect("rooms");
         assert_eq!(
-            (
-                rooms[0].floor,
-                rooms[0].room_type.as_str(),
-                rooms[0].semester_rate.as_str()
-            ),
-            (Some(2), "double", "900")
+            (rooms[0].room_type.as_str(), rooms[0].semester_rate.as_str()),
+            ("double", "900")
         );
         assert_eq!(rooms[0].residents, 1);
     }

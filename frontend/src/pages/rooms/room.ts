@@ -15,9 +15,11 @@ export const ROOM_TYPES = [
 /** `"dorm"` → `"Dorm"`. Unknown values are shown as given. */
 export const typeLabel = (type: string) => ROOM_TYPES.find((t) => t.value === type)?.label ?? type;
 
-/** `"Single · Floor 2"`, or `"Single"` with no floor: names a class (or a room's class). */
-export const classLabel = (c: Pick<RoomClass, 'room_type' | 'floor'>) =>
-  c.floor === null ? typeLabel(c.room_type) : `${typeLabel(c.room_type)} · Floor ${c.floor}`;
+/**
+ * `"Single"`: names a class (or a room's class). Classes are told apart by
+ * price, so lists of classes show the prices beside it.
+ */
+export const classLabel = (c: Pick<RoomClass, 'room_type'>) => typeLabel(c.room_type);
 
 /** Vacant (nobody), occupied (someone stays), or under maintenance (no check-ins). */
 export type RoomState = 'vacant' | 'occupied' | 'maintenance';

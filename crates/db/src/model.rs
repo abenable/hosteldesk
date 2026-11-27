@@ -21,14 +21,13 @@ pub struct UpsertAppPreferences {
     pub receipt_footer: Option<String>,
 }
 
-/// A room class: the floor, type, and prices a hostel's rooms share.
+/// A room class: the type and prices a hostel's rooms share.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct RoomClass {
     pub id: i64,
     pub hostel_id: i64,
     /// Sync id. Classes made from pre-class rooms are `legacy:…`.
     pub public_id: String,
-    pub floor: Option<i32>,
     /// `single`, `double`, or `dorm`.
     pub room_type: String,
     /// Semester rate as a decimal string.
@@ -43,7 +42,6 @@ pub struct RoomClass {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewRoomClass {
     pub hostel_id: i64,
-    pub floor: Option<i32>,
     /// `single`, `double`, or `dorm`.
     pub room_type: String,
     /// Semester rate as a decimal string, e.g. `"500000.00"`.
@@ -52,7 +50,7 @@ pub struct NewRoomClass {
     pub recess_rate: String,
 }
 
-/// A room, with the floor, type, and prices of its class.
+/// A room, with the type and prices of its class.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
 pub struct Room {
     pub id: i64,
@@ -60,7 +58,6 @@ pub struct Room {
     pub room_number: String,
     pub class_id: i64,
     pub room_type: String,
-    pub floor: Option<i32>,
     pub semester_rate: String,
     pub recess_rate: String,
     pub status: String,
@@ -233,7 +230,7 @@ pub struct CompleteOnboarding {
 /// Data required to create a single room.
 ///
 /// `status` is deliberately absent — new rooms are always created `vacant`.
-/// Type, floor, and prices come from the room class.
+/// Type and prices come from the room class.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewRoom {
     pub hostel_id: i64,

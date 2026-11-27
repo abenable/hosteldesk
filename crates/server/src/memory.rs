@@ -383,7 +383,6 @@ mod tests {
             public_id: id.into(),
             hostel_public_id: "h1".into(),
             base_revision: 0,
-            floor: None,
             room_type: "single".into(),
             semester_rate: "10".into(),
             recess_rate: "5".into(),

@@ -40,19 +40,6 @@ pub struct PendingSync {
     pub command: SyncCommand,
 }
 
-/// A pushed command staff should look at: rejected, or accepted with a warning.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct SyncIssue {
-    /// What kind of change it was, for example `check_in`.
-    pub command_type: String,
-    /// Server message.
-    pub message: String,
-    /// True when the server rejected the change; false for a warning.
-    pub rejected: bool,
-    /// When the change was made on this desk.
-    pub created_at: String,
-}
-
 /// Result of [`DbPool::record_acks`]: one entry per pushed outbox row.
 pub type OutboxAck = (i64, AckStatus, Option<String>);
 
@@ -137,8 +124,8 @@ impl DbPool {
     }
 
     /// Store push results in one transaction. A plain ack deletes the outbox
-    /// row; a warning or a rejection keeps it, with the server's message, for
-    /// Settings → Cloud.
+    /// row; a warning or a rejection keeps it, with the server's message, so it
+    /// is not sent again.
     pub async fn record_acks(&self, acks: &[OutboxAck]) -> anyhow::Result<()> {
         let mut tx = self.inner.begin().await?;
         for (id, status, message) in acks {
@@ -165,33 +152,6 @@ impl DbPool {
         }
         tx.commit().await?;
         Ok(())
-    }
-
-    /// Rejected changes and warnings, newest first.
-    pub async fn sync_issues(&self, hostel_id: i64) -> anyhow::Result<Vec<SyncIssue>> {
-        let rows = sqlx::query(
-            r#"
-            SELECT command_type, error, status, CAST(created_at AS TEXT) AS created_at
-            FROM sync_outbox
-            WHERE hostel_id = ?1 AND status <> 'pending' AND error IS NOT NULL
-            ORDER BY id DESC
-            LIMIT 50
-            "#,
-        )
-        .bind(hostel_id)
-        .fetch_all(&self.inner)
-        .await?;
-        rows.into_iter()
-            .map(|row| {
-                let status: String = row.try_get("status")?;
-                Ok(SyncIssue {
-                    command_type: row.try_get("command_type")?,
-                    message: row.try_get("error")?,
-                    rejected: status == "conflict",
-                    created_at: row.try_get("created_at")?,
-                })
-            })
-            .collect()
     }
 
     /// How many commands are still waiting to push.
@@ -458,7 +418,7 @@ pub(crate) async fn enqueue_room_class(
     let hostel_public_id = hostel_public_id(conn, hostel_id).await?;
     let row = sqlx::query(
         r#"
-        SELECT public_id, revision, floor, room_type, semester_rate, recess_rate
+        SELECT public_id, revision, room_type, semester_rate, recess_rate
         FROM room_classes WHERE id = ?1 AND hostel_id = ?2
         "#,
     )
@@ -471,7 +431,6 @@ pub(crate) async fn enqueue_room_class(
         public_id: row.try_get("public_id")?,
         hostel_public_id,
         base_revision: base_revision(row.try_get("revision")?),
-        floor: row.try_get("floor")?,
         room_type: row.try_get("room_type")?,
         semester_rate: row.try_get("semester_rate")?,
         recess_rate: row.try_get("recess_rate")?,
@@ -821,11 +780,10 @@ async fn apply_room_class(
     sqlx::query(
         r#"
         INSERT INTO room_classes (
-            hostel_id, floor, room_type, semester_rate, recess_rate, public_id, revision
+            hostel_id, room_type, semester_rate, recess_rate, public_id, revision
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
         ON CONFLICT(public_id) DO UPDATE SET
-            floor = excluded.floor,
             room_type = excluded.room_type,
             semester_rate = excluded.semester_rate,
             recess_rate = excluded.recess_rate,
@@ -833,7 +791,6 @@ async fn apply_room_class(
         "#,
     )
     .bind(hostel_id)
-    .bind(class.floor)
     .bind(&class.room_type)
     .bind(&class.semester_rate)
     .bind(&class.recess_rate)
@@ -1252,7 +1209,6 @@ mod tests {
             public_id: "class-from-server".into(),
             hostel_public_id: hostel_public_id.clone(),
             revision: 1,
-            floor: Some(1),
             room_type: "single".into(),
             semester_rate: "100".into(),
             recess_rate: "50".into(),
