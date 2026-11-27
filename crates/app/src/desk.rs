@@ -573,34 +573,6 @@ impl Desk {
     ) -> Result<db::AppPreferences, String> {
         commands::update_app_preferences(request, &self.db, &self.license, &self.auth).await
     }
-
-    /// Write a consistent database backup and return its path.
-    pub async fn backup_database(&self) -> Result<String, String> {
-        commands::backup_database(&self.paths, &self.db, &self.license, &self.auth).await
-    }
-
-    /// Backup files in Documents/HostelDesk/backups, newest first.
-    pub async fn list_backups(&self) -> Result<Vec<String>, String> {
-        commands::list_backups(&self.paths, &self.license, &self.auth).await
-    }
-
-    /// Replace the live database with a backup and restart the process.
-    ///
-    /// Refused while the desk syncs with the cloud: the cloud already holds
-    /// the data, and an old copy would reissue receipt numbers already printed.
-    pub async fn restore_backup(
-        &self,
-        request: commands::RestoreBackupRequest,
-    ) -> Result<(), String> {
-        if self.db.is_enrolled().await.map_err(|e| e.to_string())? {
-            return Err(
-                "This computer syncs with the cloud, so restoring a backup is turned off. \
-                 Your data is already kept in the cloud."
-                    .to_string(),
-            );
-        }
-        commands::restore_backup(request, &self.paths, &self.db, &self.license, &self.auth).await
-    }
 }
 
 #[cfg(test)]
@@ -645,7 +617,6 @@ mod tests {
             .save_room_class(commands::SaveRoomClassRequest {
                 hostel_id,
                 class_id: None,
-                floor: None,
                 room_type: "single".into(),
                 semester_rate: "500000".into(),
                 recess_rate: "200000".into(),

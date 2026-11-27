@@ -16,6 +16,14 @@
 @theme {
   --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
 
+  /* Text one step larger than Tailwind's defaults (12/14/16/18 px become
+     13/15/17/19 px), so the desk reads easily at arm's length. Line heights
+     keep Tailwind's ratios; spacing is unchanged. */
+  --text-xs: 0.8125rem;
+  --text-sm: 0.9375rem;
+  --text-base: 1.0625rem;
+  --text-lg: 1.1875rem;
+
   --color-gray-50: oklch(98.5% 0 0);
   --color-gray-100: oklch(97% 0 0);
   --color-gray-200: oklch(92.2% 0 0);

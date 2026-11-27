@@ -1,5 +1,4 @@
 pub mod allocations;
-pub mod backup;
 pub mod dashboard;
 pub mod hostels;
 pub mod licensing;
@@ -13,7 +12,6 @@ pub(crate) mod test_support;
 pub mod users;
 
 pub use allocations::*;
-pub use backup::*;
 pub use dashboard::*;
 pub use hostels::*;
 pub use licensing::*;

@@ -67,7 +67,7 @@ function ProfileForm({ user, onSaved }: { user: User; onSaved: (user: User) => v
           </Button>
         }
       >
-        <div className="grid gap-5 sm:grid-cols-2">
+        <div className="grid gap-5">
           <Field label="Full name" error={errors.name}>
             <Input autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
@@ -140,8 +140,8 @@ function PasswordForm({ user }: { user: User }) {
           </Button>
         }
       >
-        <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="Current password" error={errors.current} className="sm:col-span-2 sm:w-1/2 sm:pe-2.5">
+        <div className="grid gap-5">
+          <Field label="Current password" error={errors.current}>
             <Input
               type="password"
               autoComplete="current-password"

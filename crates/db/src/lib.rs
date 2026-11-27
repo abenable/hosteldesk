@@ -35,7 +35,7 @@ pub fn verify_password(password: &str, password_hash: &str) -> anyhow::Result<bo
 
 pub mod model;
 pub use model::*;
-pub use sync::{OutboxAck, PendingSync, SyncIssue, SyncState};
+pub use sync::{OutboxAck, PendingSync, SyncState};
 
 mod allocations;
 mod dashboard;
@@ -279,9 +279,10 @@ mod tests {
         let ids: Vec<&str> = classes.iter().map(|c| c.public_id.as_str()).collect();
         assert_eq!(
             ids,
+            // By type, then price (floors are gone since 20261129).
             [
-                "legacy:h1::single:700000:300000",
-                "legacy:h1:1:double:500000:200000"
+                "legacy:h1:1:double:500000:200000",
+                "legacy:h1::single:700000:300000"
             ]
         );
         let rooms = db.get_rooms(1).await.expect("rooms");

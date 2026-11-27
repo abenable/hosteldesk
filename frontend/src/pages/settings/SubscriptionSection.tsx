@@ -8,20 +8,18 @@ import Section from './Section';
 
 /** Where renewals go (docs/LICENSING.md; Rust's `desk::SUPPORT_EMAIL` opens it). Plans are set by HostelDesk, not in the app. */
 const SUPPORT_EMAIL = 'ableabenaitwe@gmail.com';
-const OFFERED = ['semester', '1-year', '3-year', '5-year'];
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="grid gap-1 py-3 sm:grid-cols-3 sm:gap-4">
+    <div className="grid gap-1 py-3">
       <dt className="font-medium text-gray-900">{label}</dt>
-      <dd className="text-gray-700 sm:col-span-2">{children}</dd>
+      <dd className="text-gray-700">{children}</dd>
     </div>
   );
 }
 
 /**
- * Settings → Subscription (everyone): the account's plan, when it ends, the plans on
- * offer, and a Renew button that opens the email app on a renewal request
+ * Settings → Subscription (everyone): the account's plan, when it ends, and a Renew button that opens the email app on a renewal request
  * (`email_renewal`; a mailto: link would take over the webview). The plan changes on the
  * server once renewed; this computer picks it up on its next sync.
  */
@@ -31,66 +29,49 @@ export default function SubscriptionSection() {
   const renew = useAction();
 
   return (
-    <>
-      <Section
-        title="Subscription"
-        description="Your HostelDesk plan. Renewing early adds the new plan after the current end date, so no days are lost."
-      >
-        {license && days !== null ? (
-          <Card
-            footer={
-              <Button icon="envelope" loading={renew.busy} onClick={() => void renew.run(api.emailRenewal)}>
-                Renew by email
-              </Button>
-            }
-          >
-            <dl className="-my-3 divide-y divide-gray-200 text-sm">
-              <Row label="Plan">{planLabel(license.plan)}</Row>
-              <Row label="Status">
-                {days < 0 ? (
-                  <Badge tone="danger">Ended</Badge>
-                ) : days <= 30 ? (
-                  <Badge tone="warning">Ends soon</Badge>
-                ) : (
-                  <Badge tone="success">Active</Badge>
-                )}
-              </Row>
-              <Row label="Ends on">{formatDate(license.expires_on)}</Row>
-              <Row label="Days left">{Math.max(days, 0)}</Row>
-              <Row label="Account">{license.account_name}</Row>
-              <Row label="To renew">
-                Email <span className="font-medium text-gray-900 select-all">{SUPPORT_EMAIL}</span>
-              </Row>
-            </dl>
-            {renew.error && (
-              <div className="mt-4">
-                <Alert title="Could not open your email app">
-                  {renew.error} Email {SUPPORT_EMAIL} to renew.
-                </Alert>
-              </div>
-            )}
-          </Card>
-        ) : (
-          <Alert tone="info" title="No plan details yet">
-            This computer has not heard from the HostelDesk server yet. Connect it in Settings → Cloud.
-          </Alert>
-        )}
-      </Section>
-      <Section
-        title="Plans"
-        description="The plans HostelDesk offers. To change plan, email the address above."
-      >
-        <Card>
-          <ul className="-my-3 divide-y divide-gray-200 text-sm">
-            {OFFERED.map((plan) => (
-              <li key={plan} className="flex items-center justify-between py-3">
-                <span className="font-medium text-gray-900">{planLabel(plan)}</span>
-                {license?.plan === plan && <Badge>Current</Badge>}
-              </li>
-            ))}
-          </ul>
+    <Section
+      title="Subscription"
+      description="Your HostelDesk plan. Renewing early adds the new plan after the current end date, so no days are lost."
+    >
+      {license && days !== null ? (
+        <Card
+          footer={
+            <Button icon="envelope" loading={renew.busy} onClick={() => void renew.run(api.emailRenewal)}>
+              Renew by email
+            </Button>
+          }
+        >
+          <dl className="-my-3 divide-y divide-gray-200 text-sm">
+            <Row label="Plan">{planLabel(license.plan)}</Row>
+            <Row label="Status">
+              {days < 0 ? (
+                <Badge tone="danger">Ended</Badge>
+              ) : days <= 30 ? (
+                <Badge tone="warning">Ends soon</Badge>
+              ) : (
+                <Badge tone="success">Active</Badge>
+              )}
+            </Row>
+            <Row label="Ends on">{formatDate(license.expires_on)}</Row>
+            <Row label="Days left">{Math.max(days, 0)}</Row>
+            <Row label="Account">{license.account_name}</Row>
+            <Row label="To renew">
+              Email <span className="font-medium text-gray-900 select-all">{SUPPORT_EMAIL}</span>
+            </Row>
+          </dl>
+          {renew.error && (
+            <div className="mt-4">
+              <Alert title="Could not open your email app">
+                {renew.error} Email {SUPPORT_EMAIL} to renew.
+              </Alert>
+            </div>
+          )}
         </Card>
-      </Section>
-    </>
+      ) : (
+        <Alert tone="info" title="No plan details yet">
+          This computer has not heard from the HostelDesk server yet. It updates on its next sync.
+        </Alert>
+      )}
+    </Section>
   );
 }

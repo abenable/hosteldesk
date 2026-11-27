@@ -43,7 +43,6 @@ pub struct SaveRoomClassRequest {
     pub hostel_id: i64,
     /// The class to edit; `None` creates one.
     pub class_id: Option<i64>,
-    pub floor: Option<i32>,
     /// `single`, `double`, or `dorm`.
     pub room_type: String,
     /// Semester rate as a decimal string, e.g. `"500000.00"`.
@@ -67,7 +66,6 @@ pub async fn save_room_class(
     let recess_rate = parse_positive_money(&request.recess_rate).map_err(|e| e.to_string())?;
     let class = NewRoomClass {
         hostel_id: request.hostel_id,
-        floor: request.floor,
         room_type: request.room_type,
         semester_rate: semester_rate.to_string(),
         recess_rate: recess_rate.to_string(),
@@ -141,7 +139,6 @@ mod tests {
         let class = SaveRoomClassRequest {
             hostel_id: 1,
             class_id: None,
-            floor: None,
             room_type: "single".to_string(),
             semester_rate: "450000".to_string(),
             recess_rate: "200000".to_string(),

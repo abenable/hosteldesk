@@ -38,7 +38,7 @@ pub enum SyncCommand {
         /// ISO currency code.
         currency: String,
     },
-    /// Create or edit a room class: the floor, type, and prices its rooms share.
+    /// Create or edit a room class: the type and prices its rooms share.
     UpsertRoomClass {
         /// Stable class id.
         public_id: String,
@@ -46,8 +46,6 @@ pub enum SyncCommand {
         hostel_public_id: String,
         /// Revision the edit was based on. `0` creates the class.
         base_revision: i64,
-        /// Optional floor.
-        floor: Option<i32>,
         /// `single`, `double`, or `dorm`.
         room_type: String,
         /// Semester rate, decimal string.
@@ -65,7 +63,7 @@ pub enum SyncCommand {
         base_revision: i64,
         /// Room label unique within the hostel.
         room_number: String,
-        /// Room class (floor, type, and prices) of this hostel.
+        /// Room class (type and prices) of this hostel.
         class_public_id: String,
         /// `vacant`, `occupied`, or `maintenance`.
         status: String,
@@ -348,7 +346,7 @@ pub struct HostelSnap {
     pub currency: String,
 }
 
-/// Room class snapshot: the floor, type, and prices its rooms share.
+/// Room class snapshot: the type and prices its rooms share.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RoomClassSnap {
     /// Stable id.
@@ -357,8 +355,6 @@ pub struct RoomClassSnap {
     pub hostel_public_id: String,
     /// Current revision.
     pub revision: i64,
-    /// Floor.
-    pub floor: Option<i32>,
     /// `single`, `double`, or `dorm`.
     pub room_type: String,
     /// Semester rate.
@@ -572,7 +568,6 @@ impl Ledger {
                 public_id,
                 hostel_public_id,
                 base_revision,
-                floor,
                 room_type,
                 semester_rate,
                 recess_rate,
@@ -580,7 +575,6 @@ impl Ledger {
                 public_id: public_id.clone(),
                 hostel_public_id: hostel_public_id.clone(),
                 revision: *base_revision,
-                floor: *floor,
                 room_type: room_type.clone(),
                 semester_rate: semester_rate.clone(),
                 recess_rate: recess_rate.clone(),
@@ -1196,12 +1190,41 @@ fn conflict(message: &str) -> ApplyOutcome {
 mod tests {
     use super::*;
 
+    /// Floors are gone (room numbers carry a prefix instead), but classes
+    /// written by v2.1.0 desks, and stored by the Worker, still name one.
+    #[test]
+    fn room_classes_have_no_floor_and_old_ones_still_parse() {
+        let old: Entity = serde_json::from_str(
+            r#"{"entity":"room_class","public_id":"c1","hostel_public_id":"h1","revision":1,
+                "floor":2,"room_type":"single","semester_rate":"100","recess_rate":"40"}"#,
+        )
+        .expect("a v2.1.0 class body");
+        assert_eq!(
+            old,
+            Entity::RoomClass(RoomClassSnap {
+                public_id: "c1".to_string(),
+                hostel_public_id: "h1".to_string(),
+                revision: 1,
+                room_type: "single".to_string(),
+                semester_rate: "100".to_string(),
+                recess_rate: "40".to_string(),
+            })
+        );
+        let command: SyncCommand = serde_json::from_str(
+            r#"{"type":"upsert_room_class","public_id":"c1","hostel_public_id":"h1",
+                "base_revision":0,"floor":null,"room_type":"dorm","semester_rate":"1","recess_rate":"1"}"#,
+        )
+        .expect("a v2.1.0 class command");
+        assert!(!serde_json::to_string(&command)
+            .expect("json")
+            .contains("floor"));
+    }
+
     fn class(id: &str) -> SyncCommand {
         SyncCommand::UpsertRoomClass {
             public_id: id.to_string(),
             hostel_public_id: "h1".to_string(),
             base_revision: 0,
-            floor: Some(1),
             room_type: "single".to_string(),
             semester_rate: "100".to_string(),
             recess_rate: "50".to_string(),

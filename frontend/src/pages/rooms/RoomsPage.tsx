@@ -193,7 +193,7 @@ export default function RoomsPage() {
       {classes.data && classes.data.length > 0 && (
         <Card
           title="Room classes"
-          description="Each room takes its floor, type and prices from its class. A new price applies to new check-ins."
+          description="Each room takes its type and prices from its class. A new price applies to new check-ins."
         >
           <ClassList
             classes={classes.data}

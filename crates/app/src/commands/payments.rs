@@ -312,7 +312,6 @@ mod tests {
         let class_id = pool
             .add_room_class(db::NewRoomClass {
                 hostel_id: hostel.id,
-                floor: None,
                 room_type: "single".to_string(),
                 semester_rate: "100.00".to_string(),
                 recess_rate: "50.00".to_string(),

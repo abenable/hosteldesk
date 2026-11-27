@@ -233,7 +233,7 @@ export default function ResidentDetailPage({ residentId }: { residentId: number 
   );
 }
 
-type Key = 'name' | 'phone' | 'email' | 'id_number' | 'kin' | 'kin_phone';
+type Key = 'name' | 'phone' | 'email' | 'id_number';
 
 /**
  * Profile card with the editable contact details (`update_resident`). Seeded
@@ -247,8 +247,6 @@ function ContactForm({ resident, status }: { resident: Resident; status: string 
     phone: resident.phone ?? '',
     email: resident.email ?? '',
     id_number: resident.id_number ?? '',
-    kin: resident.next_of_kin ?? '',
-    kin_phone: resident.next_of_kin_phone ?? '',
   }));
   const [errors, setErrors] = useState<Partial<Record<Key, string>>>({});
   const save = useAction();
@@ -272,8 +270,9 @@ function ContactForm({ resident, status }: { resident: Resident; status: string 
         phone: blank(values.phone),
         email: blank(values.email),
         id_number: blank(values.id_number),
-        next_of_kin: blank(values.kin),
-        next_of_kin_phone: blank(values.kin_phone),
+        // Next of kin is no longer asked for; keep whatever was recorded before.
+        next_of_kin: resident.next_of_kin,
+        next_of_kin_phone: resident.next_of_kin_phone,
       });
       desk.toast({ tone: 'success', title: 'Resident saved.' });
       desk.reload();
@@ -312,12 +311,6 @@ function ContactForm({ resident, status }: { resident: Resident; status: string 
           </Field>
           <Field label="ID number">
             <Input autoComplete="off" value={values.id_number} onChange={set('id_number')} />
-          </Field>
-          <Field label="Next of kin">
-            <Input autoComplete="off" value={values.kin} onChange={set('kin')} />
-          </Field>
-          <Field label="Next-of-kin phone">
-            <Input type="tel" autoComplete="off" value={values.kin_phone} onChange={set('kin_phone')} />
           </Field>
           {save.error && <Alert title="Could not save">{save.error}</Alert>}
         </div>

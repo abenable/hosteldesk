@@ -13,7 +13,7 @@ import { classLabel } from '../rooms/room';
 /** Rooms a resident can be checked into: any not under maintenance (rooms have no resident limit). */
 export const freeRooms = (rooms: Room[]) => rooms.filter((room) => room.status !== 'maintenance');
 
-/** `"A12 · Double · Floor 1 · 2 staying"`, or `"… · vacant"` (ui.rs `room_choice`). */
+/** `"A12 · Double · 2 staying"`, or `"… · vacant"` (ui.rs `room_choice`). */
 export const roomChoice = (room: Room) =>
   `${room.room_number} · ${classLabel(room)} · ${room.residents > 0 ? `${room.residents} staying` : 'vacant'}`;
 

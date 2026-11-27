@@ -6,18 +6,13 @@ import type { RoomClass } from '../../lib/types';
 import { useAction } from '../../lib/useLoad';
 import { ROOM_TYPES } from './room';
 
-type Key = 'floor' | 'kind' | 'semester' | 'recess';
+type Key = 'kind' | 'semester' | 'recess';
 
-// What Rust's `parse::<i32>()` accepts (9 digits keeps it inside i32).
-const WHOLE = /^[+-]?\d{1,9}$/;
-
-const EMPTY: Record<Key, string> = { floor: '', kind: 'single', semester: '', recess: '' };
+const EMPTY: Record<Key, string> = { kind: 'single', semester: '', recess: '' };
 
 /** Field errors for a room class. Empty when it can be sent. */
 function validate(v: Record<Key, string>): Partial<Record<Key, string>> {
   const errors: Partial<Record<Key, string>> = {};
-  if (v.floor.trim() && !WHOLE.test(v.floor.trim()))
-    errors.floor = 'Floor must be a whole number, or left blank.';
   if (!isMoneyInput(v.semester)) errors.semester = 'Enter a price above zero, like 450000.';
   if (!isMoneyInput(v.recess)) errors.recess = 'Enter a price above zero, like 200000.';
   return errors;
@@ -35,14 +30,13 @@ interface ClassFormProps {
 }
 
 /**
- * Floor, type and the two prices of a room class (`save_room_class`). Its
- * rooms take their type, floor and prices from it. Admin only.
+ * Type and the two prices of a room class (`save_room_class`). Its rooms
+ * take their type and prices from it. Admin only.
  */
 export function ClassForm({ hostelId, currency, editing, submitLabel, onSaved, onCancel }: ClassFormProps) {
   const [values, setValues] = useState<Record<Key, string>>(() =>
     editing
       ? {
-          floor: editing.floor === null ? '' : String(editing.floor),
           kind: editing.room_type,
           semester: editing.semester_rate,
           recess: editing.recess_rate,
@@ -60,11 +54,9 @@ export function ClassForm({ hostelId, currency, editing, submitLabel, onSaved, o
     setErrors(found);
     if (Object.keys(found).length > 0) return;
     void save.run(async () => {
-      const floor = values.floor.trim();
       const id = await api.saveRoomClass({
         hostel_id: hostelId,
         class_id: editing?.id ?? null,
-        floor: floor ? Number(floor) : null,
         room_type: values.kind,
         semester_rate: cleanMoney(values.semester),
         recess_rate: cleanMoney(values.recess),
@@ -78,7 +70,7 @@ export function ClassForm({ hostelId, currency, editing, submitLabel, onSaved, o
   return (
     <form onSubmit={submit} noValidate className="space-y-4">
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Field label="Type">
+        <Field label="Type" className="sm:col-span-2">
           <Select value={values.kind} onChange={set('kind')}>
             {ROOM_TYPES.map((t) => (
               <option key={t.value} value={t.value}>
@@ -86,9 +78,6 @@ export function ClassForm({ hostelId, currency, editing, submitLabel, onSaved, o
               </option>
             ))}
           </Select>
-        </Field>
-        <Field label="Floor" hint="Optional." error={errors.floor}>
-          <Input inputMode="numeric" value={values.floor} onChange={set('floor')} placeholder="e.g. 1" />
         </Field>
         <Field label="Semester price" hint={price} error={errors.semester}>
           <Input inputMode="decimal" value={values.semester} onChange={set('semester')} placeholder="e.g. 450000" />

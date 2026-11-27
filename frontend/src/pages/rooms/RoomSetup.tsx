@@ -21,8 +21,8 @@ interface RoomSetupProps {
 }
 
 /**
- * The room part of a setup wizard: first the room classes (floor, type and
- * prices), then rooms of each class, added as a run (A01 to A20) or a list.
+ * The room part of a setup wizard: first the room classes (type and prices),
+ * then rooms of each class, added as a run (A01 to A20) or a list.
  * Used by first-run onboarding and by the Rooms page. Admin only.
  */
 export function RoomSetup({ hostelId, currency, steps, startOnRooms, doneLabel, onDone }: RoomSetupProps) {
@@ -82,7 +82,7 @@ function ClassesStep({
   return (
     <Card
       title="Room classes"
-      description="A class is a kind of room: its floor, type and prices. Every room belongs to one class and takes its prices from it."
+      description="A class is a kind of room: its type and prices. Every room belongs to one class and takes its prices from it."
     >
       <div className="space-y-6">
         {classes.length > 0 && <ClassList classes={classes} currency={currency} />}
@@ -205,7 +205,7 @@ function RoomsStep({
           />
           {mode === 'range' ? (
             <div className="grid grid-cols-3 gap-4">
-              <Field label="Prefix" hint="Optional, e.g. A.">
+              <Field label="Prefix" hint="The floor or block, e.g. A.">
                 <Input value={prefix} onChange={(e) => setPrefix(e.target.value)} />
               </Field>
               <Field label="From" hint="01 keeps two digits.">

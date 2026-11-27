@@ -18,7 +18,7 @@ export default function BusinessSection() {
       >
         <BusinessForm key={desk.profile.id} profile={desk.profile} />
       </Section>
-      <Section title="Logo" description="Printed at the top of every receipt.">
+      <Section title="Logo" description="Printed at the top of every receipt. Without one, receipts carry the HostelDesk logo.">
         <LogoCard profile={desk.profile} />
       </Section>
     </>
@@ -97,11 +97,11 @@ function BusinessForm({ profile }: { profile: HostelProfile }) {
           </>
         }
       >
-        <div className="grid gap-5 sm:grid-cols-2">
-          <Field label="Hostel name" error={errors.name} className="sm:col-span-2">
+        <div className="grid gap-5">
+          <Field label="Hostel name" error={errors.name}>
             <Input autoComplete="organization" value={values.name} onChange={set('name')} />
           </Field>
-          <Field label="Address" className="sm:col-span-2">
+          <Field label="Address">
             <Input autoComplete="street-address" value={values.address} onChange={set('address')} />
           </Field>
           <Field label="Phone">

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::paths::AppPaths;
 use crate::Desk;
 
-/// The hosted sync API (Cloudflare Worker). Overridable in Settings → Cloud.
+/// The hosted sync API (Cloudflare Worker). Dev builds can override it on the sign-in screen.
 pub const DEFAULT_SERVER_URL: &str = "https://hosteldesk-sync.ableabenaitwe.workers.dev";
 
 /// Commands per push request; the server accepts at most `server::MAX_PUSH_COMMANDS`.
@@ -31,23 +31,9 @@ pub struct SyncReport {
     pub applied: usize,
     /// Commands rejected or accepted with a warning.
     pub issues: usize,
-    /// Text for a toast when changes need attention; empty otherwise.
+    /// Text for a toast when changes need attention (the server's message);
+    /// empty otherwise.
     pub summary: String,
-}
-
-/// Cloud registration shown in Settings.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct CloudStatus {
-    /// Server URL, once the desk has enrolled.
-    pub server_url: Option<String>,
-    /// Receipt prefix assigned at enroll.
-    pub device_prefix: Option<String>,
-    /// Last applied cursor.
-    pub cursor: String,
-    /// Commands still waiting to push.
-    pub pending: i64,
-    /// Rejected changes and warnings, newest first.
-    pub issues: Vec<db::SyncIssue>,
 }
 
 /// Payload for [`Desk::connect_cloud`]. No `Debug`: it carries a password.
@@ -357,15 +343,12 @@ impl Desk {
         // Sync is automatic and the sidebar shows "Synced"; only a problem is
         // worth a toast. (`applied` also counts this desk's own changes coming
         // back from the server, so it cannot tell "another computer" apart.)
-        if report.issues > 0 {
-            let changes = if report.issues == 1 {
-                "change needs"
-            } else {
-                "changes need"
-            };
+        // `summary` holds the server's first message (see `push_pending`).
+        if report.issues > 1 {
             report.summary = format!(
-                "{} synced {changes} attention (Settings → Cloud).",
-                report.issues
+                "{} ({} more synced changes need attention)",
+                report.summary,
+                report.issues - 1
             );
         }
         Ok(report)
@@ -411,8 +394,11 @@ impl Desk {
                 if *status == AckStatus::Acked {
                     report.pushed += 1;
                 }
-                if message.is_some() {
+                if let Some(message) = message {
                     report.issues += 1;
+                    if report.summary.is_empty() {
+                        report.summary = message.clone();
+                    }
                 }
             }
             self.db.record_acks(&acks).await.map_err(err)?;
@@ -472,28 +458,6 @@ impl Desk {
                 return Ok(hostel_id);
             }
         }
-    }
-
-    /// Registration, outbox count, and issues for Settings.
-    pub async fn cloud_status(&self) -> Result<CloudStatus, String> {
-        let config = read_config(&self.paths);
-        let mut status = CloudStatus {
-            server_url: config.as_ref().map(|config| config.server_url.clone()),
-            device_prefix: config.as_ref().map(|config| config.device_prefix.clone()),
-            cursor: "0".to_string(),
-            ..CloudStatus::default()
-        };
-        let Some(hostel_id) = self.db.primary_hostel_id().await.map_err(err)? else {
-            return Ok(status);
-        };
-        if let Some(state) = self.db.sync_state(hostel_id).await.map_err(err)? {
-            status.cursor = state.cursor;
-            status.server_url = state.server_url.or(status.server_url);
-            status.device_prefix = state.device_prefix.or(status.device_prefix);
-        }
-        status.pending = self.db.pending_sync_count(hostel_id).await.map_err(err)?;
-        status.issues = self.db.sync_issues(hostel_id).await.map_err(err)?;
-        Ok(status)
     }
 }
 
@@ -668,7 +632,6 @@ mod tests {
             .db
             .add_room_class(NewRoomClass {
                 hostel_id: hostel.id,
-                floor: None,
                 room_type: "single".into(),
                 semester_rate: "100".into(),
                 recess_rate: "40".into(),
@@ -728,7 +691,6 @@ mod tests {
             .db
             .add_room_class(NewRoomClass {
                 hostel_id: hostel.id,
-                floor: Some(1),
                 room_type: "single".into(),
                 semester_rate: "100".into(),
                 recess_rate: "40".into(),
@@ -861,8 +823,8 @@ mod tests {
         let second = desk_b.sync_once().await.expect("b");
         assert_eq!(second.issues, 0, "{second:?}");
         assert_eq!(
-            desk_b.db.get_rooms(hostel_b).await.unwrap()[0].floor,
-            Some(1),
+            desk_b.db.get_rooms(hostel_b).await.unwrap()[0].semester_rate,
+            "100",
             "the room's class came across with it"
         );
         desk_a.sync_once().await.expect("a catches up");

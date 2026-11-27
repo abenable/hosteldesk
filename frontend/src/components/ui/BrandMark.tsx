@@ -1,7 +1,7 @@
 import logo from '../../assets/logo.png';
 import { cx } from './cx';
 
-const SIZES = { sm: 'size-9', lg: 'mx-auto size-14' };
+const SIZES = { sm: 'size-11', lg: 'mx-auto size-20' };
 
 /** The HostelDesk logo (the app icon, in full colour). Decorative: the product or hostel name sits beside it. */
 export function BrandMark({ size = 'sm' }: { size?: keyof typeof SIZES }) {
