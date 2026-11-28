@@ -11,6 +11,8 @@ import {
   MiniStats,
   Modal,
   PageHeader,
+  SearchInput,
+  Select,
   Skeleton,
   Table,
   Tabs,
@@ -24,7 +26,7 @@ import type { Room, RoomClass } from '../../lib/types';
 import { useLoad } from '../../lib/useLoad';
 import { ClassForm } from './ClassForm';
 import { ClassList, RoomSetup } from './RoomSetup';
-import { classLabel, roomState, STATE_BADGE } from './room';
+import { classLabel, ROOM_TYPES, roomState, STATE_BADGE } from './room';
 
 type Filter = 'all' | 'vacant' | 'occupied';
 
@@ -34,7 +36,8 @@ const NONE: Record<Exclude<Filter, 'all'>, { title: string; description: string 
 };
 
 /**
- * Rooms and their classes, with the selected room in a DetailPanel. An
+ * Rooms and their classes, with the selected room in a DetailPanel. Rooms
+ * filter by state (tabs), room number and, when there is more than one, type. An
  * administrator adds rooms (and classes) through the setup wizard, which
  * also opens from the dashboard (tab `add`) and here (tab `setup`).
  */
@@ -43,6 +46,8 @@ export default function RoomsPage() {
   const { data: rooms, error, loading, reload } = useLoad(() => api.rooms(desk.hostelId), [desk.hostelId]);
   const classes = useLoad(() => api.roomClasses(desk.hostelId), [desk.hostelId]);
   const [filter, setFilter] = useState<Filter>('all');
+  const [query, setQuery] = useState('');
+  const [type, setType] = useState('');
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [editing, setEditing] = useState<RoomClass | null>(null);
   const setup = desk.isAdmin && (desk.route.tab === 'setup' || desk.route.tab === 'add');
@@ -94,7 +99,15 @@ export default function RoomsPage() {
 
   const vacant = rooms.filter((r) => roomState(r) === 'vacant');
   const occupied = rooms.filter((r) => roomState(r) === 'occupied');
-  const shown = filter === 'vacant' ? vacant : filter === 'occupied' ? occupied : rooms;
+  const types = ROOM_TYPES.filter((t) => rooms.some((r) => r.room_type === t.value));
+  const q = query.trim().toLowerCase();
+  const shown = (filter === 'vacant' ? vacant : filter === 'occupied' ? occupied : rooms).filter(
+    (r) => (type === '' || r.room_type === type) && r.room_number.toLowerCase().includes(q),
+  );
+  const clearFilters = () => {
+    setQuery('');
+    setType('');
+  };
   const selected = rooms.find((r) => r.id === selectedId);
 
   const room: Column<Room> = {
@@ -161,22 +174,56 @@ export default function RoomsPage() {
               {error}
             </Alert>
           )}
-          <Tabs
-            label="Room filter"
-            value={filter}
-            onChange={setFilter}
-            items={[
-              { value: 'all', label: 'All', count: rooms.length },
-              { value: 'vacant', label: 'Vacant', count: vacant.length },
-              { value: 'occupied', label: 'Occupied', count: occupied.length },
-            ]}
-          />
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <Tabs
+              label="Room filter"
+              value={filter}
+              onChange={setFilter}
+              items={[
+                { value: 'all', label: 'All', count: rooms.length },
+                { value: 'vacant', label: 'Vacant', count: vacant.length },
+                { value: 'occupied', label: 'Occupied', count: occupied.length },
+              ]}
+            />
+            <div className="flex min-w-72 flex-1 gap-3 sm:max-w-md">
+              <SearchInput
+                aria-label="Search rooms"
+                placeholder="Search room number"
+                className="flex-1"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+              />
+              {types.length > 1 && (
+                <div className="w-36 shrink-0">
+                  <Select aria-label="Room type" value={type} onChange={(e) => setType(e.target.value)}>
+                    <option value="">All types</option>
+                    {types.map((t) => (
+                      <option key={t.value} value={t.value}>
+                        {t.label}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              )}
+            </div>
+          </div>
           <Card flush>
-            {shown.length === 0 && filter !== 'all' ? (
+            {shown.length === 0 && (q || type) ? (
+              <EmptyState
+                icon="magnifying-glass"
+                title={q ? `No rooms match “${query.trim()}”` : 'No rooms of this type'}
+                description={q ? 'Search by room number, like A01, or its prefix, like A.' : 'Try another tab or type.'}
+                action={
+                  <Button variant="secondary" onClick={clearFilters}>
+                    Clear filters
+                  </Button>
+                }
+              />
+            ) : shown.length === 0 && filter !== 'all' ? (
               <EmptyState icon="home" title={NONE[filter].title} description={NONE[filter].description} />
             ) : (
               <Table
-                key={filter}
+                key={`${filter}:${type}:${q}`}
                 caption="Rooms"
                 columns={columns}
                 rows={shown}

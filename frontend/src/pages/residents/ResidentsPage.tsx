@@ -8,11 +8,11 @@ import {
   DetailPanel,
   DetailSection,
   EmptyState,
-  Icon,
-  Input,
   MiniStats,
   NameCell,
   PageHeader,
+  SearchInput,
+  Select,
   Skeleton,
   Table,
   Tabs,
@@ -28,6 +28,8 @@ import CheckInModal from './CheckInModal';
 import { useCheckOut } from './stay';
 
 type Tab = 'current' | 'past' | 'all';
+/** The Status column's badge: `''` shows everyone. */
+type Balance = '' | 'owing' | 'paid' | 'none';
 type Returning = { id: number; full_name: string } | null;
 
 /** Paid (green) / Owing (red) by balance; "No stay" for someone never checked in. */
@@ -35,6 +37,16 @@ function BalanceBadge({ balance, never }: { balance: string; never?: boolean }) 
   if (never) return <Badge>No stay</Badge>;
   return isOwing(balance) ? <Badge tone="danger">Owing</Badge> : <Badge tone="success">Paid</Badge>;
 }
+
+/** Which badge the Status column shows, so the balance filter matches what is on screen. */
+const balanceOf = (r: ResidentSummary): Exclude<Balance, ''> =>
+  r.status === 'never_allocated' ? 'none' : isOwing(r.balance) ? 'owing' : 'paid';
+
+const NO_MATCH: Record<Exclude<Balance, ''>, string> = {
+  owing: 'Nobody here owes',
+  paid: 'Nobody here is paid up',
+  none: 'Everyone here has had a stay',
+};
 
 const matches = (r: ResidentSummary, query: string) => {
   const digits = query.replace(/\s/g, '');
@@ -47,7 +59,7 @@ const matches = (r: ResidentSummary, query: string) => {
 
 /**
  * The resident directory (ui.rs `residents`): Current / Past / All tabs,
- * search by name, phone or room, a DetailPanel for the selected resident,
+ * search by name, phone or room, a balance filter, a DetailPanel for the selected resident,
  * check-in (also opened by `route.tab === 'check-in'`) and take payment.
  */
 export default function ResidentsPage() {
@@ -56,6 +68,7 @@ export default function ResidentsPage() {
   const stays = useLoad(() => api.activeAllocations({ hostel_id: desk.hostelId }), [desk.hostelId]);
   const [tab, setTab] = useState<Tab>('current');
   const [query, setQuery] = useState('');
+  const [balance, setBalance] = useState<Balance>('');
   const [selected, setSelected] = useState<number | null>(null);
   const [payingId, setPayingId] = useState<number | null>(null);
   const paying = stays.data?.find((s) => s.allocation_id === payingId) ?? null;
@@ -74,8 +87,12 @@ export default function ResidentsPage() {
   const owing = residents.filter((r) => isOwing(r.balance)).length;
   const q = query.trim().toLowerCase();
   const rows = (tab === 'current' ? current : tab === 'past' ? past : residents).filter(
-    (r) => q === '' || matches(r, q),
+    (r) => (q === '' || matches(r, q)) && (balance === '' || balanceOf(r) === balance),
   );
+  const clearFilters = () => {
+    setQuery('');
+    setBalance('');
+  };
   const chosen = residents.find((r) => r.id === selected);
 
   const checkInButton = (
@@ -122,25 +139,32 @@ export default function ResidentsPage() {
               { value: 'all', label: 'All', count: residents.length },
             ]}
           />
-          <div className="relative min-w-56 flex-1 sm:max-w-xs">
-            <Icon
-              name="magnifying-glass"
-              className="pointer-events-none absolute inset-y-0 start-4 my-auto size-4 text-gray-400"
-            />
-            <Input
-              type="search"
+          <div className="flex min-w-72 flex-1 gap-3 sm:max-w-md">
+            <SearchInput
               aria-label="Search residents"
               placeholder="Search name, phone or room"
-              className="ps-10 [&::-webkit-search-cancel-button]:hidden"
+              className="flex-1"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
             />
+            <div className="w-36 shrink-0">
+              <Select
+                aria-label="Balance"
+                value={balance}
+                onChange={(e) => setBalance(e.target.value as Balance)}
+              >
+                <option value="">Any balance</option>
+                <option value="owing">Owing</option>
+                <option value="paid">Paid</option>
+                <option value="none">No stay</option>
+              </Select>
+            </div>
           </div>
         </div>
         <Card flush>
           {rows.length > 0 ? (
             <Table
-              key={`${tab}:${q}`}
+              key={`${tab}:${q}:${balance}`}
               caption="Residents"
               rows={rows}
               rowKey={(r) => r.id}
@@ -177,14 +201,16 @@ export default function ResidentsPage() {
                 },
               ]}
             />
-          ) : q ? (
+          ) : q || balance ? (
             <EmptyState
               icon="magnifying-glass"
-              title={`No residents match “${query.trim()}”`}
-              description="Search by name, phone number or room number."
+              title={q || !balance ? `No residents match “${query.trim()}”` : NO_MATCH[balance]}
+              description={
+                q ? 'Search by name, phone number or room number.' : 'Try another tab or balance.'
+              }
               action={
-                <Button variant="secondary" onClick={() => setQuery('')}>
-                  Clear search
+                <Button variant="secondary" onClick={clearFilters}>
+                  Clear filters
                 </Button>
               }
             />

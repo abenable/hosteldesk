@@ -1,5 +1,6 @@
 import { createContext, useContext, useId, type ComponentProps, type ReactNode } from 'react';
 import { cx } from './cx';
+import { Icon } from './Icon';
 
 const FieldContext = createContext<{ id: string; describedBy?: string; invalid: boolean } | null>(
   null,
@@ -69,6 +70,19 @@ function useControl(id: string | undefined) {
 /** Text input; use inside a {@link Field}. All `<input>` props pass through (`type`, `value`, `onChange`, `placeholder`…). */
 export function Input({ className, id, ...props }: ComponentProps<'input'>) {
   return <input {...useControl(id)} className={cx(CONTROL, 'rounded-full px-4', className)} {...props} />;
+}
+
+/** Search box with a magnifying glass, for filtering a list; give it an `aria-label`. `className` sizes the box. */
+export function SearchInput({ className, ...props }: ComponentProps<'input'>) {
+  return (
+    <div className={cx('relative min-w-0', className)}>
+      <Icon
+        name="magnifying-glass"
+        className="pointer-events-none absolute inset-y-0 start-4 my-auto size-4 text-gray-400"
+      />
+      <Input type="search" className="ps-10 [&::-webkit-search-cancel-button]:hidden" {...props} />
+    </div>
+  );
 }
 
 /**

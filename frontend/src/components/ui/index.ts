@@ -17,6 +17,7 @@ export {
   Checkbox,
   Field,
   Input,
+  SearchInput,
   Select,
   Textarea,
   Toggle,

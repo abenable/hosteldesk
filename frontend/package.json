@@ -1,7 +1,7 @@
 {
   "name": "hosteldesk-frontend",
   "private": true,
-  "version": "2.1.2",
+  "version": "2.1.3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -23,6 +23,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.3.0",
     "oxlint": "^1.95.0",
+    "retouche-dev": "0.1.2",
     "tailwindcss": "^4.3.5",
     "typescript": "^7.0.2",
     "vite": "^8.4.0"
