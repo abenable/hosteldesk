@@ -20,12 +20,11 @@ import {
   type Column,
 } from '../../components/ui';
 import * as api from '../../lib/api';
-import { ApiError, errorMessage } from '../../lib/api';
 import { useDesk } from '../../lib/desk';
 import { METHODS, methodLabel, termLabel, todayIso } from '../../lib/format';
 import { isOwing } from '../../lib/money';
 import type { ActiveAllocation, PaymentRow } from '../../lib/types';
-import { useAction, useLoad, type Load } from '../../lib/useLoad';
+import { useLoad, type Load } from '../../lib/useLoad';
 import TakePaymentModal from './TakePaymentModal';
 
 type Tab = 'outstanding' | 'history';
@@ -43,28 +42,6 @@ function StayBadge({ stay }: { stay: ActiveAllocation }) {
   ) : (
     <Badge tone="danger">Owing</Badge>
   );
-}
-
-/** `open_receipt` with one in-flight guard; failures toast (guard errors are toasted by the app). */
-function useOpenReceipt() {
-  const desk = useDesk();
-  const action = useAction();
-  const [openingId, setOpeningId] = useState<number | null>(null);
-  const open = (row: PaymentRow) => {
-    if (action.busy) return;
-    setOpeningId(row.id);
-    void action.run(async () => {
-      try {
-        await api.openReceipt({ hostel_id: desk.hostelId, payment_id: row.id });
-      } catch (e) {
-        if (!(e instanceof ApiError && e.guard))
-          desk.toast({ tone: 'error', title: 'Could not open the receipt', message: errorMessage(e) });
-        return;
-      }
-      desk.toast({ tone: 'success', title: 'Receipt opened.' });
-    });
-  };
-  return { open, busy: action.busy, openingId };
 }
 
 /** Outstanding balances of active stays, the payments ledger, taking payments and reopening receipts. */
@@ -299,7 +276,6 @@ function StayPanel({
   onPay: () => void;
 }) {
   const desk = useDesk();
-  const receipt = useOpenReceipt();
   const history = useLoad(
     () =>
       api.listPayments({
@@ -373,9 +349,7 @@ function StayPanel({
                     size="sm"
                     variant="ghost"
                     icon="document-text"
-                    loading={receipt.busy && receipt.openingId === p.id}
-                    disabled={receipt.busy}
-                    onClick={() => receipt.open(p)}
+                    onClick={() => desk.showReceipt({ paymentId: p.id, receiptNumber: p.receipt_number ?? '' })}
                     aria-label={`Open receipt ${p.receipt_number}`}
                     title="Open receipt"
                   />
@@ -405,7 +379,6 @@ function History({
   onShowOutstanding: () => void;
 }) {
   const desk = useDesk();
-  const receipt = useOpenReceipt();
   const filtered = filter.from !== '' || filter.to !== '' || filter.method !== '';
   const set = (key: keyof Filter, value: string) => setFilter({ ...filter, [key]: value });
 
@@ -441,9 +414,7 @@ function History({
             size="sm"
             variant="secondary"
             icon="document-text"
-            loading={receipt.busy && receipt.openingId === p.id}
-            disabled={receipt.busy}
-            onClick={() => receipt.open(p)}
+            onClick={() => desk.showReceipt({ paymentId: p.id, receiptNumber: p.receipt_number ?? '' })}
           >
             Open receipt
           </Button>

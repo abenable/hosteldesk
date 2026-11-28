@@ -155,10 +155,13 @@ export const activeAllocations = (request: T.ListActiveAllocationsRequest) =>
 
 // ------------------------------------------------------------ payments
 
-/** Record a payment, then print and open its receipt. Use this for the payment form. */
+/** Record a payment and write its receipt PDF. Use this for the payment form. */
 export const takePayment = (request: T.TakePaymentRequest) =>
   call<T.TakePaymentResult>('take_payment', { request });
-/** Reprint and open the receipt of a past payment. */
+/** A payment's receipt PDF (printed again when this computer has none), for the in-app viewer. */
+export const receiptPdf = (request: T.OpenReceiptRequest) =>
+  call<ArrayBuffer>('receipt_pdf', { request });
+/** Open a payment's receipt in the computer's own PDF app. */
 export const openReceipt = (request: T.OpenReceiptRequest) =>
   call<void>('open_receipt', { request });
 /** The payments ledger, newest first. */

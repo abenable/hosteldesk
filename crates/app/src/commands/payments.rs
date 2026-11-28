@@ -28,9 +28,11 @@ pub struct TakePaymentRequest {
 /// this is returned; only the PDF may have failed.
 #[derive(Debug, Clone, Serialize)]
 pub struct TakePaymentResult {
+    /// The recorded payment, for opening its receipt in the viewer.
+    pub payment_id: i64,
     /// Receipt number allocated to the payment.
     pub receipt_number: String,
-    /// Why the receipt PDF could not be written or opened, if it failed.
+    /// Why the receipt PDF could not be written, if it failed.
     pub pdf_error: Option<String>,
 }
 
@@ -99,11 +101,18 @@ pub struct GenerateReceiptRequest {
     pub hostel_phone: Option<String>,
     pub receipt_number: String,
     pub resident_name: String,
+    /// The resident's phone and email, printed under their name.
+    pub resident_phone: Option<String>,
+    pub resident_email: Option<String>,
     pub room_number: String,
+    /// The room's type (`single`, `double`, `dorm`), from its class.
+    pub room_type: Option<String>,
+    /// The stay's term (`semester_1`, …) and academic year (`2026/2027`).
+    pub term: Option<String>,
+    pub academic_year: Option<String>,
     pub amount: String,
     pub date: NaiveDate,
     pub balance: String,
-    pub payment_method: String,
     pub notes: Option<String>,
     /// ISO 4217 currency code used to prefix monetary amounts.
     pub currency_code: String,
@@ -111,6 +120,10 @@ pub struct GenerateReceiptRequest {
     pub footer_text: Option<String>,
     /// Optional path to a logo image to render at the top of the receipt.
     pub logo_path: Option<String>,
+    /// The staff member who took the payment and their email; `None` on a
+    /// reprint, which cannot know who took it.
+    pub received_by: Option<String>,
+    pub received_by_contact: Option<String>,
 }
 
 /// Record a payment and atomically generate the next sequential receipt number.
@@ -158,13 +171,10 @@ pub async fn record_payment_and_generate_receipt(
         })
 }
 
-/// Generate a PDF receipt, open it with the default system PDF viewer, and
-/// persist the generated path back to the corresponding `receipts` row.
-#[instrument(
-    skip(paths, state, license_state),
-    fields(command = "generate_and_open_receipt")
-)]
-pub async fn generate_and_open_receipt(
+/// Write a PDF receipt into the receipts folder and record its path on the
+/// `receipts` row. Returns the path; the app shows it in its own viewer.
+#[instrument(skip(paths, state, license_state), fields(command = "write_receipt"))]
+pub async fn write_receipt(
     request: GenerateReceiptRequest,
     paths: &crate::paths::AppPaths,
     state: &DbPool,
@@ -174,7 +184,7 @@ pub async fn generate_and_open_receipt(
     info!(
         receipt_number = request.receipt_number,
         resident_name = %request.resident_name,
-        "generate_and_open_receipt invoked"
+        "write_receipt invoked"
     );
     require_license(license_state)?;
     require_session(auth_state, request.hostel_id)?;
@@ -190,15 +200,21 @@ pub async fn generate_and_open_receipt(
         hostel_phone: request.hostel_phone,
         receipt_number: request.receipt_number,
         resident_name: request.resident_name,
+        resident_phone: request.resident_phone,
+        resident_email: request.resident_email,
         room_number: request.room_number,
+        room_type: request.room_type,
+        term: request.term,
+        academic_year: request.academic_year,
         amount,
         date: request.date,
         balance,
-        payment_method: request.payment_method,
         notes: request.notes,
         currency_code: request.currency_code,
         footer_text: request.footer_text,
         logo_path,
+        received_by: request.received_by,
+        received_by_contact: request.received_by_contact,
     };
 
     let out_dir = paths.receipts_dir();
@@ -214,7 +230,6 @@ pub async fn generate_and_open_receipt(
     let path = out_dir.join(filename);
 
     pdf::generate_receipt(&payload, &path).map_err(|e| e.to_string())?;
-    open::that(&path).map_err(|e| e.to_string())?;
 
     let path_str = path.to_string_lossy().to_string();
     if let Err(e) = state

@@ -86,6 +86,8 @@ export interface DeskValue {
   toast: (input: ToastInput) => void;
   /** Ask yes/no in a ConfirmDialog. Resolves `true` when confirmed (and `action`, if any, succeeded). */
   confirm: (options: ConfirmOptions) => Promise<boolean>;
+  /** Show a payment's receipt in the in-app viewer. */
+  showReceipt: (receipt: ReceiptRef) => void;
 
   /** Bumps after every sync that changed something and every `reload()`; `useLoad` re-fetches on it. */
   dataVersion: number;
@@ -104,6 +106,12 @@ export interface DeskValue {
   syncNow: () => void;
   /** End the session and go back to Sign in. */
   signOut: () => void;
+}
+
+/** A receipt to show: the payment it belongs to and its number (for the title). */
+export interface ReceiptRef {
+  paymentId: number;
+  receiptNumber: string;
 }
 
 /** The context object. `null` outside the signed-in shell (gate screens). */

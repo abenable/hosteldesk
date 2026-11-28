@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import * as api from '../lib/api';
-import { DeskContext, type ConfirmOptions, type DeskValue, type Route, type SyncState } from '../lib/desk';
+import { DeskContext, type ConfirmOptions, type DeskValue, type ReceiptRef, type Route, type SyncState } from '../lib/desk';
 import { formatDate, formatDateTime } from '../lib/format';
 import { formatMoney } from '../lib/money';
 import { clearToasts, toast } from '../lib/toast';
 import type { AccountLicense, AppPreferences, BootState, HostelProfile, SyncEvent, User } from '../lib/types';
 import BootFailed from '../pages/auth/BootFailed';
+import ReceiptViewer from './ReceiptViewer';
 import { ConfirmDialog, Spinner } from './ui';
 
 interface Base {
@@ -58,6 +59,7 @@ export default function DeskProvider({
     busy: false,
   });
   const [pending, setPending] = useState<PendingConfirm | null>(null);
+  const [receipt, setReceipt] = useState<ReceiptRef | null>(null);
 
   const reload = useCallback(() => setDataVersion((v) => v + 1), []);
 
@@ -190,6 +192,7 @@ export default function DeskProvider({
       navigate: setRoute,
       toast,
       confirm,
+      showReceipt: setReceipt,
       dataVersion,
       reload,
       formatMoney: (amount) => formatMoney(amount, currency),
@@ -225,6 +228,7 @@ export default function DeskProvider({
         onConfirm={() => void onConfirm()}
         onCancel={onCancel}
       />
+      <ReceiptViewer receipt={receipt} onClose={() => setReceipt(null)} />
     </DeskContext>
   );
 }

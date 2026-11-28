@@ -282,6 +282,8 @@ export interface SyncEvent {
 
 /** `take_payment` result. */
 export interface TakePaymentResult {
+  /** The recorded payment; open its receipt with `desk.showReceipt`. */
+  payment_id: number;
   receipt_number: string;
   /** The payment is recorded; only the PDF failed. */
   pdf_error: string | null;
